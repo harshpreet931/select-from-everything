@@ -1,0 +1,119 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import crash from "./traces/crash-recovery.pgtrace.json";
+
+{/* the ARIES stepper is the textbook algorithm simulated in src/lib/db/sim/wal.ts (tested in
+    wal.test.ts), not postgres. the page after recovery is from traces/crash-recovery, a real
+    postgres 18.6 server. */}
+
+export const after = crash.steps[8];
+
+<InShort>
+**ARIES** (Mohan et al., 1992) is the textbook recovery algorithm: after a crash, an **analysis** pass works out which transactions were running and which pages were dirty, a **redo** pass repeats history, losers included, and an **undo** pass rolls the losers back, logging a **compensation log record (CLR)** for every change it undoes. postgres runs only the middle pass. its rollback is a status bit, not an undo, because an old row version is never overwritten.
+</InShort>
+
+## the picture
+
+you know how every database course teaches "analysis, redo, undo" as if that's how all databases recover? it's how the ones that **update in place** recover: DB2, where ARIES was born, SQL Server, InnoDB. postgres doesn't, and the reason is the most postgres thing about postgres.
+
+think of two accountants. one corrects the ledger by crossing out the old number and writing the new one over it (update in place). if they're interrupted mid-transaction, the next morning they have to find every number they changed for a deal that never closed and change it back (undo). the other never crosses anything out: they write a new line and a note saying which deal it belongs to (a new row version with an xid). a deal that never closed is just marked "void" in a separate book (pg_xact). the next morning there's nothing to change back.
+
+## the textbook, step by step
+
+the paper is C. Mohan, D. Haderle, B. Lindsay, H. Pirahesh and P. Schwarz, "ARIES: a transaction recovery method supporting fine-granularity locking and partial rollbacks using write-ahead logging", ACM Transactions on Database Systems 17(1), 1992. its log records carry a prevLSN (the same transaction's previous record), every page carries a pageLSN, and recovery runs three passes. here they are on a small log: T1 commits, T2 doesn't, T3 is cut off by the crash.
+
+<Figure wide caption={<>step through the textbook algorithm. analysis rebuilds the <C k="meta">transaction table</C> and <C k="meta">dirty page table</C>; redo repeats every change whose page is older, the losers' too; undo walks the losers backwards, writing a <C k="hot">CLR</C> for each change. this is a model, not postgres.</>}>
+<WalStrip mode="aries" />
+</Figure>
+
+the three passes, in short:
+
+1. **analysis.** start at the last checkpoint and read forward. rebuild the transaction table (who was running, their last LSN) and the dirty page table (every page that might be newer in memory than on disk, with recLSN: the first record that dirtied it). transactions without a commit at the end are **losers**.
+2. **redo.** start at the smallest recLSN and replay every update or CLR whose page's pageLSN is older than the record. losers included. this is "repeating history": after redo, the database is exactly as it was at the instant of the crash, uncommitted changes and all.
+3. **undo.** roll back the losers, newest change first. each undo is itself logged, as a CLR whose undoNextLSN points at the next change to undo. if the server crashes during undo, the next recovery redoes the CLRs and continues from undoNextLSN: no change is ever undone twice.
+
+why repeat history, then undo it? because locks and in-place updates are fine-grained: a page can hold a committed change and an uncommitted one side by side, and the only safe way to get it right is to rebuild the exact crash state, then take back what was never committed. it's also what makes partial rollbacks (savepoints) work with the same machinery.
+
+## what postgres does instead
+
+postgres keeps two of the three ideas and drops the third.
+
+<Figure caption={<>the three ARIES passes, and what postgres does in their place: the first tree is the textbook, the second is what postgres's startup process really does (xlogrecovery.c).</>}>
+<Tree>{`
+ARIES restart
+    analysis #meta // rebuild transaction table and dirty page table from the last checkpoint
+    redo #hot // from the smallest recLSN; apply if pageLSN < record LSN; losers included
+    undo #dead // roll back losers newest-first, logging CLRs
+postgres restart
+    no analysis pass // every dirty page was written, the redo pointer is enough
+    redo #hot // from the redo pointer; apply if pd_lsn < record end; FPIs restore pages outright
+    no undo pass // no commit record: pg_xact says aborted, MVCC hides the rows
+`}</Tree>
+<Provenance drawn="after Mohan et al. (1992) and postgres 18's src/backend/access/transam/xlogrecovery.c" />
+</Figure>
+
+**no analysis.** an ARIES checkpoint is fuzzy: it only writes down the dirty page table, and redo starts at the oldest recLSN in it. a postgres checkpoint writes every dirty page before it completes ([checkpoints](/learn/wal/checkpoints)), so "replay from where the last checkpoint started" is already a safe starting point, and there's no table to rebuild.
+
+**the same redo.** this part is ARIES all the way down: replay forward, compare each page's LSN with the record, skip what the page already has, repeat history including uncommitted changes. [crash recovery](/learn/wal/crash-recovery) has it on a real server, record by record. postgres adds full-page images, which make the comparison moot for the first touch of each page after a checkpoint.
+
+**no undo.** a postgres UPDATE never overwrites a row other transactions might need: it writes a new version and stamps the old one's xmax ([an UPDATE is an INSERT](/learn/mvcc/update-is-insert)). so after redo, a loser's changes are new versions whose xmin is the loser's xid, and old versions whose xmax is the loser's xid. neither needs touching. the loser has no commit record, so pg_xact reports it as aborted, and visibility rules ignore its versions and its xmax stamps alike. here's the page from that crash capture after the restart:
+
+<Figure wide caption={<>after recovery: slot 2 is the insert of a transaction that never committed. its xmin reads <C k="dead">aborted</C>, and it stays on the page, invisible, until VACUUM. no undo record was written to make that so.</>}>
+<PageView page={after.heap.notes[0]} xact={after.xact} layout="auto" focus={2} provenance="real postgres 18.6 output · a native server · traces/crash-recovery, after the restart" />
+</Figure>
+
+the same thing happens without a crash, every time you roll back. no change is reversed; the xid is marked aborted:
+
+```sql run db=lab
+BEGIN;
+UPDATE accounts SET balance = 0 WHERE id = 3;
+ROLLBACK;
+SELECT lp, t_xmin, t_xmax, pg_xact_status(t_xmax::text::xid8) AS xmax_status
+FROM heap_page_items(get_raw_page('accounts', 0))
+WHERE t_xmax <> 0 ORDER BY lp;
+SELECT lp, t_xmin, pg_xact_status(t_xmin::text::xid8) AS xmin_status
+FROM heap_page_items(get_raw_page('accounts', 0))
+WHERE lp > 3 ORDER BY lp;
+```
+
+carol's original tuple keeps the aborted xid in xmax, and the version the UPDATE wrote is still in slot 4, aborted. the old value was never touched, so there's nothing to put back.
+
+<Predict question="postgres crashes while a 10-million-row DELETE is running. how long does undoing it take at restart?" options={["about as long as the DELETE ran", "a few minutes per million rows", "no time: there's no undo"]} answer={2}>
+```sql
+BEGIN;
+DELETE FROM events;   -- 10,000,000 rows, crash halfway
+-- pg_ctl start
+```
+<Explain>
+no time. the DELETE stamped xmax on millions of tuples, and redo replays those stamps, but nothing reverses them: the transaction has no commit record, so it counts as aborted and every xmax it wrote is ignored. the rows are simply all there. an undo-based engine has to walk the undo log and restore every row before (or while) the database is usable; InnoDB, for one, rolls back incomplete transactions after its redo phase ([mysql manual](https://dev.mysql.com/doc/refman/8.4/en/innodb-recovery.html)). redo still has to replay however much WAL the DELETE wrote since the checkpoint, so that part is not free.
+</Explain>
+</Predict>
+
+## where the bill goes
+
+nothing is free. the undo work postgres skips at recovery and at rollback, it pays elsewhere:
+
+| | ARIES-style (InnoDB, SQL Server, DB2) | postgres |
+| --- | --- | --- |
+| rollback | reverse every change, logging CLRs | flip the xid to aborted in pg_xact |
+| restart after a crash | analysis, redo, then undo the losers | redo only |
+| old row versions live | in an undo log or version store | in the table itself |
+| cleanup | undo log purge | VACUUM, for aborted and dead versions alike |
+| price | big rollbacks and crash restarts are slow | tables and indexes bloat until VACUUM catches up |
+
+[MVCC with undo logs](/learn/mvcc/undo-logs) is the other side of this table: how InnoDB and oracle build old versions from undo, and what that costs readers.
+
+<Deep title="CLRs and why undo needs its own log records">
+suppose undo didn't log anything. recovery undoes T2's change to page P1, writing P1 back to its old value. it crashes again before finishing. next time around, redo runs first and repeats history: it re-applies T2's original change to P1 (the page's LSN says it's older than the record, because undo didn't bump it). then undo has to undo it again, which works, but only because undo is idempotent here. with logical undo (undoing an insert in a b-tree that has since split, say) that stops being true. CLRs fix it: undoing a change is a logged change with its own LSN, redo repeats CLRs like any other record, and each CLR's undoNextLSN tells undo where to resume, skipping what was already undone. the bounded amount of log written during undo is one of the paper's selling points.
+</Deep>
+
+<Interview q="explain ARIES, and why postgres doesn't need an undo phase.">
+ARIES uses write-ahead logging with a steal, no-force buffer policy, so after a crash the disk can have uncommitted changes (steal) and miss committed ones (no-force). recovery runs analysis (from the last fuzzy checkpoint, rebuild the transaction table and dirty page table, find losers), redo (from the smallest recLSN, repeat history by applying every logged change whose page LSN is older, including losers'), and undo (roll back losers in reverse LSN order, writing compensation log records so a crash during undo never undoes twice). postgres uses the same WAL and redo idea but no analysis pass, because its checkpoints flush all dirty pages, and no undo pass, because MVCC never overwrites a version another transaction might need: an uncommitted transaction's new versions and xmax stamps are ignored once pg_xact says it aborted. the cost moves to VACUUM, which removes the dead and aborted versions later.
+</Interview>
+
+<Keylines>
+- ARIES: analysis, redo, undo. repeat history, then roll back the losers.
+- CLRs log each undo, with undoNextLSN, so a crash during undo never undoes twice.
+- postgres skips analysis: its checkpoints write every dirty page, so the redo pointer is enough.
+- postgres skips undo: no version is overwritten, and an aborted xid makes its versions invisible.
+- the price of no undo is VACUUM.
+</Keylines>

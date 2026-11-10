@@ -1,0 +1,111 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { DeadlockGraph } from "@/components/figures/transactions/DeadlockGraph";
+import deadlock from "./traces/deadlock.pgtrace.json";
+import ordered from "./traces/deadlock-ordered.pgtrace.json";
+
+{/* both runs are captured on a real postgres 18.6 server with two sessions
+    (traces/deadlock*.scenario.sql). T1 runs with deadlock_timeout = 10s and T2 with 10ms,
+    so the same session is cancelled on every run. the lock list is pg_locks after each step. */}
+
+export const dlErr = deadlock.steps.find((s) => s.error).error;
+export const dlText = `ERROR:  ${dlErr.message}\nDETAIL:  ${dlErr.detail.replace("\n", "\n         ")}`;
+
+<InShort>
+a **deadlock** is two transactions each holding a lock the other one is waiting for. neither can ever move. postgres notices after **deadlock_timeout** (1 s by default), cancels one of them with SQLSTATE **40P01**, and the other carries on. the fix is boring and it works: take locks in the **same order** everywhere, and retry the 40P01s that still happen.
+</InShort>
+
+## the picture
+
+you know the corridor dance: two people meet in a narrow hallway, each steps aside for the other, in the same direction, forever. a deadlock is that, minus the stepping aside. each one holds its ground and waits for the other.
+
+two transfers run at once. T1 moves 10 from alice to bob, T2 moves 30 from bob to alice. each takes money from its source first, which locks that row. then each needs the other's source row.
+
+<Figure wide caption={<>step through both. in <C k="dead">opposite order</C>, T1 waits for T2, T2 waits for T1, and postgres cancels T2. in <C k="live">lower id first</C>, T2 queues behind T1 on alice's row and nobody is cancelled. the list on the right is pg_locks after each step: <C k="meta">held</C>, or dashed and waiting.</>}>
+<TxLanes
+  option="lock order"
+  side="locks"
+  locks={["transactionid", "tuple"]}
+  runs={[
+    { label: "opposite order", trace: deadlock, verdict: { ok: false, what: "deadlock", text: "T2 got 40P01 and rolled back. alice 90.00, bob 110.00: T1's transfer happened, T2's has to be retried." } },
+    { label: "lower id first", trace: ordered, verdict: { ok: true, what: "deadlock", text: "T2 waited for T1 once and then finished. alice 120.00, bob 80.00: both transfers happened." } },
+  ]}
+/>
+</Figure>
+
+## what postgres saw
+
+a row lock wait is really a wait for a transaction. T1 can't touch bob's row until T2 ends, so it asks for a ShareLock on T2's transaction id, which T2 holds exclusively until it commits or rolls back. ([how row locks are stored](/learn/locking/row-lock-internals) explains why it's the xid and not the row.) once T2 asks for T1's transaction id the same way, the waits form a loop:
+
+<Figure caption={<>the wait-for graph at the moment of the deadlock, built from the error's DETAIL lines. each session holds its own <C k="meta">transaction id</C> lock and waits for the other's. the <C k="dead">dashed</C> waits close a cycle.</>}>
+<DeadlockGraph trace={deadlock} />
+</Figure>
+
+and here's what T2 got, word for word. on a real server the two "process" names are pids; the capture swaps them for session names so it repeats exactly:
+
+<Figure caption={<>T2's error, SQLSTATE 40P01. the DETAIL lines are the cycle, one wait per line.</>}>
+<SqlPanel code={dlText} lang="text" nolines file="T2: UPDATE accounts SET balance = balance + 30 WHERE id = 1" />
+</Figure>
+
+nobody checks for cycles on every lock request. that would be expensive, and almost every wait ends on its own. instead a backend that has been waiting for `deadlock_timeout` runs the check itself, and if it finds a cycle, the transaction it cancels is its own. that's why this capture gives T2 a 10 ms timeout and T1 ten seconds: T2's check runs first, so T2 is the one cancelled, every run. on your server, don't count on which one it'll be. [inside the deadlock detector](/learn/locking/deadlock-detection) has the rest.
+
+```sql run
+SHOW deadlock_timeout;
+```
+
+<Predict question="T2 was cancelled after it had already taken 30 from bob. what happens to that first UPDATE?" options={["it stays: it ran fine", "it's rolled back with the rest", "it commits when T2 retries"]} answer={1}>
+```sql
+/* T2 */ BEGIN;
+/* T2 */ UPDATE accounts SET balance = balance - 30 WHERE id = 2;  -- UPDATE 1
+/* T2 */ UPDATE accounts SET balance = balance + 30 WHERE id = 1;  -- ERROR 40P01
+/* T2 */ ROLLBACK;
+```
+<Explain>
+rolled back. the 40P01 aborts the whole transaction, not the statement: from there on T2 can only ROLLBACK, and its locks are released, which is exactly what lets T1 continue. bob gets his 30 back (the final state is alice 90.00, bob 110.00, only T1's transfer). a retry runs the whole transfer again from BEGIN.
+</Explain>
+</Predict>
+
+## the fix: same order, every time
+
+a cycle needs two transactions that take the same locks in different orders. take them in one global order (lower account id first, say) and the second transaction blocks on the *first* lock it needs, while holding nothing the other one wants. it waits, it doesn't deadlock. that's the second run in the figure.
+
+in a transfer that means: lock both rows up front, in id order, then do the updates in whatever order reads naturally. `ORDER BY ... FOR UPDATE` does the locking in one statement:
+
+```sql run db=bank
+BEGIN;
+SELECT id, owner, balance FROM accounts
+WHERE id IN (2, 1)
+ORDER BY id
+FOR UPDATE;
+UPDATE accounts SET balance = balance - 30.00 WHERE id = 2;
+UPDATE accounts SET balance = balance + 30.00 WHERE id = 1;
+COMMIT;
+```
+
+the order matters because of where the locking happens. the LockRows node sits on top of the plan and locks each row as it comes out, so it locks in the order the rows arrive:
+
+```sql run db=bank
+EXPLAIN (COSTS OFF)
+SELECT id FROM accounts WHERE id IN (2, 1) ORDER BY id FOR UPDATE;
+```
+
+see? LockRows on top, and under it an index scan on the primary key, which hands the rows over in id order whatever order the IN list says. so alice is locked before bob, in every transfer that asks this way.
+
+<Gotcha title="the deadlocks you didn't write">
+a plain `UPDATE accounts SET ... WHERE id IN (...)` locks rows in whatever order the scan finds them, not the order you listed, so two bulk updates over overlapping sets can deadlock. lock the set first with `SELECT ... ORDER BY id FOR UPDATE`. foreign keys take locks too: inserting a transfer locks its two accounts (FOR KEY SHARE), so mixing transfer inserts with account updates in different orders can close a cycle. and an application that runs one transaction per request but touches tables in a different order per endpoint will find every combination eventually.
+</Gotcha>
+
+## and still retry
+
+ordering removes the deadlocks you can see. the ones left (a trigger, a foreign key, two code paths someone forgot to align) show up as 40P01, and a 40P01 means the same as a 40001: nothing happened, run the whole transaction again. the postgres manual suggests retrying deadlock failures too. [retrying serialization failures](/learn/transactions/retry-loops) has the loop. if what you want instead is to give up waiting after a while, that's `lock_timeout`, a different tool: it fires on any long wait, cycle or not ([the lock queue](/learn/locking/lock-queue)).
+
+<Interview q="how does postgres handle deadlocks, and how do you avoid them?">
+it doesn't prevent them, it detects them. a backend that has waited for a lock longer than deadlock_timeout (1 s by default) builds the wait-for graph; if it finds a cycle, it cancels its own transaction with 40P01 (deadlock_detected), whose DETAIL lists who waited for whom. the other transaction then gets its lock and continues. to avoid them, acquire locks in a consistent order (sort by primary key, or lock everything up front with SELECT ... ORDER BY id FOR UPDATE), keep transactions short, and treat 40P01 like 40001: roll back and retry the whole transaction. bonus point: deadlock_timeout isn't a timeout on the lock, it's how long a backend waits before paying for the cycle check.
+</Interview>
+
+<Keylines>
+- a deadlock is a cycle of waits. nobody in it can move on their own.
+- postgres checks after deadlock_timeout, finds the cycle, and cancels one transaction: 40P01.
+- a row lock wait is a wait for the holder's transaction id. the DETAIL lines say so.
+- take locks in one order everywhere: lower id first, or SELECT ... ORDER BY id FOR UPDATE.
+- 40P01 means nothing happened. retry the whole transaction.
+</Keylines>

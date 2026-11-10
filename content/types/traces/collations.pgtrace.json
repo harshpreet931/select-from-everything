@@ -1,0 +1,100 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/collations.scenario.sql",
+ "title": "one list sorted under three collations, and five ways to compare without case, on a real server",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {"words":{"kind":"table","am":"heap","columns":[{"name":"w","type":"text"}]}},
+ "base": {"xid":762,"lsn":23632544},
+ "setup": "CREATE TABLE words (w text);\nINSERT INTO words VALUES ('apple'), ('Banana'), ('cherry'), ('ost'), ('Öl'), ('zebra'), ('zoe'), ('Zoë'), ('Ångström');\nCREATE EXTENSION citext;\nCREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);\nCREATE COLLATION ai_ci (provider = icu, locale = 'und-u-ks-level1', deterministic = false);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT w FROM words ORDER BY w COLLATE \"C\"",
+   "note": "C: byte order. every capital before every small letter, and anything accented after z.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [{"name":"w","type":"text"}],
+    "data": [["Banana"],["Zoë"],["apple"],["cherry"],["ost"],["zebra"],["zoe"],["Ångström"],["Öl"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT w FROM words ORDER BY w COLLATE \"en-US-x-icu\"",
+   "note": "english: letters first, then accents, then case. Å is an A with a ring, Ö an O with dots, so they sort with A and O.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [{"name":"w","type":"text"}],
+    "data": [["Ångström"],["apple"],["Banana"],["cherry"],["Öl"],["ost"],["zebra"],["zoe"],["Zoë"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT w FROM words ORDER BY w COLLATE \"sv-SE-x-icu\"",
+   "note": "swedish: Å and Ö are letters of their own, after z. Ångström and Öl go to the end.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [{"name":"w","type":"text"}],
+    "data": [["apple"],["Banana"],["cherry"],["ost"],["zebra"],["zoe"],["Zoë"],["Ångström"],["Öl"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT m.method, m.a AS \"zoe, ZOE\", m.b AS \"Zoë, ZOË\", m.c AS \"zoe, Zoë\"\nFROM (VALUES\n  (1, 'a = b',               'zoe' = 'ZOE',                   'Zoë' = 'ZOË',                   'zoe' = 'Zoë'),\n  (2, 'lower(a) = lower(b)', lower('zoe') = lower('ZOE'),     lower('Zoë') = lower('ZOË'),     lower('zoe') = lower('Zoë')),\n  (3, 'citext',              'zoe'::citext = 'ZOE'::citext,   'Zoë'::citext = 'ZOË'::citext,   'zoe'::citext = 'Zoë'::citext),\n  (4, 'COLLATE ci',          'zoe' = 'ZOE' COLLATE ci,        'Zoë' = 'ZOË' COLLATE ci,        'zoe' = 'Zoë' COLLATE ci),\n  (5, 'COLLATE ai_ci',       'zoe' = 'ZOE' COLLATE ai_ci,     'Zoë' = 'ZOË' COLLATE ai_ci,     'zoe' = 'Zoë' COLLATE ai_ci)\n) AS m (n, method, a, b, c)\nORDER BY m.n",
+   "note": "three pairs, five ways to compare them. this server's ctype is C, so lower() and citext only fold ASCII letters.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"method","type":"text"},
+     {"name":"zoe, ZOE","type":"bool"},
+     {"name":"Zoë, ZOË","type":"bool"},
+     {"name":"zoe, Zoë","type":"bool"}
+    ],
+    "data": [
+     ["a = b","f","f","f"],
+     ["lower(a) = lower(b)","t","f","f"],
+     ["citext","t","f","f"],
+     ["COLLATE ci","t","t","f"],
+     ["COLLATE ai_ci","t","t","t"]
+    ]
+   }
+  }
+ ]
+}

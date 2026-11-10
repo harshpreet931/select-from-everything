@@ -1,0 +1,148 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "bca751210bf316eb": {
+      "db": "shop",
+      "sql": "SELECT category, count(*) AS products\nFROM products\nGROUP BY category\nHAVING price > 100;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42803",
+            "message": "column \"products.price\" must appear in the GROUP BY clause or be used in an aggregate function",
+            "position": 78
+          },
+          "digest": "48474c8d7e40979f"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42803",
+        "message": "column \"products.price\" must appear in the GROUP BY clause or be used in an aggregate function",
+        "position": 78,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "25bb646b119c0d65": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM products HAVING count(*) > 1000;\nSELECT count(*) FROM products HAVING count(*) > 100;",
+      "statements": [
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 0,
+          "digest": "0ddf3a9717890f44",
+          "rows": []
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "cb82aa49a0f22180",
+          "rows": [
+            ["200"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b6188d545d1cdea4": {
+      "db": "shop",
+      "sql": "SELECT category, count(*) AS products\nFROM products\nGROUP BY category\nHAVING category = 'kitchen';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["products", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "cbe40368db27a9a7",
+          "rows": [
+            ["kitchen", "19"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c1d5dc9dc967b852": {
+      "db": "shop",
+      "sql": "SELECT category, count(*) AS products\nFROM products\nWHERE category = 'kitchen'\nGROUP BY category;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["products", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "cbe40368db27a9a7",
+          "rows": [
+            ["kitchen", "19"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5a5b0af89fa07857": {
+      "db": "shop",
+      "sql": "SELECT lower(email) AS email, count(*) AS customers\nFROM customers\nGROUP BY lower(email)\nHAVING count(*) > 1\nORDER BY email NULLS FIRST;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["email", "text", 25],
+            ["customers", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "5bb99b316741171b",
+          "rows": [
+            [null, "46"],
+            ["zoe.martin@example.com", "2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aafddfc188a48b72": {
+      "db": "shop",
+      "sql": "SELECT lower(email) AS email, count(*) AS customers\nFROM customers\nWHERE email IS NOT NULL\nGROUP BY lower(email)\nHAVING count(*) > 1\nORDER BY email;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["email", "text", 25],
+            ["customers", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "67a2f451cc47737e",
+          "rows": [
+            ["zoe.martin@example.com", "2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

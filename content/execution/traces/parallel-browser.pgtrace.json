@@ -1,0 +1,76 @@
+{
+ "v": 1,
+ "scenario": "content/execution/traces/parallel-browser.scenario.sql",
+ "title": "the same parallel-friendly settings in the browser engine, which has no worker processes",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT current_setting('max_worker_processes') AS max_worker_processes,\n       current_setting('max_parallel_workers') AS max_parallel_workers",
+   "note": "the browser engine is one process with no room for background workers.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"max_worker_processes","type":"text"},{"name":"max_parallel_workers","type":"text"}],
+    "data": [["0","0"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SET max_parallel_workers_per_gather = 4;\nSET min_parallel_table_scan_size = 0;\nSET parallel_setup_cost = 0;\nSET parallel_tuple_cost = 0;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM events",
+   "note": "the same settings and query as on the server. the planner still plans 4 workers; none can start, so the leader scans all of events alone.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Finalize Aggregate (actual rows=1.00 loops=1)"],
+     ["  Buffers: shared read=335"],
+     ["  ->  Gather (actual rows=1.00 loops=1)"],
+     ["        Workers Planned: 4"],
+     ["        Workers Launched: 0"],
+     ["        Buffers: shared read=335"],
+     ["        ->  Partial Aggregate (actual rows=1.00 loops=1)"],
+     ["              Buffers: shared read=335"],
+     ["              ->  Parallel Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["                    Buffers: shared read=335"],
+     ["Planning:"],
+     ["  Buffers: shared hit=15 read=2"]
+    ]
+   }
+  }
+ ],
+ "db": "events"
+}

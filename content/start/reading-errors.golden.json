@@ -1,0 +1,395 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "84490783b1ee0521": {
+      "db": "shop",
+      "sql": "SELECT nmae\nFROM customers\nWHERE id = 42;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42703",
+            "message": "column \"nmae\" does not exist",
+            "hint": "Perhaps you meant to reference the column \"customers.name\".",
+            "position": 8
+          },
+          "digest": "ade3c7fa32814f33"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42703",
+        "message": "column \"nmae\" does not exist",
+        "hint": "Perhaps you meant to reference the column \"customers.name\".",
+        "position": 8,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "b056d09e02305ef0": {
+      "db": "shop",
+      "sql": "SELECT name FROM customers WHERE id = 'forty-two';",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22P02",
+            "message": "invalid input syntax for type integer: \"forty-two\"",
+            "position": 39
+          },
+          "digest": "1c16e11ce692a317"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22P02",
+        "message": "invalid input syntax for type integer: \"forty-two\"",
+        "position": 39,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "cf71e283df4b85f1": {
+      "db": "shop",
+      "sql": "SELECT name, city, FROM customers;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42601",
+            "message": "syntax error at or near \"FROM\"",
+            "position": 20
+          },
+          "digest": "e49c3ff8e144b9e3"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42601",
+        "message": "syntax error at or near \"FROM\"",
+        "position": 20,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "41543ce5dbb2d710": {
+      "db": "shop",
+      "sql": "SELECT name email, city FROM customers WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["email", "text", 25],
+            ["city", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "96509b02c50a09bb",
+          "rows": [
+            ["Ada Lovelace", "London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "072054057d30905a": {
+      "db": "shop",
+      "sql": "INSERT INTO orders (customer_id, status, ordered_at)\nVALUES (99999, 'placed', '2026-10-28 09:00+00');",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23503",
+            "message": "insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"",
+            "detail": "Key (customer_id)=(99999) is not present in table \"customers\".",
+            "schema": "public",
+            "table": "orders",
+            "constraint": "orders_customer_id_fkey"
+          },
+          "digest": "621d74a509087873"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23503",
+        "message": "insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"",
+        "detail": "Key (customer_id)=(99999) is not present in table \"customers\".",
+        "schema": "public",
+        "table": "orders",
+        "constraint": "orders_customer_id_fkey",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "8343de3770c578a7": {
+      "db": "shop",
+      "sql": "DELETE FROM customers WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23503",
+            "message": "update or delete on table \"customers\" violates foreign key constraint \"orders_customer_id_fkey\" on table \"orders\"",
+            "detail": "Key (id)=(42) is still referenced from table \"orders\".",
+            "schema": "public",
+            "table": "orders",
+            "constraint": "orders_customer_id_fkey"
+          },
+          "digest": "e97aa570e96349b3"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23503",
+        "message": "update or delete on table \"customers\" violates foreign key constraint \"orders_customer_id_fkey\" on table \"orders\"",
+        "detail": "Key (id)=(42) is still referenced from table \"orders\".",
+        "schema": "public",
+        "table": "orders",
+        "constraint": "orders_customer_id_fkey",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "76667aceac74c3eb": {
+      "db": "shop",
+      "sql": "UPDATE orders SET status = 'lost' WHERE id = 1;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23514",
+            "message": "new row for relation \"orders\" violates check constraint \"orders_status_check\"",
+            "detail": "Failing row contains (1, 1, lost, 2025-07-01 01:24:00+00, null).",
+            "schema": "public",
+            "table": "orders",
+            "constraint": "orders_status_check"
+          },
+          "digest": "63ed94f39a249bdd"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23514",
+        "message": "new row for relation \"orders\" violates check constraint \"orders_status_check\"",
+        "detail": "Failing row contains (1, 1, lost, 2025-07-01 01:24:00+00, null).",
+        "schema": "public",
+        "table": "orders",
+        "constraint": "orders_status_check",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "114734988a4e183a": {
+      "db": "shop",
+      "sql": "SELECT lenght(name) FROM customers WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42883",
+            "message": "function lenght(text) does not exist",
+            "hint": "No function matches the given name and argument types. You might need to add explicit type casts.",
+            "position": 8
+          },
+          "digest": "4d00c908bd287c59"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42883",
+        "message": "function lenght(text) does not exist",
+        "hint": "No function matches the given name and argument types. You might need to add explicit type casts.",
+        "position": 8,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "1a8cf2513ea38f96": {
+      "db": "shop",
+      "sql": "SELECT country, name, count(*) FROM customers GROUP BY country;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42803",
+            "message": "column \"customers.name\" must appear in the GROUP BY clause or be used in an aggregate function",
+            "position": 17
+          },
+          "digest": "6d361b42b83b2749"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42803",
+        "message": "column \"customers.name\" must appear in the GROUP BY clause or be used in an aggregate function",
+        "position": 17,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "934ac7c46a5c4e0d": {
+      "db": "shop",
+      "sql": "DO $$\nBEGIN\n  INSERT INTO customers (name, email, country, created_at)\n  VALUES ('Ada Again', 'ada@example.com', 'GB', '2026-10-28 09:00+00');\nEXCEPTION WHEN unique_violation THEN\n  RAISE NOTICE 'caught %: %', SQLSTATE, SQLERRM;\nEND $$;",
+      "statements": [
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "notices": [
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "caught 23505: duplicate key value violates unique constraint \"customers_email_key\"",
+              "where": "PL/pgSQL function inline_code_block line 6 at RAISE"
+            }
+          ],
+          "digest": "4e375c3119b94973"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9a91fe2b305d7db2": {
+      "db": "shop",
+      "sql": "UPDATE products SET price = price / (100 - id);\nSELECT id, price FROM products WHERE id IN (1, 99, 101) ORDER BY id;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22012",
+            "message": "division by zero"
+          },
+          "digest": "441deb7f36bf060e"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["price", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "7d51f12dcbb8d49d",
+          "rows": [
+            ["1", "49.00"],
+            ["99", "135.48"],
+            ["101", "177.05"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22012",
+        "message": "division by zero",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "cf4ccc0fdb3cd5d4": {
+      "db": "shop",
+      "sql": "BEGIN;\nSELECT nmae FROM customers;\nSELECT name FROM customers WHERE id = 42;\nROLLBACK;\nSELECT name FROM customers WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42703",
+            "message": "column \"nmae\" does not exist",
+            "hint": "Perhaps you meant to reference the column \"customers.name\".",
+            "position": 8
+          },
+          "digest": "3a5c7a08f0d03fe0"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "25P02",
+            "message": "current transaction is aborted, commands ignored until end of transaction block"
+          },
+          "digest": "cb986a103a8927cb"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8948f71c140383d6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "34a9032cc330de04",
+          "rows": [
+            ["Ada Lovelace"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42703",
+        "message": "column \"nmae\" does not exist",
+        "hint": "Perhaps you meant to reference the column \"customers.name\".",
+        "position": 8,
+        "statement": 1
+      },
+      "txn": "I"
+    }
+  }
+}

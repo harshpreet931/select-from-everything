@@ -1,0 +1,281 @@
+{
+ "v": 1,
+ "scenario": "content/indexes/traces/text-search.scenario.sql",
+ "title": "from a sentence to lexemes, from lexemes to rows, and a GIN index over 20,000 reviews",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "reviews": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"product_id","type":"int4"},
+    {"name":"body","type":"text"},
+    {"name":"doc","type":"tsvector"}
+   ]
+  },
+  "reviews_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"reviews"},
+  "reviews_doc": {"kind":"index","am":"gin","columns":[{"name":"doc","type":"text"}],"on":"reviews"}
+ },
+ "base": {"xid":804,"lsn":41652608},
+ "setup": "CREATE TABLE reviews (id int PRIMARY KEY, product_id int NOT NULL, body text NOT NULL);\nINSERT INTO reviews\nSELECT i, p.id,\n       'the ' || p.name || ' ' || (ARRAY['arrived quickly and works well', 'broke after a week', 'is smaller than it looks',\n         'is great value for the price', 'has a handle that wobbles', 'pours the wrong way', 'stopped working after a month',\n         'is exactly as described', 'is too heavy to carry', 'makes a terrible noise', 'was a gift and they loved it',\n         'feels cheap but does the job'])[1 + ((hashint4(i)::bigint + 2147483648) % 12)::int]\nFROM generate_series(1, 20000) AS i\nJOIN products AS p ON p.id = 1 + (i * 37) % 199\nORDER BY i;\nALTER TABLE reviews ADD COLUMN doc tsvector GENERATED ALWAYS AS (to_tsvector('english', body)) STORED;\nCREATE INDEX reviews_doc ON reviews USING gin (doc);\nVACUUM ANALYZE reviews;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT alias, token, lexemes\nFROM ts_debug('english', 'The left-handed teapots pour the other way')\nWHERE alias <> 'blank'",
+   "note": "how the english configuration takes a sentence apart: each token, the dictionary that handled it, and the lexeme it became.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [{"name":"alias","type":"text"},{"name":"token","type":"text"},{"name":"lexemes","type":"_text"}],
+    "data": [
+     ["asciiword","The","{}"],
+     ["asciihword","left-handed","{left-hand}"],
+     ["hword_asciipart","left","{left}"],
+     ["hword_asciipart","handed","{hand}"],
+     ["asciiword","teapots","{teapot}"],
+     ["asciiword","pour","{pour}"],
+     ["asciiword","the","{}"],
+     ["asciiword","other","{}"],
+     ["asciiword","way","{way}"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT lexeme, count(*) AS products, array_agg(id ORDER BY id) AS ids\nFROM products, unnest(to_tsvector('english', name)) AS u\nWHERE lexeme IN ('steel', 'teapot', 'whisk', 'pan', 'knife', 'speaker')\nGROUP BY lexeme\nORDER BY lexeme",
+   "note": "an inverted index, by hand: every lexeme in product names, and the products that contain it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [{"name":"lexeme","type":"text"},{"name":"products","type":"int8"},{"name":"ids","type":"_int4"}],
+    "data": [
+     ["knife","1","{1}"],
+     ["pan","1","{2}"],
+     ["speaker","6","{40,99,109,112,140,195}"],
+     ["steel","8","{56,74,99,134,135,162,173,186}"],
+     ["teapot","1","{200}"],
+     ["whisk","5","{9,19,52,136,157}"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id, body FROM reviews WHERE doc @@ to_tsquery('english', 'whisk & wobble')",
+   "note": "whisk reviews that mention a wobble: the GIN index looks up both lexemes, intersects their lists, and only those rows are fetched.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "reviews",
+     "Alias": "reviews",
+     "Startup Cost": 21.67,
+     "Total Cost": 141.03,
+     "Plan Rows": 40,
+     "Plan Width": 48,
+     "Actual Rows": 38,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Recheck Cond": "(doc @@ '''whisk'' & ''wobbl'''::tsquery)",
+     "Rows Removed by Index Recheck": 0,
+     "Exact Heap Blocks": 37,
+     "Lossy Heap Blocks": 0,
+     "Shared Hit Blocks": 42,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "reviews_doc",
+       "Startup Cost": 0,
+       "Total Cost": 21.66,
+       "Plan Rows": 40,
+       "Plan Width": 0,
+       "Actual Rows": 38,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Index Cond": "(doc @@ '''whisk'' & ''wobbl'''::tsquery)",
+       "Index Searches": 1,
+       "Shared Hit Blocks": 5,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 35,
+     "Shared Read Blocks": 1,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT id, body FROM reviews WHERE to_tsvector('simple', body) @@ to_tsquery('simple', 'whisk & wobbles')",
+   "note": "the same search on a tsvector computed on the fly with another configuration: nothing indexes that expression, so every row is parsed.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "reviews",
+     "Alias": "reviews",
+     "Startup Cost": 0,
+     "Total Cost": 5637,
+     "Plan Rows": 1,
+     "Plan Width": 48,
+     "Actual Rows": 38,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Filter": "(to_tsvector('simple'::regconfig, body) @@ '''whisk'' & ''wobbles'''::tsquery)",
+     "Rows Removed by Filter": 19962,
+     "Shared Hit Blocks": 387,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 21,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT round(ts_rank(doc, q)::numeric, 4) AS rank, count(*) AS reviews, min(body) AS example\nFROM reviews, to_tsquery('english', 'whisk | wobble') AS q\nWHERE doc @@ q\nGROUP BY 1\nORDER BY 1 DESC",
+   "note": "ranking 'whisk or wobble': how many reviews get each score.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"rank","type":"numeric"},{"name":"reviews","type":"int8"},{"name":"example","type":"text"}],
+    "data": [
+     ["0.0608","38","the compact whisk has a handle that wobbles"],
+     ["0.0304","2032","the bamboo binder has a handle that wobbles"]
+    ]
+   }
+  }
+ ],
+ "db": "shop"
+}

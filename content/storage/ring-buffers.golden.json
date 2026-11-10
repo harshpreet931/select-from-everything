@@ -1,0 +1,84 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ff3327fdfd95ca79": {
+      "db": "events",
+      "sql": "SHOW shared_buffers;\nSELECT sum(length(kind)) FROM events;\nSELECT count(*) AS frames FROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('events') AND relforknumber = 0;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["shared_buffers", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2c10687bf030554b",
+          "rows": [
+            ["128MB"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["sum", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "fbc32d44098b64e3",
+          "rows": [
+            ["132117"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["frames", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "d2b40bc5d96b4429",
+          "rows": [
+            ["335"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6bd6c259be8d3c56": {
+      "db": "lab",
+      "sql": "SHOW vacuum_buffer_usage_limit;\nVACUUM (BUFFER_USAGE_LIMIT '256kB') notes;\nVACUUM (BUFFER_USAGE_LIMIT 0) notes;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["vacuum_buffer_usage_limit", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a2065e0294948c1f",
+          "rows": [
+            ["2MB"]
+          ]
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "3e0b59b8463f41c3"
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c974f9299f9460f6"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

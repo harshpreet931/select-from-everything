@@ -1,0 +1,123 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/advisory-cron.scenario.sql",
+ "title": "a nightly job on two servers, kept to one run at a time with advisory lock 42",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["A","B"],
+ "rels": {},
+ "base": {"xid":757,"lsn":23121704},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "A",
+   "sql": "SELECT pg_try_advisory_lock(42)",
+   "note": "the nightly report starts on server A. it asks for advisory lock 42 without waiting: true, A has it.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_try_advisory_lock","type":"bool"}],"data":[["t"]]},
+   "locks": [{"session":"A","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 1,
+   "session": "B",
+   "sql": "SELECT pg_try_advisory_lock(42)",
+   "note": "the same cron entry fires on server B a moment later. same question: false. someone else has it, so B skips tonight's run.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_try_advisory_lock","type":"bool"}],"data":[["f"]]},
+   "locks": [{"session":"A","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 2,
+   "session": "A",
+   "sql": "SELECT pg_advisory_unlock(42)",
+   "note": "A finishes the report and lets go of the lock.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_unlock","type":"bool"}],"data":[["t"]]},
+   "locks": []
+  },
+  {
+   "i": 3,
+   "session": "B",
+   "sql": "SELECT pg_try_advisory_lock(42)",
+   "note": "if B asks now, it gets it.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_try_advisory_lock","type":"bool"}],"data":[["t"]]},
+   "locks": [{"session":"B","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 4,
+   "session": "B",
+   "sql": "SELECT pg_advisory_unlock(42)",
+   "note": "B is done too.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_unlock","type":"bool"}],"data":[["t"]]},
+   "locks": []
+  },
+  {
+   "i": 5,
+   "session": "A",
+   "sql": "SELECT pg_advisory_lock(42)",
+   "note": "a different job would rather wait than skip. A takes lock 42 with pg_advisory_lock.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_lock","type":"void"}],"data":[[""]]},
+   "locks": [{"session":"A","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 6,
+   "session": "B",
+   "sql": "SELECT pg_advisory_lock(42)",
+   "note": "B asks with pg_advisory_lock too, and waits for A, like it would for a row.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["A"],
+    "lock": {"session":"B","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":false}
+   },
+   "locks": [
+    {"session":"A","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true},
+    {"session":"B","type":"virtualxid","target":"5/7","mode":"ExclusiveLock","granted":true},
+    {"session":"B","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":false}
+   ]
+  },
+  {
+   "i": 7,
+   "session": "A",
+   "sql": "SELECT pg_advisory_unlock(42)",
+   "note": "A unlocks. B's pg_advisory_lock returns, and B holds 42 now.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_unlock","type":"bool"}],"data":[["t"]]},
+   "woke": [
+    {
+     "session": "B",
+     "step": 6,
+     "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_lock","type":"void"}],"data":[[""]]}
+    }
+   ],
+   "locks": [{"session":"B","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true}]
+  }
+ ]
+}

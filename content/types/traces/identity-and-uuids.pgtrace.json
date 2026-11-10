@@ -1,0 +1,141 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/identity-and-uuids.scenario.sql",
+ "title": "an identity column's sequence pushed off course and put back, two uuids taken apart, and where 1,000 inserts land in three b-trees",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "teas": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"name","type":"text"}]},
+  "teas_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"teas"},
+  "r": {"kind":"table","am":"heap","columns":[{"name":"id","type":"uuid"},{"name":"n","type":"int4"}]},
+  "r_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"uuid"}],"on":"r"},
+  "t": {"kind":"table","am":"heap","columns":[{"name":"id","type":"uuid"},{"name":"n","type":"int4"}]},
+  "t_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"uuid"}],"on":"t"},
+  "g": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int8"},{"name":"n","type":"int4"}]},
+  "g_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"g"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE teas (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL);\nINSERT INTO teas (name) VALUES ('assam'), ('sencha');\nSELECT id, name, (SELECT last_value FROM teas_id_seq) AS seq_last_value FROM teas ORDER BY id",
+   "note": "an identity column, two rows. the sequence behind it has handed out 1 and 2.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"seq_last_value","type":"int8"}],
+    "data": [["1","assam","2"],["2","sencha","2"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO teas (id, name) OVERRIDING SYSTEM VALUE VALUES (3, 'oolong');\nSELECT id, name, (SELECT last_value FROM teas_id_seq) AS seq_last_value FROM teas ORDER BY id",
+   "note": "OVERRIDING SYSTEM VALUE puts an id in by hand. the sequence doesn't hear about it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"seq_last_value","type":"int8"}],
+    "data": [["1","assam","2"],["2","sencha","2"],["3","oolong","2"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO teas (name) VALUES ('rooibos')",
+   "note": "the next ordinary insert takes 3 from the sequence, and 3 is taken.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"teas_pkey\"",
+    "detail": "Key (id)=(3) already exists."
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT setval(pg_get_serial_sequence('teas', 'id'), (SELECT max(id) FROM teas));\nSELECT id, name, (SELECT last_value FROM teas_id_seq) AS seq_last_value FROM teas ORDER BY id",
+   "note": "setval moves the sequence to the highest id in the table. (the failed insert used up 3 already.)",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"seq_last_value","type":"int8"}],
+    "data": [["1","assam","3"],["2","sencha","3"],["3","oolong","3"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO teas (name) VALUES ('rooibos');\nSELECT id, name, (SELECT last_value FROM teas_id_seq) AS seq_last_value FROM teas ORDER BY id",
+   "note": "and inserts work again, from 4.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"seq_last_value","type":"int8"}],
+    "data": [["1","assam","4"],["2","sencha","4"],["3","oolong","4"],["4","rooibos","4"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nSELECT u AS uuid, uuid_extract_version(u) AS version, uuid_extract_timestamp(u) AS embedded_time,\n       ('x' || lpad(left(replace(u::text, '-', ''), 12), 16, '0'))::bit(64)::bigint AS first_48_bits\nFROM (VALUES (1, '7c9e6679-7425-40de-944b-e07fc1f90ae7'::uuid), (2, '019a2b64-7f20-7b3c-9a1d-4e5f60718293'::uuid)) AS v (n, u)\nORDER BY n",
+   "note": "two uuids taken apart: the version postgres reads from each, and the timestamp a version 7 carries in its first 48 bits.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"uuid","type":"uuid"},
+     {"name":"version","type":"int2"},
+     {"name":"embedded_time","type":"timestamptz"},
+     {"name":"first_48_bits","type":"int8"}
+    ],
+    "data": [
+     ["7c9e6679-7425-40de-944b-e07fc1f90ae7","4",null,"137019765912613"],
+     ["019a2b64-7f20-7b3c-9a1d-4e5f60718293","7","2025-10-28 15:16:37.792+00","1761664597792"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "CREATE TABLE r (id uuid PRIMARY KEY, n int);\nCREATE TABLE t (id uuid PRIMARY KEY, n int);\nCREATE TABLE g (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, n int);\nINSERT INTO r SELECT md5(i::text)::uuid, i FROM generate_series(1, 20000) AS i;\nINSERT INTO t SELECT uuidv7(), i FROM generate_series(1, 20000) AS i;\nINSERT INTO g (n) SELECT i FROM generate_series(1, 20000) AS i",
+   "note": "three tables, 20,000 rows each: a random uuid key (md5 of the row number, so the run repeats), uuidv7(), and a bigint identity.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":20000,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "WITH k (n, key, idx) AS (VALUES (1, 'random uuid', 'r_pkey'), (2, 'uuidv7', 't_pkey'), (3, 'bigint', 'g_pkey')),\nleaves AS (\n  SELECT k.n, b AS blkno\n  FROM k, generate_series(1, (pg_relation_size(k.idx::regclass) / 8192 - 1)::int) AS b\n  WHERE (bt_page_stats(k.idx, b)).type = 'l'\n),\ntouched AS (\n  SELECT 1 AS n, count(DISTINCT l.blkno) AS c FROM leaves l, bt_page_items('r_pkey', l.blkno) i JOIN r ON r.ctid = i.htid WHERE l.n = 1 AND r.n > 19000\n  UNION ALL\n  SELECT 2, count(DISTINCT l.blkno) FROM leaves l, bt_page_items('t_pkey', l.blkno) i JOIN t ON t.ctid = i.htid WHERE l.n = 2 AND t.n > 19000\n  UNION ALL\n  SELECT 3, count(DISTINCT l.blkno) FROM leaves l, bt_page_items('g_pkey', l.blkno) i JOIN g ON g.ctid = i.htid WHERE l.n = 3 AND g.n > 19000\n)\nSELECT k.key, (SELECT count(*) FROM leaves l WHERE l.n = k.n) AS leaf_pages, touched.c AS leaves_with_last_1000\nFROM k JOIN touched USING (n)\nORDER BY k.n",
+   "note": "each primary key's leaf pages, and how many of them hold one of the last 1,000 rows inserted.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"key","type":"text"},
+     {"name":"leaf_pages","type":"int8"},
+     {"name":"leaves_with_last_1000","type":"int8"}
+    ],
+    "data": [["random uuid","92","92"],["uuidv7","77","5"],["bigint","55","4"]]
+   }
+  }
+ ]
+}

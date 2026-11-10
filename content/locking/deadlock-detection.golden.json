@@ -1,0 +1,26 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b1b9b5824ffadd49": {
+      "db": "empty",
+      "sql": "SHOW deadlock_timeout;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["deadlock_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "4a0f4011a12c77c3",
+          "rows": [
+            ["1s"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

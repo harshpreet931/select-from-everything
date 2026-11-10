@@ -1,0 +1,173 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "caa6751fe4f7806f": {
+      "db": "school",
+      "sql": "SELECT code, dept, credits\nFROM courses\nORDER BY credits DESC, code;",
+      "statements": [
+        {
+          "tag": "SELECT 12",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25],
+            ["dept", "text", 25],
+            ["credits", "int2", 21]
+          ],
+          "rowCount": 12,
+          "digest": "962cc7e6af45901f",
+          "rows": [
+            ["CS499", "GEN", "6"],
+            ["CS101", "CS", "4"],
+            ["CS201", "CS", "4"],
+            ["CS301", "CS", "4"],
+            ["CS350", "CS", "4"],
+            ["CS401", "CS", "4"],
+            ["MATH101", "MATH", "4"],
+            ["PHYS101", "PHYS", "4"],
+            ["PHYS201", "PHYS", "4"],
+            ["HIST101", "HIST", "3"],
+            ["MATH201", "MATH", "3"],
+            ["MATH301", "MATH", "3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b541ad7e77fb598f": {
+      "db": "school",
+      "sql": "SELECT code, title\nFROM courses\nORDER BY length(title) DESC, code\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25],
+            ["title", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "ca60cdef429da807",
+          "rows": [
+            ["CS101", "Intro to Programming"],
+            ["HIST101", "History of Computing"],
+            ["CS401", "Database Internals"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "00c4855b528546e3": {
+      "db": "school",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)\nSELECT code, dept FROM courses ORDER BY dept;\nEXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)\nSELECT code, dept FROM courses ORDER BY dept LIMIT 3;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "6671e6a648fb80f5",
+          "rows": [
+            ["Sort (actual rows=12.00 loops=1)"],
+            ["  Sort Key: dept"],
+            ["  Sort Method: quicksort  Memory: 17kB"],
+            ["  ->  Seq Scan on courses (actual rows=12.00 loops=1)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "f9b31486f4f4849a",
+          "rows": [
+            ["Limit (actual rows=3.00 loops=1)"],
+            ["  ->  Sort (actual rows=3.00 loops=1)"],
+            ["        Sort Key: dept"],
+            ["        Sort Method: top-N heapsort  Memory: 17kB"],
+            ["        ->  Seq Scan on courses (actual rows=12.00 loops=1)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6b2f47f1d70a51c2": {
+      "db": "shop",
+      "sql": "SELECT name, category\nFROM products\nORDER BY category DESC, id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["category", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "9dc1fe67eaac588d",
+          "rows": [
+            ["wooden train", null],
+            ["large lantern", null],
+            ["smart stapler", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d3109ba1ffabfb8c": {
+      "db": "empty",
+      "sql": "SELECT x\nFROM (VALUES ('apple'), ('Banana'), ('cherry'), ('Zoë'), ('zoe')) AS t (x)\nORDER BY x;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["x", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "c57bf8bfc4ee2b7b",
+          "rows": [
+            ["Banana"],
+            ["Zoë"],
+            ["apple"],
+            ["cherry"],
+            ["zoe"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c0541aa0ef13a249": {
+      "db": "empty",
+      "sql": "SELECT x\nFROM (VALUES ('apple'), ('Banana'), ('cherry'), ('Zoë'), ('zoe')) AS t (x)\nORDER BY x COLLATE \"en-US-x-icu\";",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["x", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "de923539e23bed0b",
+          "rows": [
+            ["apple"],
+            ["Banana"],
+            ["cherry"],
+            ["zoe"],
+            ["Zoë"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    }
+  }
+}

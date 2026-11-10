@@ -1,0 +1,89 @@
+import { HistoryChecker } from "@/components/figures/scale/HistoryChecker";
+import { ModelMap } from "@/components/figures/scale/ModelMap";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* textbook material, drawn by hand: linearizability (Herlihy and Wing, 1990), sequential
+    consistency (Lamport, 1979), causal memory (Ahamad et al., 1995), session guarantees (Terry et
+    al., 1994). the checker tries every order of a tiny history against those definitions. */}
+
+<InShort>
+a **consistency model** says which values a read is allowed to return when data has several copies. from strong to weak: **linearizable** (it behaves like one copy, in real time), **sequential** (one agreed order, maybe behind real time), **causal** (causes before effects), the session guarantees (**read your writes**, **monotonic reads**), and **eventual** (copies agree once writes stop). isolation levels answer a different question, about transactions, and the two get confused all the time.
+</InShort>
+
+## the picture
+
+you know how "consistent" means four different things depending on who's talking? in ACID it's constraints, in CAP it's linearizability, in a cloud database's docs it might mean "eventually". a consistency model pins it down by saying which *histories* are allowed: which values reads may return, given the writes and when everything happened.
+
+think of a group chat. linearizable: everyone sees every message the instant it's sent, in the same order. sequential: everyone sees the same order, but your phone might be a few seconds behind. causal: a reply never shows up before the message it answers, but two unrelated messages can arrive in either order on different phones. eventual: messages can arrive in any order and late, but once everyone stops typing, every phone shows the same chat.
+
+here's a checker. each bar is one operation on a register `x` (it starts at 0), from the moment it was called to the moment it replied. pick a history, click a read to change what it returned, or select an operation and move it earlier or later, and see which models still allow it:
+
+<Figure wide caption={<>three processes, one register. a model <C k="live">holds</C> if some order of the operations satisfies its rules, and is <C k="dead">broken</C> if none does. start with "stale read": sequential allows it, linearizable doesn't. then move P2's read earlier, until it overlaps the write.</>}>
+<HistoryChecker />
+</Figure>
+
+## the models, strongest first
+
+**linearizable** (Herlihy and Wing, 1990). there's one order of all operations, every read returns the latest write before it in that order, and the order respects real time: if A finished before B started, A comes first. it's what a single copy would do. it's the C in [CAP](/learn/scale/cap-and-pacelc), and it costs coordination on every operation.
+
+**sequential** (Lamport, 1979). there's still one order that every process agrees on, and each process's own operations appear in the order it ran them, but the order doesn't have to match the wall clock. a read can be stale, as long as everyone is stale in the same consistent way. the "stale read" history above is sequential but not linearizable.
+
+**causal**. only operations that could have influenced each other have to be seen in order: a process's own earlier operations, and a write it read before writing. unrelated writes can show up in different orders for different readers. Mahajan, Alvisi and Dahlin showed in 2011 that a variant of it (real-time causal) is the strongest model a system can keep while staying available during a partition, which is why it keeps coming up.
+
+**read your writes**, **monotonic reads** (two of Terry et al.'s session guarantees, 1994). promises to one client about its own session: it sees its own writes, and it never sees time go backwards. weak on their own, but exactly what users notice: "I saved it and it's gone" and "the comment disappeared when I refreshed". [read replicas](/learn/scale/read-replicas) break both unless reads are routed with care.
+
+**eventual**. if writes stop, all copies eventually return the same value. it says nothing about what reads return in the meantime, so no finite history can break it. that's why the checker shows it as a squiggle rather than a tick: it's a promise about convergence, not about any read.
+
+<Predict question="P1 writes x = 1 and gets ok. a second later, P2 reads x from a replica and gets 0. which models allow this?" options={["none", "sequential and weaker", "only eventual"]} answer={1}>
+```text
+P1: w(x, 1) ──ok
+                    P2: r(x) → 0
+```
+<Explain>
+sequential and everything weaker. the read started after the write finished, so linearizability forbids it: in real time, 1 is the latest value. but there's an order that keeps each process's own order and explains every read (P2's read first, then P1's write), so sequential consistency allows it, and so do causal and the session guarantees, since P2 never saw the write or wrote anything itself. it's the "stale read" preset.
+</Explain>
+</Predict>
+
+## isolation is a different axis
+
+[isolation levels](/learn/transactions/isolation-levels) are about **transactions**: groups of reads and writes over many objects, running concurrently, and which interleavings are allowed (serializable: as if one at a time). consistency models are about **single operations on copies** and **time**. neither implies the other:
+
+<Figure wide caption={<>two ladders, drawn by hand. consistency is about copies and real time, isolation about concurrent transactions. strict serializability is where the top of both meet.</>}>
+<ModelMap />
+</Figure>
+
+- a serializable database can still return stale results if transactions are ordered in a way that ignores real time, for example by serving read-only transactions from a lagging copy. serializability only promises *some* serial order.
+- a linearizable key-value store can still let two multi-key operations interleave badly, because it promises nothing about groups of operations.
+- **strict serializability** asks for both: serializable transactions in an order consistent with real time. it's what [spanner](/learn/scale/distributed-sql) advertises, and what a single database server tends to give you for free, because there's one copy and one clock.
+
+on one postgres server you rarely have to think about this axis: there's one copy of the data, and every new snapshot includes every transaction that committed before it was taken. the moment you add an asynchronous [read replica](/learn/scale/read-replicas), reads routed there drop down the consistency ladder, whatever the isolation level says.
+
+<Figure wide caption={<>where a read goes, and which guarantees it keeps for completed writes (the LSN is the one from the client's last write). drawn from how each setup works, not measured: <C k="live">yes</C> holds always, <C k="dead">no</C> can fail.</>}>
+<ResultTable
+  columns={["the read goes to", "linearizable", "read your writes", "monotonic reads"]}
+  rows={[
+    ["the primary", { v: "yes", tone: "live" }, { v: "yes", tone: "live" }, { v: "yes", tone: "live" }],
+    ["one async replica, always the same", { v: "no", tone: "dead" }, { v: "no", tone: "dead" }, { v: "yes", tone: "live" }],
+    ["any of several async replicas", { v: "no", tone: "dead" }, { v: "no", tone: "dead" }, { v: "no", tone: "dead" }],
+    ["a replica, after waiting for the LSN", { v: "no", tone: "dead" }, { v: "yes", tone: "live" }, { v: "yes", tone: "live" }],
+  ]}
+  footer="none"
+/>
+<Provenance drawn="each row follows from how replay works: one replica only moves forward; different replicas lag differently" />
+</Figure>
+
+<Gotcha title="'strong consistency' in a vendor's docs">
+it usually means linearizable reads of single items, sometimes only when you ask for them (a "consistent read" flag that costs more), and says nothing about multi-item transactions. read for two things: what a read may return right after a write elsewhere, and what isolation transactions get. they're separate answers.
+</Gotcha>
+
+<Interview q="what's the difference between serializability and linearizability?">
+serializability is a property of transactions: the outcome equals some serial execution of them, in any order. linearizability is a property of single operations on an object: each takes effect at one instant between its call and its return, so the order respects real time. serializability doesn't mention real time; linearizability doesn't mention transactions. bonus point: strict serializability is both, serializable transactions ordered consistently with real time, which is what spanner provides with TrueTime.
+</Interview>
+
+<Keylines>
+- a consistency model says which values reads may return when data has copies.
+- linearizable ⊃ sequential ⊃ causal ⊃ the session guarantees; eventual only promises convergence.
+- the gap between linearizable and sequential is real time.
+- isolation (transactions) and consistency (copies and time) are different axes.
+- strict serializable = serializable + linearizable.
+</Keylines>

@@ -1,0 +1,107 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0250d2073c5e0d0f": {
+      "db": "bank",
+      "sql": "UPDATE accounts SET balance = balance + 10.00 WHERE id = 1\nRETURNING owner, balance;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": [
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "1eb7dae642c190f5",
+          "rows": [
+            ["alice", "110.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2b42a61fb9fbe543": {
+      "db": "bank",
+      "sql": "UPDATE accounts SET balance = balance - 50.00\nWHERE id = 1 AND balance >= 50.00\nRETURNING owner, balance;\nUPDATE accounts SET balance = balance - 50.00\nWHERE id = 3 AND balance >= 50.00\nRETURNING owner, balance;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": [
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "baeb0a70b34c3976",
+          "rows": [
+            ["alice", "50.00"]
+          ]
+        },
+        {
+          "tag": "UPDATE 0",
+          "command": "UPDATE",
+          "columns": [
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 0,
+          "digest": "a3bc411475dd2ee1",
+          "rows": []
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "563e4b76defe2c1a": {
+      "db": "bank",
+      "sql": "SELECT balance, version FROM accounts WHERE id = 1;\nUPDATE accounts SET balance = 110.00, version = version + 1\nWHERE id = 1 AND version = 0;\nUPDATE accounts SET balance = 120.00, version = version + 1\nWHERE id = 1 AND version = 0;\nSELECT balance, version FROM accounts WHERE id = 1;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["balance", "numeric", 1700],
+            ["version", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "5a108a7e651b0062",
+          "rows": [
+            ["100.00", "0"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "UPDATE 0",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 0,
+          "digest": "0b180ac9b96cf798"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["balance", "numeric", 1700],
+            ["version", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "3d6a5361a55b4bbb",
+          "rows": [
+            ["110.00", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

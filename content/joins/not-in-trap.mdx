@@ -1,0 +1,133 @@
+import { NotInTrap } from "@/components/figures/joins/NotInTrap";
+import { RunPick } from "@/components/figures/joins/RunPick";
+import { planOf, prov, resultOf, runsOf } from "@/components/figures/joins/captured";
+import trace from "./traces/not-in.pgtrace.json";
+import org from "./traces/not-in-org.pgtrace.json";
+
+{/* the NOT IN figure and the two plans read traces/not-in.scenario.sql (school), the switch reads
+    traces/not-in-org.scenario.sql (org), both captured on PGlite. every true, false and unknown
+    in the figure is postgres's own answer, looked up, never computed in the browser. */}
+
+export const people = resultOf(trace, 0);
+export const list = resultOf(trace, 1);
+export const pairs = resultOf(trace, 2);
+export const verdicts = resultOf(trace, 3);
+export const notInPlan = planOf(trace, 4);
+export const notExistsPlan = planOf(trace, 5);
+export const source = prov(trace);
+export const forms = runsOf(org, ["NOT IN", "NOT IN, no NULLs", "NOT EXISTS", "LEFT JOIN, IS NULL"], 0);
+export const orgSrc = prov(org);
+
+<InShort>
+`x NOT IN (subquery)` means "x is different from every value the subquery returns". if one of those values is **NULL**, then `x <> NULL` is unknown for every x, so no row can ever pass, and the query returns **nothing at all**. no error, no warning.
+
+**NOT EXISTS** asks a different question and has no such hole. use it.
+</InShort>
+
+## the picture
+
+you know how you ask for the instructors who teach nothing, get zero rows back, and conclude everyone's busy? Sofia Petrova teaches nothing. the query just told you she doesn't exist. and the reason is a course: CS499, the senior thesis, has no instructor yet, so its `instructor_id` is NULL.
+
+think of a bouncer at a door that only lets in people who are *not* on a list. one line of the list is smudged, unreadable. you walk up, and the bouncer can't swear you aren't the smudged name, so you don't get in. neither does anyone else. one smudge, and the door is shut for everybody.
+
+<Figure wide caption={<>pick a form of the query and an instructor. the list comes from <code>SELECT instructor_id FROM courses</code>, and CS499 puts a <C k="hot">null</C> in it. NOT IN turns into one <code>&lt;&gt;</code> per value, ANDed together, and the last one is unknown for everybody. a row is <C k="live">kept</C> only when the whole thing is true.</>}>
+<NotInTrap people={people} list={list} pairs={pairs} verdicts={verdicts} start={7} trace={source} />
+</Figure>
+
+## the proof, both ways
+
+<Predict options={["Sofia Petrova", "no rows", "an error"]} answer={1}>
+```sql
+SELECT name
+FROM instructors
+WHERE id NOT IN (SELECT instructor_id FROM courses);
+```
+<Explain>
+the subquery returns 12 values, one of them NULL (CS499 has no instructor). for Sofia, id 8, NOT IN means `8 <> 1 AND 8 <> 2 AND ... AND 8 <> NULL`. every term is true except the last, which is unknown, and true AND unknown is unknown. WHERE keeps only true, so she's dropped, and so is everyone else. zero rows.
+</Explain>
+</Predict>
+
+for real. first the trap, then two ways out:
+
+```sql run db=school
+SELECT name FROM instructors
+WHERE id NOT IN (SELECT instructor_id FROM courses)
+ORDER BY id;
+```
+
+```sql run db=school
+SELECT name FROM instructors
+WHERE id NOT IN (SELECT instructor_id FROM courses WHERE instructor_id IS NOT NULL)
+ORDER BY id;
+
+SELECT name FROM instructors AS i
+WHERE NOT EXISTS (SELECT 1 FROM courses AS c WHERE c.instructor_id = i.id)
+ORDER BY id;
+```
+
+same tables, same question, and the only difference between the first query and the second is one NULL in the list.
+
+## why one NULL is enough
+
+`x IN (a, b, c)` is shorthand for `x = a OR x = b OR x = c`. put a NOT in front and De Morgan flips it: `x <> a AND x <> b AND x <> c`. an AND is true only if every part is true, and `x <> NULL` is never true, it's unknown ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) has the whole table). so with a NULL in the list, the best NOT IN can ever do is unknown:
+
+```sql run
+SELECT 8 NOT IN (1, 2, NULL) AS "8 NOT IN (1, 2, NULL)",
+       1 NOT IN (1, 2, NULL) AS "1 NOT IN (1, 2, NULL)",
+       8 IN (1, 2, NULL)     AS "8 IN (1, 2, NULL)",
+       1 IN (1, 2, NULL)     AS "1 IN (1, 2, NULL)";
+```
+
+two NULLs (unknown) and a false: NOT IN can still say false (1 is in the list), but it can never say true. plain IN has the same unknown in it, but there it's harmless: a value that's in the list is true, a value that isn't is unknown, and WHERE drops unknown exactly like it drops false. only the NOT turns "unknown" from "no" into "nobody".
+
+## NOT EXISTS doesn't care
+
+`NOT EXISTS (SELECT 1 FROM courses AS c WHERE c.instructor_id = i.id)` asks: is there a course row for which `c.instructor_id = i.id` is true? CS499's row gives unknown for every instructor, and unknown isn't true, so CS499 just isn't a match for anyone. it can't poison the answer, it can only fail to match. the question is about rows, not about a list of values, and a NULL can only ever be a row that doesn't match.
+
+## the bigger one
+
+the school's trap costs one instructor. here's one that costs two thirds of a company. in the org dataset, who manages nobody? the CEO's `manager_id` is NULL, so it's in the list:
+
+<Figure wide caption={<>switch the form. NOT IN finds <C k="dead">nobody</C>. the three correct forms all find 200 people who manage no one: the bottom level of the tree.</>}>
+<RunPick
+  options={[{ key: "ask with", values: ["NOT IN", "NOT IN, no NULLs", "NOT EXISTS", "LEFT JOIN, IS NULL"] }]}
+  runs={forms}
+  hot={["NOT IN (SELECT manager_id FROM employees)", "WHERE manager_id IS NOT NULL", "NOT EXISTS", "WHERE r.id IS NULL"]}
+  trace={orgSrc}
+/>
+</Figure>
+
+0 against 200, and the 0 looks perfectly plausible if you don't already know the answer. that's the dangerous part: the trap doesn't look broken, it looks like a fact.
+
+## and the planner can't save you
+
+NOT EXISTS gets rewritten into an anti join. NOT IN, here, doesn't:
+
+<Figure wide caption={<>the two plans for the instructors query. NOT IN stays a filter on the instructors scan, testing each id against a hashed list from the subquery. NOT EXISTS becomes a Hash Anti Join.</>}>
+<Tabs>
+<Tab label="NOT IN">
+<PlanTree plan={notInPlan} show={["actual"]} />
+</Tab>
+<Tab label="NOT EXISTS">
+<PlanTree plan={notExistsPlan} show={["actual"]} />
+</Tab>
+</Tabs>
+</Figure>
+
+an anti join keeps a row when no match is found. NOT IN keeps a row only when every comparison is *false*, and with NULLs around those aren't the same thing, so postgres can't swap one for the other. it builds the whole subquery result into a hash table and checks every outer row against it: `(hashed SubPlan 1)` in the filter. same answer to the same rules, just with the NULL semantics kept, which in this case means the wrong answer, faithfully. [how subqueries get planned](/learn/optimizer/subquery-planning) goes into when the rewrite is legal.
+
+<Gotcha title="NOT IN is fine until the column allows NULL">
+NOT IN works when the subquery can't return a NULL: a NOT NULL column, a primary key, a literal list you wrote yourself. the trouble is that "can't" is a property of today's schema. someone makes a column nullable for a good reason, the first NULL lands a month later, and a report that used NOT IN silently drops to zero rows. NOT EXISTS gives the answer you meant whatever the column allows, and it can be planned as an anti join. make it the habit.
+</Gotcha>
+
+<Interview q="why does my NOT IN query return no rows, when I know some should match?">
+the subquery returns at least one NULL. `x NOT IN (list)` means `x <> each value`, ANDed, and `x <> NULL` is unknown, so the AND can never be true, only false or unknown. WHERE keeps only true, so every row goes. fix it with NOT EXISTS, which tests for a matching row instead of comparing against a list, or filter NULLs out inside the subquery. bonus point: IN (without NOT) doesn't have the problem, because WHERE treats unknown the same as false. and NOT IN can't be planned as an anti join for the same reason: with NULLs, "no match" and "different from everything" aren't the same.
+</Interview>
+
+<Keylines>
+- `x NOT IN (list)` is `x <> a AND x <> b AND ...`. one NULL makes it never true.
+- the result is zero rows, with no error, and it looks like a real answer.
+- IN is safe. it's the NOT that turns unknown into "nobody".
+- NOT EXISTS tests for a matching row, so a NULL just fails to match.
+- prefer NOT EXISTS: right whatever the column allows, and an anti join in the plan.
+</Keylines>

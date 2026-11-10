@@ -1,0 +1,178 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/stats.pgtrace.json";
+
+{/* the figures read traces/stats.scenario.sql, captured on PGlite with the events dataset
+    (`pnpm pgtrace <file> --engine=pglite --twice`): steps 0-3 are one pg_stats row each, turned
+    on its side; step 4 kind's most common values; steps 5-9 the stale-statistics run. */}
+
+export const cols = ["kind", "amount", "user_id", "occurred_at"];
+export const cards = Object.fromEntries(cols.map((c, i) => [c, { ...resultOf(trace, i), sql: `-- one row of pg_stats, drawn on its side: a line per statistic\nSELECT null_frac, n_distinct, most_common_vals, most_common_freqs,\n       histogram_bounds, correlation, avg_width\nFROM pg_stats\nWHERE tablename = 'events' AND attname = '${c}';` }]));
+export const kinds = trace.steps[4].result.data;
+export const before = trace.steps[6].explain.Plan["Plan Rows"];
+export const real = Number(trace.steps[7].result.data[0][0]);
+export const after = trace.steps[9].explain.Plan["Plan Rows"];
+
+<InShort>
+the planner never counts rows to plan a query. it reads a summary that **ANALYZE** wrote into `pg_statistic`, one row per column, readable through the **pg_stats** view: the fraction of NULLs, the number of distinct values, the **most common values** with their frequencies, a **histogram** of the rest, and how well the column's order matches the table's.
+
+ANALYZE builds it from a sample of 300 × `default_statistics_target` rows, so 30,000. summaries go stale as rows change, and autovacuum re-runs ANALYZE when enough have.
+</InShort>
+
+## the picture
+
+you know how EXPLAIN guesses 1,134 rows without reading the table? it isn't psychic, it read a label.
+
+think of the nutrition label on a packet of biscuits. nobody weighs the sugar in your packet; somebody tested a sample of the batch once and printed the numbers. the label is small, fast to read, and true for the batch it came from. change the recipe and keep the old label, and it lies.
+
+here are four labels, one per column of `events`:
+
+<Figure wide caption={<>pick a column to see its row in pg_stats. kind has five values, all of them common, so it has a full list and no histogram. amount is mostly NULL. user_id is skewed: the busiest 100 users are listed, the other 400 go in a histogram. occurred_at is unique and stored in time order. long arrays are cut to their first few entries.</>}>
+<RunPick options={[{ key: "column", values: cols }]} runs={cards} trace={prov(trace)} hide={[]} />
+</Figure>
+
+## what each statistic is
+
+- **null_frac**: the fraction of rows where the column is NULL. 0.9294 for amount, because only purchases have one. `IS NULL` reads it directly.
+- **avg_width**: average bytes per value. it's where EXPLAIN's `width` comes from.
+- **n_distinct**: how many distinct values. positive means a count (kind has 5). **negative means a fraction of the row count**: -1 is "every row distinct", -0.5 would be "half as many distinct values as rows". ANALYZE stores a fraction when it thinks the count grows with the table (a unique id does, a status column doesn't), so the estimate stays right as the table grows without a new ANALYZE.
+- **most_common_vals** and **most_common_freqs**: up to `default_statistics_target` values, and the fraction of rows each one has. a value only makes the list if it's noticeably more common than average.
+- **histogram_bounds**: for the values not in that list, up to 101 bounds that cut them into 100 buckets with the same number of rows each. no histogram when the list already covers everything (kind).
+- **correlation**: from -1 to 1, how closely the column's sort order matches the rows' physical order. 1 for occurred_at (rows were inserted in time order), about 0 for user_id. [the cost model](/learn/optimizer/cost-model) uses it to price index scans.
+
+all of it, for every column:
+
+```sql run db=events
+SELECT attname, null_frac, avg_width, n_distinct, correlation
+FROM pg_stats
+WHERE tablename = 'events'
+ORDER BY attname;
+```
+
+kind's list is complete, so its frequencies are exact shares of the table:
+
+<Figure caption={<>kind's most common values and their frequencies. five values, adding up to 1: there's nothing left for a histogram. for <code>kind = 'view'</code>, the estimate is 0.60448 × 25,000.</>}>
+<Bars data={kinds.map((r) => ({ label: r[0], value: Number(r[1]) }))} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+```sql run db=events
+SELECT kind, count(*), round(count(*) / 25000.0, 5) AS share
+FROM events
+GROUP BY kind
+ORDER BY count(*) DESC;
+```
+
+the same numbers. how the planner turns them into a row count for any WHERE is [estimating rows](/learn/optimizer/estimating-rows).
+
+<Predict question="a 10,000-row table, and pg_stats says n_distinct = -0.25 for a column. how many distinct values does the planner assume?" options={["0.25", "2,500", "it's an error"]} answer={1}>
+```sql
+SELECT n_distinct FROM pg_stats WHERE attname = 'x';  -- -0.25
+```
+<Explain>
+2,500: a negative n_distinct is a fraction of the row count, 0.25 × 10,000. if the table doubles, the planner assumes 5,000 without a new ANALYZE. a positive number would be a fixed count.
+</Explain>
+</Predict>
+
+## a sample, not the table
+
+ANALYZE doesn't read every row. it samples **300 × the statistics target** rows, picked at random from across the table: 30,000 at the default target of 100. the 300 comes from a 1998 paper on how big a sample a histogram needs (Chaudhuri, Motwani and Narasayya), and it's a constant in postgres's source.
+
+every dataset in this book is under 30,000 rows per table, so ANALYZE reads all of it and the statistics come out exact. that keeps the goldens stable, and it's convenient, and it's **not what your production tables look like**. here's a table ten times that size, where half the rows are 0 and the other half are all different:
+
+```sql run session=sample volatile
+CREATE TABLE big (id int, x int);
+INSERT INTO big
+SELECT g.i, CASE WHEN g.i % 2 = 0 THEN 0 ELSE g.i END
+FROM generate_series(1, 300000) AS g(i)
+ORDER BY g.i;
+ANALYZE big;
+SELECT n_distinct, most_common_freqs[1] AS zeros
+FROM pg_stats
+WHERE tablename = 'big' AND attname = 'x';
+SELECT count(DISTINCT x) FROM big;
+```
+
+the share of zeros comes out right, give or take. n_distinct comes out around five times too low, and a little different every time you press run (this block is marked volatile: only its shape is checked). the sample has about 15,000 values that it saw exactly once, and from that alone ANALYZE has to guess how many more exist that it never saw. that guess (the Haas and Stokes estimator) is decent on average and bad on a column like this one.
+
+raise the column's target and the sample grows with it. at 1,000 the sample is 300,000 rows, which is the whole table:
+
+```sql run session=sample
+ALTER TABLE big ALTER COLUMN x SET STATISTICS 1000;
+ANALYZE big;
+SELECT n_distinct FROM pg_stats WHERE tablename = 'big' AND attname = 'x';
+EXPLAIN SELECT DISTINCT x FROM big;
+```
+
+-0.50000334, so 150,001 distinct values, and the HashAggregate expects exactly 150,001 groups. a bigger target also means longer MCV lists and finer histograms, at the price of a slower ANALYZE and bigger statistics for every plan to read. raise it per column, where you've seen a bad estimate, not globally.
+
+<Deep title="what ANALYZE VERBOSE says">
+on the 300,000-row table, `ANALYZE VERBOSE big` prints this on the browser's postgres, among timing lines that change every run:
+
+```text
+INFO:  "big": scanned 1328 of 1328 pages, containing 300000 live rows and 0 dead rows; 30000 rows in sample, 300000 estimated total rows
+```
+
+and after `SET STATISTICS 1000`, `300000 rows in sample`. on a table with more pages than the sample size, it also reads only a sample of the pages, so the live row count it reports (and writes to reltuples) is an estimate too.
+</Deep>
+
+## stale statistics
+
+statistics describe the table as it was at the last ANALYZE. add 4,000 signups and don't analyze:
+
+```sql run db=events session=stale
+INSERT INTO events (user_id, kind, occurred_at)
+SELECT 1 + i % 500, 'signup', timestamptz '2026-06-01 00:00+00' + i * interval '1 minute'
+FROM generate_series(1, 4000) AS i
+ORDER BY i;
+SELECT pg_stat_force_next_flush();
+SELECT n_mod_since_analyze FROM pg_stat_user_tables WHERE relname = 'events';
+EXPLAIN SELECT * FROM events WHERE kind = 'signup';
+SELECT count(*) FROM events WHERE kind = 'signup';
+```
+
+the estimate is {before}: the old 2% for signup, times the table's new size. the planner rescales `reltuples` by how many pages the table has now, so the row count keeps up. the frequencies don't. then:
+
+```sql run session=stale
+ANALYZE events;
+EXPLAIN SELECT * FROM events WHERE kind = 'signup';
+```
+
+<Figure caption={<>the estimate for <code>kind = 'signup'</code> after 4,000 signups arrive, before and after ANALYZE, next to the real count. the before is <C k="dead">off by {Math.round(real / before)}x</C>: the frequency is stale, only the table size moved.</>}>
+<Bars data={[
+  { label: "estimate, stale", value: before, tone: "dead" },
+  { label: "estimate, after ANALYZE", value: after, tone: "live" },
+  { label: "real count", value: real },
+]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+on a real server you rarely type ANALYZE yourself. autovacuum analyzes a table once the rows changed since its last analyze pass a threshold:
+
+```sql run
+SELECT name, setting FROM pg_settings
+WHERE name IN ('autovacuum_analyze_threshold', 'autovacuum_analyze_scale_factor', 'default_statistics_target')
+ORDER BY name;
+```
+
+50 rows plus 10% of the table. events has 25,000 rows, so autovacuum would have analyzed after 2,550 changes, and the 4,000 signups would have triggered it. the browser's postgres has no autovacuum (it's one session with nothing in the background), which is why the blocks above stayed stale until we ran ANALYZE. [autovacuum](/learn/mvcc/autovacuum) has the full trigger rules, and the reason 10% can be far too slow for a big table: on 100 million rows it waits for 10 million changes.
+
+<Gotcha title="the bulk load that nobody analyzed">
+the classic: load a million rows into an empty table, then query it straight away. its statistics say it's empty (or don't exist yet), and the plan is built for a table of nothing. autovacuum will get there, but not before the next statement. run ANALYZE right after a bulk load, a big DELETE, or a restore. (since postgres 18, pg_upgrade keeps the old statistics, though not extended ones, and pg_dump writes them out only when asked with `--statistics`.)
+</Gotcha>
+
+<Deep title="pg_statistic and pg_stats">
+the real table is `pg_statistic`: one row per column, with five generic slots (`stakind1..5`, `stavalues1..5`, `stanumbers1..5`) whose meaning depends on the kind code in each slot (1 is an MCV list, 2 a histogram, 3 correlation, and others for arrays and ranges). `pg_stats` is a view that decodes the slots into named columns and hides rows for columns you aren't allowed to read, since an MCV list is a sample of the actual data.
+</Deep>
+
+<Interview q="what does ANALYZE collect, and how does the planner use it?">
+per column: null fraction, average width, number of distinct values (negative means a fraction of the rows), the most common values with their frequencies, an equal-height histogram of the remaining values, and the correlation between the column's order and the table's physical order. it samples 300 × default_statistics_target rows (30,000 by default). the planner multiplies selectivities from these by the row count to estimate every node, and uses correlation to price index scans. autovacuum re-analyzes after 50 + 10% of the rows change. bonus point: for skewed columns, sampled n_distinct can be far off; ALTER TABLE ... ALTER COLUMN ... SET STATISTICS raises the sample for that column.
+</Interview>
+
+<Keylines>
+- the planner plans from pg_stats, not from the table: one summary row per column.
+- n_distinct below zero is a fraction of the row count: -1 means unique.
+- MCVs carry exact frequencies; the histogram covers only the values that aren't MCVs.
+- ANALYZE samples 300 × default_statistics_target rows. under 30,000 rows, that's everything.
+- statistics go stale. autovacuum analyzes after 50 + 10% changes; after bulk loads, run it yourself.
+</Keylines>

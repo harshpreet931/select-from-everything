@@ -1,0 +1,143 @@
+import trace from "./traces/leaf-split.pgtrace.json";
+
+{/* the captured figure reads traces/leaf-split.scenario.sql (PGlite): one leaf filled with
+    even keys until it splits at the right edge, then refilled with odd keys until it splits
+    in the middle. the measured numbers are the run blocks' golden. */}
+
+<InShort>
+when a leaf is full, the next insert **splits** it: part of the entries move to a new page, the new page is linked in beside it, and a separator for it goes into the parent. where the cut falls depends on where the page is. in the middle of the tree postgres splits about **50/50**. on the **rightmost** leaf it assumes keys are arriving in order and keeps the left page **90% full** (the fillfactor), so a sequential load leaves dense pages behind instead of half-empty ones.
+</InShort>
+
+## the picture
+
+you know how a [B+tree](/learn/index-internals/b-plus-trees) grows: a full page splits and pushes a key up. this chapter is about a small question with a big effect: *where* do you cut?
+
+think of filing cards into a box of folders. a folder in the middle overflows, so you split it in half: both halves have room for whatever comes next, because cards can arrive anywhere. but if you're filing invoices numbered 1, 2, 3, … every new card goes in the last folder. split that one in half and the left half never gets another card: it stays half empty forever. so for the last folder, you leave the left one nearly full and start a fresh one.
+
+here's postgres doing exactly that. even keys first, so there are gaps to fill later.
+
+<Figure wide caption={<>step through four inserts into a real index. the first split is on the rightmost leaf: <C k="hot">366</C> keys stay, 42 move. the second is in the middle of the tree: about 200 each way, and the new page (4) is linked in <C k="ref">between</C> pages 1 and 2. the left page's <C k="meta">high key</C> changes with each split.</>}>
+<BTree trace={trace} select="e_id" collapse={6} />
+</Figure>
+
+## what a split does
+
+an int4 leaf holds 407 entries (8,152 usable bytes, 20 bytes per entry with its line pointer). at the 408th, postgres:
+
+1. picks a split point, and a separator: the first key that goes right. (with several columns, only as many columns as it needs to tell the halves apart.)
+2. writes the right half to a new page, and the left half back. the left page's high key becomes the separator, and the new page inherits the old high key.
+3. links the new page in: left → new → old right neighbour, both directions.
+4. inserts a downlink for the new page into the parent. if the parent is full, it splits too, one level up. if there was no parent (the page was the root), a new root appears above, and the tree is one level taller.
+
+steps 2 and 3 happen with the pages locked, and step 4 happens after. for a moment the new page exists with no downlink in the parent, and a reader coming down the tree can only find it through the left page's right link. that's on purpose: [b-trees under concurrency](/learn/index-internals/btree-concurrency) is about that moment.
+
+## 90/10 at the right edge
+
+<Predict question="you insert ids 1 to 100,000 in order into a table with an index. how full are the index's leaves afterwards?" options={["about 50%", "about 70%", "about 90%", "100%"]} answer={2}>
+```sql
+CREATE TABLE seq (id int);
+CREATE INDEX seq_id ON seq (id);
+INSERT INTO seq SELECT g FROM generate_series(1, 100000) AS g;
+```
+<Explain>
+about 90%. every insert goes to the rightmost leaf, and when that leaf splits postgres keeps 90% (the leaf fillfactor) on the left and starts the new page almost empty. a textbook 50/50 split would leave every leaf half full: nearly twice the pages for the same keys.
+</Explain>
+</Predict>
+
+measured on three indexes with the same 100,000 keys: inserted in order, inserted in a scrambled order (sorted by their hash, so the same every run), and built by CREATE INDEX after the scrambled load. `pct_full` is used bytes per leaf:
+
+```sql run ext=pageinspect
+CREATE TABLE seq (id int);
+CREATE INDEX seq_id ON seq (id);
+INSERT INTO seq SELECT g FROM generate_series(1, 100000) AS g;
+CREATE TABLE rnd (id int);
+CREATE INDEX rnd_id ON rnd (id);
+INSERT INTO rnd SELECT g FROM generate_series(1, 100000) AS g ORDER BY hashint4(g);
+CREATE TABLE built (id int);
+INSERT INTO built SELECT g FROM generate_series(1, 100000) AS g ORDER BY hashint4(g);
+CREATE INDEX built_id ON built (id);
+SELECT i AS index,
+       count(*) FILTER (WHERE s.type = 'l') AS leaves,
+       round(avg(s.live_items) FILTER (WHERE s.type = 'l')) AS avg_items,
+       round(100 - 100.0 * avg(s.free_size) FILTER (WHERE s.type = 'l') / 8160) AS pct_full,
+       pg_size_pretty(pg_relation_size(i)) AS size
+FROM unnest(ARRAY['seq_id', 'rnd_id', 'built_id']) AS i,
+     bt_multi_page_stats(i, 1, -1) AS s
+GROUP BY i
+ORDER BY leaves;
+```
+
+<Figure caption={<>leaf pages for the same 100,000 int keys, from the run block above.</>}>
+<Bars data={[
+  { label: "built by CREATE INDEX", value: 274, tone: "live" },
+  { label: "inserted in order", value: 274, tone: "live" },
+  { label: "inserted scrambled", value: 318, tone: "hot" },
+]} unit="leaves" />
+</Figure>
+
+inserting in order ends up exactly like a fresh build: 274 leaves of 366 keys, 90% full. the scrambled inserts split in the middle again and again, and their leaves settle at 77%, with 16% more pages. that's the classic picture for random inserts into a B-tree: pages hover between half and completely full, and the textbook average (A. Yao's 1978 analysis of random insertions) is ln 2, about 69%. postgres's midpoint choice does a bit better: it picks the cut that balances the free space on both sides, not the item count.
+
+the model below plays the same game with 10 keys a page, under postgres's rules. pick a preset and watch the "full leaves" number.
+
+<Figure wide caption={<>the BTree model with postgres's split rules and 10 keys a page. in order, every split keeps 9 on the left; shuffled, the splits fall in the middle and the leaves end up emptier. high keys are <C k="meta">meta</C>.</>}>
+<BTree lab={{ order: 10, rules: "nbtree", presets: [
+  { label: "1 to 40, in order", keys: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40] },
+  { label: "the same 40, shuffled", keys: [23,7,36,14,1,30,19,40,9,27,4,33,16,38,11,25,2,35,20,8,29,13,39,5,22,31,17,10,37,26,3,34,15,28,6,24,18,32,12,21] }
+] }} />
+</Figure>
+
+the rule (`nbtsplitloc.c` in the postgres source) is: on the rightmost leaf, split at the fillfactor, wherever the new key goes. the first capture showed it: even after the split, 42 keys went right, not 1. upper levels use 70% instead of 90. and there's a smarter case for pages in the middle: when the new key lands right after the one inserted just before it on that page (an ascending run inside, say, a `(customer_id, created_at)` index), postgres splits just after the new key, so each run packs densely too.
+
+## fillfactor
+
+the 90 isn't magic. it's the index's `fillfactor`, which CREATE INDEX uses for every leaf it builds and the rightmost split uses afterwards:
+
+```sql run ext=pageinspect
+CREATE TABLE t AS SELECT g AS id FROM generate_series(1, 100000) AS g;
+CREATE INDEX ff100 ON t (id) WITH (fillfactor = 100);
+CREATE INDEX ff90 ON t (id);
+CREATE INDEX ff50 ON t (id) WITH (fillfactor = 50);
+CREATE TABLE app (id int);
+CREATE INDEX app_ff100 ON app (id) WITH (fillfactor = 100);
+INSERT INTO app SELECT generate_series(1, 100000);
+SELECT i AS index, pg_relation_size(i) / 8192 AS pages,
+       round(avg(s.live_items) FILTER (WHERE s.type = 'l')) AS avg_items
+FROM unnest(ARRAY['ff100', 'ff90', 'ff50', 'app_ff100']) AS i,
+     bt_multi_page_stats(i, 1, -1) AS s
+GROUP BY i
+ORDER BY pages, i;
+```
+
+249 pages packed full, 276 at the default, 500 at half. `app_ff100` was never built, only inserted into in order, and it came out identical to `ff100`: the rightmost split follows the setting too.
+
+so why not always 100? because then the first insert into the middle of any leaf splits it. the default 10% is room for late arrivals. watch it absorb 10,000 of them:
+
+```sql run ext=pageinspect
+CREATE TABLE late (id int);
+CREATE INDEX late_id ON late (id);
+INSERT INTO late SELECT g * 10 FROM generate_series(1, 100000) AS g;
+INSERT INTO late SELECT g * 100 + 5 FROM generate_series(1, 10000) AS g;
+SELECT count(*) FILTER (WHERE type = 'l') AS leaves,
+       round(avg(live_items) FILTER (WHERE type = 'l')) AS avg_items
+FROM bt_multi_page_stats('late_id', 1, -1);
+```
+
+still 274 leaves, now with 402 keys each. every leaf took its share of the newcomers into the 808 bytes it had spare, and nothing split.
+
+lower the fillfactor for an index whose column gets lots of inserts in the middle of its range. set it to 100 for one that is only ever appended to, or never changes. ([fillfactor](/learn/storage/fillfactor) is the same idea for heap pages, where the spare room is for updates.)
+
+<Gotcha title="random keys cost twice">
+a random key (a `uuid` from `gen_random_uuid()`, a hash) splits pages in the middle, so the index is noticeably bigger than it needs to be, 16% in the measurement above. and every insert lands on a different leaf, so the whole index has to stay in memory or each insert is a disk read. time-ordered keys (a sequence, or `uuidv7()` <Since v={18} />) always hit the rightmost leaf: one hot page, already cached, split 90/10.
+</Gotcha>
+
+<Deep title="what splits don't do">
+nbtree never merges two half-empty pages back together, and never shifts entries to a neighbour to avoid a split (some engines do both). a page leaves the tree only when it's completely empty: VACUUM unlinks it from its siblings and parent, and recycles it once no running scan can still be looking at it. so an index that had a lot of deletes stays as big as it was until new keys fill the gaps, or a `REINDEX` rebuilds it. before splitting, though, postgres does try to make room: it removes entries already marked dead, then tries [deduplication and bottom-up deletion](/learn/index-internals/dedup-and-bottom-up-deletion). a split is the last resort.
+</Deep>
+
+<Keylines>
+- a full leaf splits: part of it moves to a new page, linked in beside it, with a downlink added to the parent.
+- in the middle of the tree the cut is about 50/50; on the rightmost leaf it's at the fillfactor, 90/10.
+- sequential inserts leave leaves 90% full, like a fresh build. scrambled inserts settle around 77%.
+- fillfactor sets both: the build and the rightmost split. 10% spare absorbs late inserts without splits.
+- pages are never merged. an emptied index stays big until it's reused or rebuilt.
+</Keylines>

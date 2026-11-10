@@ -1,0 +1,81 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "2bf252e2e993e980": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM order_items WHERE order_id = 42;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "12360328462ce269",
+          "rows": [
+            ["Index Scan using order_items_pkey on order_items (actual rows=2.00 loops=1)"],
+            ["  Index Cond: (order_id = 42)"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=39 read=3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "50d7c4cbe591f444": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM order_items WHERE order_id = 42 AND line_no = 2;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "74916ca2069331f5",
+          "rows": [
+            ["Index Scan using order_items_pkey on order_items (actual rows=1.00 loops=1)"],
+            ["  Index Cond: ((order_id = 42) AND (line_no = 2))"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared hit=3 read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=44 read=3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "cb38bddd18024bbc": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM order_items WHERE line_no = 4;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "34ae1ec2ac845c6a",
+          "rows": [
+            ["Seq Scan on order_items (actual rows=2534.00 loops=1)"],
+            ["  Filter: (line_no = 4)"],
+            ["  Rows Removed by Filter: 22408"],
+            ["  Buffers: shared read=159"],
+            ["Planning:"],
+            ["  Buffers: shared hit=39 read=3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

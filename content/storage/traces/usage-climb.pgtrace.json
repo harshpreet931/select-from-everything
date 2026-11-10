@@ -1,0 +1,137 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/usage-climb.scenario.sql",
+ "title": "one page read again and again: its usage count climbs to 5 and stops",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"}
+ },
+ "base": {"xid":753,"lsn":26051992},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT buffers_evicted FROM pg_buffercache_evict_relation('accounts')",
+   "note": "start cold: drop the lab's accounts page out of shared buffers.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"buffers_evicted","type":"int4"}],"data":[["0"]]},
+   "buffers": {"frames":[],"other":746,"summary":{"used":746,"dirty":132}}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM accounts",
+   "note": "the first scan reads the page in. usage count 1.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["3"]]},
+   "buffers": {
+    "frames": [
+     {"id":748,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":1,"pins":0},
+     {"id":749,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":1,"pins":0}
+    ],
+    "other": 747,
+    "summary": {"used":749,"dirty":133}
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM accounts",
+   "note": "a second scan is a hit. usage 2.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["3"]]},
+   "buffers": {
+    "frames": [
+     {"id":748,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":1,"pins":0},
+     {"id":749,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":2,"pins":0}
+    ],
+    "other": 747,
+    "summary": {"used":749,"dirty":133}
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM accounts",
+   "note": "a third. usage 3.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["3"]]},
+   "buffers": {
+    "frames": [
+     {"id":748,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":1,"pins":0},
+     {"id":749,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":3,"pins":0}
+    ],
+    "other": 747,
+    "summary": {"used":749,"dirty":133}
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM accounts",
+   "note": "a fourth. usage 4.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["3"]]},
+   "buffers": {
+    "frames": [
+     {"id":748,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":1,"pins":0},
+     {"id":749,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":4,"pins":0}
+    ],
+    "other": 747,
+    "summary": {"used":749,"dirty":133}
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM accounts",
+   "note": "a fifth. usage 5, the most it can hold.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["3"]]},
+   "buffers": {
+    "frames": [
+     {"id":748,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":1,"pins":0},
+     {"id":749,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":5,"pins":0}
+    ],
+    "other": 747,
+    "summary": {"used":749,"dirty":133}
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM accounts",
+   "note": "a sixth. still 5: the count is capped, so a page can't bank popularity for later.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["3"]]},
+   "buffers": {
+    "frames": [
+     {"id":748,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":1,"pins":0},
+     {"id":749,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":5,"pins":0}
+    ],
+    "other": 747,
+    "summary": {"used":749,"dirty":133}
+   }
+  }
+ ],
+ "db": "lab"
+}

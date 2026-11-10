@@ -1,0 +1,127 @@
+import { PlanPair } from "@/components/figures/execution/PlanPair";
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import { PlanText } from "@/components/figures/execution/PlanText";
+import { WorkerSplit } from "@/components/figures/execution/WorkerSplit";
+import { records } from "@/components/figures/execution/source";
+import server from "./traces/parallel.pgtrace.json";
+import browser from "./traces/parallel-browser.pgtrace.json";
+
+{/* the browser engine can't launch parallel workers, so every parallel plan here comes from
+    traces/parallel.scenario.sql, captured on a throwaway native postgres 18.6 server with the
+    events dataset and a 2,000,000-row table built in its setup. the browser's side of the
+    comparison is traces/parallel-browser.scenario.sql, captured on PGlite. */}
+
+export const big = records(server, 0)[0];
+
+<InShort>
+postgres can run one query in several processes. a **Gather** node starts **parallel workers**, each runs a copy of the plan below it on its own share of the table (a **Parallel Seq Scan** hands out blocks to whoever asks), and the leader collects their rows. aggregates split into **Partial** (per process) and **Finalize** (once, at the top).
+
+the postgres on this page is a single process with no room for workers. it can plan a parallel query, but never launch one, so the parallel plans here come from a real server.
+</InShort>
+
+## the picture
+
+you know how a `count(*)` on a big table pegs one core and leaves the others idle? since postgres 9.6 it doesn't have to. the planner can split the scan.
+
+think of counting ballots from one big box with four people. each grabs a handful, counts it, grabs another, until the box is empty. then each writes a subtotal on a slip, and one of them, who was also counting, adds up the slips. the handfuls are blocks of the table, the slips are partial aggregates, and the person adding them up is the leader.
+
+here's that, on a real postgres 18.6 server, counting a {big.size} table of 2,000,000 rows:
+
+<Figure wide caption={<>a real parallel count: the leader and 3 workers each scan part of the table and count it, and Gather brings the 4 partial counts up to one final sum. the row counts per process are EXPLAIN's average; which process got which blocks changes every run.</>}>
+<WorkerSplit trace={server} step={2} table="big" />
+</Figure>
+
+## one query, four processes
+
+the throwaway server starts with `max_parallel_workers_per_gather = 0`, the way this page's engine is set. allow up to 4 per Gather and the same count changes shape:
+
+<Figure wide caption={<>the same count, without and with workers. with them, the scan's <code>loops=4</code> is four processes, and its rows are per process. the bar counts the processes that scanned the table.</>}>
+<PlanSwitch
+  trace={server}
+  axes={[{ key: "max_parallel_workers_per_gather", values: ["0", "4"] }]}
+  runs={{ "0": 1, "4": 2 }}
+  hot={["Workers", "Parallel Seq Scan", "Partial", "Finalize"]}
+  metric={{ label: "processes scanning big (the scan's loops)", re: /Seq Scan on big \(actual rows=[\d.]+ loops=(\d+)/, unit: "" }}
+/>
+</Figure>
+
+read it bottom-up, like any plan. the **Parallel Seq Scan** is a seq scan that shares its position: every process asks it for the next block, so the table is split on the fly and nobody needs to know the split in advance. above it, each process runs its own **Partial Aggregate** and returns one row. **Gather** receives those 4 rows (1 from each process) and the **Finalize Aggregate** adds them up. everything under the Gather runs in every process; everything above it, only in the leader.
+
+<Predict question="Workers Planned: 3, Workers Launched: 3. how many processes scanned the table?" options={["3", "4", "1"]} answer={1}>
+```text
+->  Gather (actual rows=4.00 loops=1)
+      Workers Planned: 3
+      Workers Launched: 3
+      ->  Partial Aggregate (actual rows=1.00 loops=4)
+```
+<Explain>
+4. the leader isn't just waiting for its workers: while it has nothing to collect, it runs the plan below Gather too (parallel_leader_participation is on by default). that's why loops=4 and why Gather received 4 partial counts. 3 workers plus the leader is the "four cores" in a monitoring graph.
+</Explain>
+</Predict>
+
+why 3 workers and not 4? the planner sizes the team to the table: one worker for a table of `min_parallel_table_scan_size` (8MB), then one more each time the table is three times bigger: 24MB, 72MB, 216MB. big is {big.size}, so 3, under the cap of 4. `max_parallel_workers` ({big.max_workers} here) is the cap for the whole server, and when it's used up by other queries, a query gets fewer workers than it planned, or none, and the leader does the rest.
+
+## parallel GROUP BY
+
+grouping works the same way, with one more step: each process's partial groups have to be combined by key.
+
+<Figure wide caption={<>a parallel GROUP BY on the server. each process builds its own partial groups and sorts them; <C k="hot">Gather Merge</C> merges the sorted streams, and the Finalize GroupAggregate combines the partial counts per k.</>}>
+<PlanText trace={server} step={3} hot={["Gather Merge", "Partial HashAggregate", "Finalize", "Worker 0"]} />
+</Figure>
+
+each of the 4 processes hashes its rows into 1,000 partial groups and sorts them. **Gather Merge** merges the 4 sorted streams into one sorted stream of 4,000 rows (a plain Gather would lose the order), and the Finalize GroupAggregate adds up the 4 partial counts of each k as they go by. `Worker 0:` lines are the workers' own numbers; the line without a prefix is the leader's. the split into Partial and Finalize is the same one [partitions use](/learn/execution/aggregation-algorithms), and the same rule applies: `count(DISTINCT ...)` can't be split.
+
+## and in this page
+
+the browser's postgres is one process with `max_worker_processes = 0`:
+
+```sql run db=events
+SELECT current_setting('max_worker_processes') AS max_worker_processes,
+       current_setting('max_parallel_workers') AS max_parallel_workers;
+```
+
+so nothing can be launched. but the planner doesn't know that; it only plans. give events the settings that make even a small table worth splitting, and it plans 4 workers anyway:
+
+```sql run db=events
+SET max_parallel_workers_per_gather = 4;
+SET min_parallel_table_scan_size = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM events;
+```
+
+`Workers Planned: 4`, `Workers Launched: 0`, and the leader scans all 25,000 rows in one loop. here's the same query and settings on the real server:
+
+<Figure wide caption={<>the same query with the same settings, on a real postgres 18.6 server and in this page. same plan. on the server 4 workers start and the scan's 25,000 rows are split five ways (5,000 per process on average); here none can start, so loops=1 and the leader does it all.</>}>
+<PlanPair a={{ trace: server, step: 4, label: "a postgres 18.6 server" }} b={{ trace: browser, step: 1, label: "this page (PGlite)" }} hot={["Workers Launched", "Parallel Seq Scan"]} />
+</Figure>
+
+a plan with a Gather and no workers is correct, just not faster: the leader runs the whole thing. it's what you'd see on a server where every worker slot is busy.
+
+<Quiz question="which of these can't use a parallel plan?" options={["SELECT count(*) FROM big", "CREATE TABLE t AS SELECT ...", "UPDATE big SET v = 0"]} answer={2}>
+<Explain>
+the UPDATE. writes run in a single process; parallel workers only read. the SELECT inside a CREATE TABLE AS can be parallel (the leader does the writing). other things that keep a query serial: cursors, functions marked PARALLEL UNSAFE, and anything already running inside a parallel worker.
+</Explain>
+</Quiz>
+
+<Docs href="https://www.postgresql.org/docs/18/when-can-parallel-query-be-used.html" title="when can parallel query be used?">
+the full list of what keeps a query serial (writes, cursors, PARALLEL UNSAFE functions, and more) and the settings that size the worker pool. the plan nodes are on <a href="https://www.postgresql.org/docs/18/parallel-plans.html">parallel plans</a>.
+</Docs>
+
+<Gotcha title="workers aren't free">
+each worker is a new process: starting it, giving it a snapshot and moving its rows through shared memory to the leader all cost something, which is what parallel_setup_cost and parallel_tuple_cost price. for a small table that's more than the work saved, which is why the defaults only go parallel past 8MB. and every worker gets its own work_mem for its own sorts and hashes: four processes, four budgets.
+</Gotcha>
+
+<Interview q="how does parallel query work in postgres?">
+the planner can put a Gather (or Gather Merge, to keep sorted order) into a plan. at run time it launches background worker processes, up to max_parallel_workers_per_gather and subject to max_parallel_workers server-wide, and each worker, plus the leader by default, runs the part of the plan below the Gather. a Parallel Seq Scan hands out blocks to whoever asks, so the table is split dynamically. aggregates become Partial (per process) and Finalize (in the leader). the number of workers grows with table size: one at min_parallel_table_scan_size, one more for every tripling. bonus points: EXPLAIN ANALYZE shows Workers Planned vs Launched, rows per process are averages over loops, and writes, cursors and PARALLEL UNSAFE functions keep a query serial.
+</Interview>
+
+<Keylines>
+- Gather starts workers; everything below it runs in every process, everything above only in the leader.
+- a Parallel Seq Scan hands out blocks on demand, so the work splits itself.
+- aggregates split into Partial (each process) and Finalize (once).
+- the leader works too: 3 workers means 4 processes, loops=4.
+- the browser's postgres plans parallel queries but has no workers: Launched: 0.
+</Keylines>

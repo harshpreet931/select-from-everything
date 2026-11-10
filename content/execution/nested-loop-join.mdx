@@ -1,0 +1,129 @@
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import { MemoStrip } from "@/components/figures/execution/MemoStrip";
+import { tableAt } from "@/components/figures/execution/source";
+import trace from "./traces/nested-loop.pgtrace.json";
+
+{/* the small join's tables, the four nested loops and the Memoize strip all read
+    traces/nested-loop.scenario.sql, captured on PGlite with the shop dataset. the JoinLab is
+    the join model in src/lib/db/sim/join.ts (checked against postgres in join.test.ts), fed the
+    two captured samples. */}
+
+export const cust = tableAt(trace, 0);
+export const ords = tableAt(trace, 1);
+export const nlSql = `SELECT c.name, o.id
+FROM customers AS c JOIN orders AS o ON o.customer_id = c.id
+WHERE c.city = 'Paris';`;
+
+<InShort>
+a **nested loop** join is two loops: for each row of the **outer** side, look through the **inner** side for matches. with nothing to help, that's n × m comparisons. with an **index** on the inner side, each outer row is one index lookup, and EXPLAIN shows the inner node with **loops=n**.
+
+dumb, and perfect when the outer side is small. **Memoize** makes it smarter when the outer side keeps asking for the same keys.
+</InShort>
+
+## the picture
+
+you know the join you'd write by hand in any language? `for each customer: for each order: if order.customer_id == customer.id: emit`. that's it. that's a nested loop, and postgres really does run it.
+
+think of a coat check with no tickets. for each guest who comes back (the outer side), the attendant walks the whole rack (the inner side) looking for their coat. give the rack numbered hooks and a list of who's on which hook (an index), and each guest becomes one look at the list and one walk to one hook.
+
+<Figure wide caption={<>four customers and seven orders. switch between the plain nested loop and the index nested loop, and step through. the plain one compares every customer with every order: 4 × 7 = 28 comparisons. with an index on <code>orders.customer_id</code>, each customer is a short search for its key, and Zoë Martin, with no orders here, costs almost nothing.</>}>
+<JoinLab
+  left={{ name: "customers", columns: cust.columns.map((c) => c.name), rows: cust.rows }}
+  right={{ name: "orders", columns: ords.columns.map((c) => c.name), rows: ords.rows }}
+  on={["id", "customer_id"]}
+  algos={["nested-loop", "index-nl"]}
+/>
+</Figure>
+
+the outer side is read once. the inner side is read once *per outer row*: rescanned, in postgres's word. that's where the **loops** in EXPLAIN ANALYZE come from, and why actual rows on the inner side is a per-loop average ([EXPLAIN ANALYZE](/learn/execution/explain-analyze)).
+
+## four nested loops for one query
+
+paris customers and their orders. postgres's own choice here is a [hash join](/learn/execution/hash-join): 10,000 orders against 66 customers is exactly what hashing is for. switch hash and merge joins off, and it has to nested-loop, which shows every way it knows how:
+
+<Figure wide caption={<>the same join, four ways, all with hash and merge joins switched off. watch the inner side: 10,000 loops through a materialized list, then 10,000 index lookups, then <C k="live">Memoize</C> answering most of them from a cache, then the same cache squeezed into 64kB.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "inner side", values: ["no index", "index", "index + Memoize", "Memoize in 64kB"] }]}
+  runs={{
+    "no index": { step: 2, sql: `SET enable_hashjoin = off;\nSET enable_mergejoin = off;\nSET enable_memoize = off;\nSET enable_indexscan = off;\nSET enable_bitmapscan = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${nlSql}` },
+    index: { step: 3, sql: `SET enable_hashjoin = off;\nSET enable_mergejoin = off;\nSET enable_memoize = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${nlSql}` },
+    "index + Memoize": { step: 4, sql: `SET enable_hashjoin = off;\nSET enable_mergejoin = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${nlSql}` },
+    "Memoize in 64kB": { step: 5, sql: `SET enable_hashjoin = off;\nSET enable_mergejoin = off;\nSET work_mem = '64kB';\nSET hash_mem_multiplier = 1;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${nlSql}` },
+  }}
+  hot={["loops=10000", "Rows Removed by Join Filter", "Hits:", "Index Searches"]}
+  metric={{ label: "pages touched (Buffers: shared hit + read)", re: /Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?/, unit: "pages" }}
+/>
+</Figure>
+
+- **no index**: the 66 paris customers are scanned once and kept in memory by a **Materialize**, so the 10,000 rescans cost no page reads at all (107 pages in total). the cost is all CPU: `Rows Removed by Join Filter: 644709`, more than 600,000 comparisons for 369 rows. (it's 64.51 per loop, not 66, because `c.id` is unique: once an order finds its customer, the rest of the list can't match, so the loop stops early.)
+- **index**: `loops=10000` and `Index Searches: 10000`. every order goes down customers_pkey and fetches the customer: about 3 pages each, 30,083 in all. the Filter throws away the non-parisians after fetching them.
+- **index + Memoize**: the same lookups, through a cache keyed on `o.customer_id`. 1,962 misses (different customers, looked up for real) and 8,038 hits (a customer seen before, answered from memory). 5,969 pages.
+- **Memoize in 64kB**: the cache needs 95kB to hold every customer it sees. at 64kB it throws the oldest out (`Evictions: 2253`), customers come back after being evicted, and misses go up to 3,578.
+
+## Memoize, up close
+
+Memoize <Since v={14} /> sits between a nested loop and its inner side and remembers the inner result for each key. it pays off when the outer side repeats keys and the inner lookup costs something. postgres picks it on its own here, for the first 1,000 orders and their customers:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT o.id, c.name
+FROM orders AS o JOIN customers AS c ON c.id = o.customer_id
+ORDER BY o.id
+LIMIT 1000;
+```
+
+<Predict question="Hits: 260, Misses: 740, Evictions: 0. how many different customers placed those 1,000 orders?" options={["260", "740", "1,000"]} answer={1}>
+```text
+->  Memoize (actual rows=1.00 loops=1000)
+      Cache Key: o.customer_id
+      Hits: 260  Misses: 740  Evictions: 0
+```
+<Explain>
+740. with nothing evicted, a miss happens exactly once per key: the first time that customer shows up. every later order of theirs is a hit. so misses = distinct customers, and the inner index scan ran 740 times (its loops).
+</Explain>
+</Predict>
+
+<Figure wide caption={<>the 1,000 orders in the order the plan read them, one square each. <C k="hot">miss</C>: a customer not seen yet, so the index scan runs. <C k="live">hit</C>: answered from the cache. hits get more common as the cache fills up. the counts are worked out from the captured keys and match the plan's Hits and Misses.</>}>
+<MemoStrip trace={trace} keys={7} plan={6} />
+</Figure>
+
+why a nested loop at all here, when hashing won the paris join? because of the `LIMIT`. a [hash join](/learn/execution/hash-join) has to build its whole hash table before it returns a row; this plan returns its first row after one index lookup, and stops after 1,000. that's a low startup cost, which is what a LIMIT pays for ([the iterator model](/learn/execution/iterator-model)).
+
+## the joins a nested loop can do (and the one it can't)
+
+a nested loop is the only join that works with *any* condition. hash and merge joins need an equality (`a.x = b.y`); a nested loop just evaluates the condition, whatever it is: `<`, `BETWEEN`, `&&` on ranges, a function call. inequality joins are nested loops, always.
+
+the one thing it can't do is FULL JOIN. a nested loop walks the inner side once per outer row, so it can tell you which outer rows never matched, but an inner row that never matched anyone has no moment where that becomes known... until the very end, after every rescan, and the nested loop doesn't keep score. so postgres doesn't offer it, even with hash joins switched off:
+
+```sql run db=shop
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+
+EXPLAIN (COSTS OFF)
+SELECT c.name, o.id
+FROM customers AS c FULL JOIN orders AS o ON o.customer_id = c.id;
+```
+
+it picks the hash join anyway, and since postgres 18 it says so: `Disabled: true` <Since v={18} />. switching a join type off only makes it look expensive. and with a condition neither hash nor merge can use, there's nothing left:
+
+```sql run db=shop expect=error
+SELECT c.name, o.id
+FROM customers AS c FULL JOIN orders AS o ON o.customer_id < c.id;
+```
+
+<Gotcha title="the misestimate that picks a nested loop">
+nested loops are cheap when the outer side is small, so a planner that thinks the outer side has a couple of rows loves them. when it really has hundreds of thousands, the inner index lookup runs hundreds of thousands of times, and the query that was fine in testing takes minutes. if you see `loops=` in the hundreds of thousands under a Nested Loop, look at the estimate on its outer side first ([when estimates go wrong](/learn/optimizer/misestimates)).
+</Gotcha>
+
+<Interview q="when is a nested loop join the right choice?">
+when the outer side is small and the inner side has an index on the join key: then the cost is roughly outer rows × one index lookup, with no build phase, so the first row comes back immediately, which makes it the natural plan under a LIMIT. it's also the only join for non-equality conditions. it's the wrong choice when the outer side is big, because the inner side runs once per outer row. bonus points: Memoize (postgres 14) caches inner results per key when the outer side repeats keys, and a nested loop can't do a FULL OUTER JOIN.
+</Interview>
+
+<Keylines>
+- for each outer row, run the inner side: n × m without help, n index lookups with an index.
+- the inner node's loops = outer rows, and its actual rows are per loop.
+- Memoize caches the inner result per key: hits are free, misses run the lookup.
+- the only join for conditions that aren't equalities, and the one that can't do FULL JOIN.
+- low startup cost: the natural plan under a LIMIT, and the victim of a small row estimate.
+</Keylines>

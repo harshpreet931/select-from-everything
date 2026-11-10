@@ -1,0 +1,165 @@
+import { CountKinds } from "@/components/figures/basics/CountKinds";
+import { Fold } from "@/components/figures/basics/Fold";
+import { prov, resultOf } from "@/components/figures/basics/captured";
+import trace from "./traces/aggregates.pgtrace.json";
+
+{/* every figure reads traces/aggregates.scenario.sql (PGlite, the shop): Ada's seven orders,
+    the three counts, the hours to ship and their average, and six aggregates on three inputs. */}
+
+export const ada = resultOf(trace, 0);
+export const counts = resultOf(trace, 1);
+export const hours = resultOf(trace, 2);
+export const avg = resultOf(trace, 3);
+export const inputs = resultOf(trace, 4);
+export const source = prov(trace);
+
+<InShort>
+an **aggregate function** folds many rows into one value. **count(\*)** counts rows, **count(col)** counts the values in col that aren't NULL, and **count(DISTINCT col)** counts how many different ones there are. three numbers, three questions.
+
+every aggregate skips NULLs, and over no rows at all, everything but count returns NULL.
+</InShort>
+
+## the picture
+
+you know how `count(*)` and `count(email)` look like two spellings of the same thing? on the shop's customers they say 2,000 and 1,954, and the difference is the whole chapter.
+
+think of a teacher with a stack of exam papers. "how many papers?" is one question. "how many have a grade written on them?" is another, because some are still blank. "how many different grades?" is a third. same stack, three answers, and none of them is wrong.
+
+here's the stack: customer 42, Ada, and her seven orders.
+
+<Figure wide caption={<>pick a count. it looks only at the <C k="hot">hot</C> column (count(*) looks at none: it counts rows). NULLs are skipped, and count(DISTINCT) counts a status only the first time it's seen.</>}>
+<CountKinds
+  table={ada}
+  kinds={[
+    { sql: "count(*)", note: "count(*) doesn't look inside the rows at all. every row is one, NULLs or not. Ada placed 7 orders." },
+    { sql: "count(shipped_at)", col: "shipped_at", note: "count(shipped_at) counts the rows where shipped_at has a value. the cancelled order and the one still waiting have none, so 5." },
+    { sql: "count(DISTINCT status)", col: "status", distinct: true, note: "count(DISTINCT status) counts different values: delivered four times is still one status. cancelled, refunded, delivered, placed: 4." },
+  ]}
+  totals={counts.rows[0]}
+  from={"FROM orders\nWHERE customer_id = 42;"}
+  trace={source}
+/>
+</Figure>
+
+7, 5 and 4 from one table. all three in one query, for real:
+
+```sql run db=shop
+SELECT count(*) AS orders,
+       count(shipped_at) AS shipped,
+       count(DISTINCT status) AS statuses
+FROM orders
+WHERE customer_id = 42;
+```
+
+on the whole customers table the three counts drift even further apart:
+
+```sql run db=shop
+SELECT count(*), count(city), count(DISTINCT city) FROM customers;
+```
+
+2,000 rows, 1,945 with a city, 28 different cities. and the empty string Ana Lima lives in is one of the 28: `''` is a value, so DISTINCT counts it. only NULL is left out.
+
+## an aggregate is a fold
+
+under the hood every aggregate works the same way: start with an empty state, feed it one row at a time, and turn the state into an answer at the end. `count` keeps a counter. `sum` keeps a running total. `avg` keeps two numbers, a total and a count, and divides when the rows run out.
+
+<Figure wide caption={<>step through Ada's orders. avg's state is a sum and a count, and a <code>NULL</code> leaves both alone. the last step divides, and the panel shows what postgres actually returned.</>}>
+<Fold sql={avg.sql} table={hours} col="hours" result={{ columns: avg.columns, rows: avg.rows }} trace={source} />
+</Figure>
+
+206 hours over 5 shipped orders: 41.20. if NULLs counted as zero, it would be 206 over 7, about 29, which is a different (and wrong) claim about how fast Ada's orders ship. skipping NULLs is usually what you want. when it isn't, say what a missing value should count as, with `avg(coalesce(x, 0))`.
+
+this is also why [GROUP BY](/learn/basics/group-by) is cheap to explain once you've seen this: it runs one fold per bucket instead of one for the whole table.
+
+## the usual suspects
+
+| function | gives you | type of the answer |
+| --- | --- | --- |
+| `count(*)`, `count(x)` | rows, non-NULL values | always bigint |
+| `sum(x)` | the total | bigint for int, numeric for numeric |
+| `avg(x)` | the mean | numeric for any integer or numeric |
+| `min(x)`, `max(x)` | smallest, largest | the same type as x, text and dates too |
+| `string_agg(x, ', ' ORDER BY x)` | the values glued together | text |
+| `array_agg(x ORDER BY x)` | the values as an array | an array of x's type |
+| `bool_and(x)`, `bool_or(x)` | all true? any true? | boolean |
+
+the types matter more than they look. a sum of `int` columns comes back as `bigint`, so it doesn't overflow, and an average of integers comes back as `numeric`, with all its decimals:
+
+```sql run db=shop
+SELECT sum(qty) AS units, avg(qty) AS avg_qty, pg_typeof(sum(qty)) AS sum_type, pg_typeof(avg(qty)) AS avg_type
+FROM order_items;
+```
+
+`min` and `max` work on anything that can be sorted, so the alphabetically first customer and the newest order are one aggregate away. `string_agg` and `array_agg` care about order, so give them their own ORDER BY, inside the parentheses:
+
+```sql run db=shop
+SELECT min(name) AS first, max(name) AS last,
+       string_agg(name, ', ' ORDER BY id) AS first_five
+FROM customers
+WHERE id <= 5;
+```
+
+(min and max sort the names, so Grace Okafor comes first. last is Zoë Martin, not Zoe: in the C collation this page runs, ë sorts after every plain letter. [LIKE, ILIKE and regular expressions](/learn/basics/pattern-matching) has more on that.) the [ordered-set aggregates](/learn/analytics/ordered-set-aggregates) chapter has the medians and percentiles.
+
+## nothing in, something out
+
+<Predict options={["no rows", "one row: 0, null, null", "one row: 0, 0, 0"]} answer={1}>
+```sql
+SELECT count(*), sum(price), max(price)
+FROM products
+WHERE price < 0;
+```
+<Explain>
+no product has a negative price, so the aggregates see zero rows. an aggregate without GROUP BY always returns exactly one row, though: the whole (empty) table is one bucket. count of nothing is 0. the sum and the maximum of nothing don't exist, so they're NULL, not 0.
+</Explain>
+</Predict>
+
+and for real:
+
+```sql run db=shop
+SELECT count(*), sum(price), max(price)
+FROM products
+WHERE price < 0;
+```
+
+one row, even though nothing matched. here's the whole pattern, six aggregates fed three different inputs:
+
+<Figure caption={<>one captured query. count never returns NULL. everything else returns NULL when it has no values to work with, whether that's because there were no rows or because every value was NULL.</>}>
+<ResultTable columns={inputs.columns} rows={inputs.rows} />
+</Figure>
+
+so a report that says "total revenue: null" isn't broken. it's telling you there were no rows. if the report should say 0, ask for it: `coalesce(sum(price), 0)`.
+
+<Gotcha title="aggregates have their own place in the query">
+an aggregate needs all the rows of a bucket before it has an answer, so it can't appear where postgres is still looking at one row at a time:
+
+```sql run db=shop expect=error
+SELECT count(*) FROM customers WHERE count(*) > 1;
+```
+
+WHERE runs before any rows are folded (see [the logical order](/learn/basics/logical-order)). filtering on an aggregate is what [HAVING](/learn/basics/having-clause) is for. and aggregates don't nest, because the inner one already turned the bucket into a single value:
+
+```sql run db=shop expect=error
+SELECT max(count(*)) FROM orders;
+```
+
+to get the biggest count, count per bucket in a subquery, then take the max outside.
+</Gotcha>
+
+<Deep title="count(1), count(*) and count(id)">
+`count(1)` counts rows where the expression `1` isn't NULL, which is every row, so it gives the same answer as `count(*)`. a column that's NOT NULL, like a primary key, gives the same answer too. in postgres `count(*)` is the one to write: it's a special form with no argument at all, so there's nothing to check per row, where `count(1)` checks its 1 for NULL every time.
+
+the trap is the other way round. `count(col)` on a column that *can* be NULL is a different question, and in a LEFT JOIN it's often the right one: counting a customer's orders with `count(o.id)` gives 0 for a customer with none, where `count(*)` would count the NULL-padded row and say 1. [LEFT, RIGHT and FULL joins](/learn/joins/outer-joins) shows it.
+</Deep>
+
+<Interview q="what's the difference between count(*), count(col) and count(DISTINCT col)?">
+count(\*) counts rows. count(col) counts the rows where col isn't NULL. count(DISTINCT col) counts the different non-NULL values of col. on one customer's orders that can be 7, 5 and 4. bonus point: every other aggregate skips NULLs too, so avg divides by the number of values, not the number of rows, and over zero rows count is 0 while sum, avg, min and max are NULL.
+</Interview>
+
+<Keylines>
+- an aggregate folds many rows into one value: a state, fed row by row, finished at the end.
+- count(\*) counts rows, count(col) counts values, count(DISTINCT col) counts different values.
+- every aggregate skips NULLs. avg divides by the values it saw, not by the rows.
+- no GROUP BY means one bucket and one row, even over zero rows. count says 0, the rest say NULL.
+- aggregates can't go in WHERE and can't nest. HAVING and subqueries are where they go.
+</Keylines>

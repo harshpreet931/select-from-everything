@@ -1,0 +1,249 @@
+{
+ "v": 1,
+ "scenario": "content/index-internals/traces/leaf-split.scenario.sql",
+ "title": "one leaf, filled until it splits: once at the right edge, once in the middle",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "e": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"}]},
+  "e_id": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"e"}
+ },
+ "base": {"xid":755,"lsn":25805656},
+ "setup": "CREATE TABLE e (id int);\nCREATE INDEX e_id ON e (id);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "INSERT INTO e SELECT g * 2 FROM generate_series(1, 407) AS g",
+   "note": "407 even keys, 2 to 814, in ascending order: the only page is full, with 8 bytes to spare.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":407,"columns":[],"data":[]},
+   "btree": {
+    "e_id": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"2","tid":[0,1],"dead":false},
+        {"off":2,"key":"4","tid":[0,2],"dead":false},
+        {"off":3,"key":"6","tid":[0,3],"dead":false},
+        {"off":405,"key":"810","tid":[1,179],"dead":false},
+        {"off":406,"key":"812","tid":[1,180],"dead":false},
+        {"off":407,"key":"814","tid":[1,181],"dead":false}
+       ],
+       "n": 407
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO e VALUES (816)",
+   "note": "one more key on the end. the root leaf splits: 366 keys stay on the left, the rest go to a new page, and a root appears above them.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "btree": {
+    "e_id": {
+     "root": 3,
+     "levels": 2,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 2,
+       "high": "734",
+       "items": [
+        {"off":2,"key":"2","tid":[0,1],"dead":false},
+        {"off":3,"key":"4","tid":[0,2],"dead":false},
+        {"off":4,"key":"6","tid":[0,3],"dead":false},
+        {"off":365,"key":"728","tid":[1,138],"dead":false},
+        {"off":366,"key":"730","tid":[1,139],"dead":false},
+        {"off":367,"key":"732","tid":[1,140],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 2,
+       "type": "l",
+       "level": 0,
+       "prev": 1,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"734","tid":[1,141],"dead":false},
+        {"off":2,"key":"736","tid":[1,142],"dead":false},
+        {"off":3,"key":"738","tid":[1,143],"dead":false},
+        {"off":40,"key":"812","tid":[1,180],"dead":false},
+        {"off":41,"key":"814","tid":[1,181],"dead":false},
+        {"off":42,"key":"816","tid":[1,182],"dead":false}
+       ],
+       "n": 42
+      },
+      {
+       "blk": 3,
+       "type": "r",
+       "level": 1,
+       "prev": 0,
+       "next": 0,
+       "items": [{"off":1,"key":"","tid":[1,0],"dead":false},{"off":2,"key":"734","tid":[2,1],"dead":false}]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO e SELECT g * 2 - 1 FROM generate_series(1, 40) AS g",
+   "note": "forty odd keys, 1 to 79, all land on the left leaf, which fills up again.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":40,"columns":[],"data":[]},
+   "btree": {
+    "e_id": {
+     "root": 3,
+     "levels": 2,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 2,
+       "high": "734",
+       "items": [
+        {"off":2,"key":"1","tid":[1,183],"dead":false},
+        {"off":3,"key":"2","tid":[0,1],"dead":false},
+        {"off":4,"key":"3","tid":[1,184],"dead":false},
+        {"off":405,"key":"728","tid":[1,138],"dead":false},
+        {"off":406,"key":"730","tid":[1,139],"dead":false},
+        {"off":407,"key":"732","tid":[1,140],"dead":false}
+       ],
+       "n": 406
+      },
+      {
+       "blk": 2,
+       "type": "l",
+       "level": 0,
+       "prev": 1,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"734","tid":[1,141],"dead":false},
+        {"off":2,"key":"736","tid":[1,142],"dead":false},
+        {"off":3,"key":"738","tid":[1,143],"dead":false},
+        {"off":40,"key":"812","tid":[1,180],"dead":false},
+        {"off":41,"key":"814","tid":[1,181],"dead":false},
+        {"off":42,"key":"816","tid":[1,182],"dead":false}
+       ],
+       "n": 42
+      },
+      {
+       "blk": 3,
+       "type": "r",
+       "level": 1,
+       "prev": 0,
+       "next": 0,
+       "items": [{"off":1,"key":"","tid":[1,0],"dead":false},{"off":2,"key":"734","tid":[2,1],"dead":false}]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "INSERT INTO e VALUES (81)",
+   "note": "one more, 81, in the middle of a page that isn't the rightmost: this time it splits down the middle, and the new page goes between the two old ones.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "btree": {
+    "e_id": {
+     "root": 3,
+     "levels": 2,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 4,
+       "high": "326",
+       "items": [
+        {"off":2,"key":"1","tid":[1,183],"dead":false},
+        {"off":3,"key":"2","tid":[0,1],"dead":false},
+        {"off":4,"key":"3","tid":[1,184],"dead":false},
+        {"off":202,"key":"320","tid":[0,160],"dead":false},
+        {"off":203,"key":"322","tid":[0,161],"dead":false},
+        {"off":204,"key":"324","tid":[0,162],"dead":false}
+       ],
+       "n": 203
+      },
+      {
+       "blk": 2,
+       "type": "l",
+       "level": 0,
+       "prev": 4,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"734","tid":[1,141],"dead":false},
+        {"off":2,"key":"736","tid":[1,142],"dead":false},
+        {"off":3,"key":"738","tid":[1,143],"dead":false},
+        {"off":40,"key":"812","tid":[1,180],"dead":false},
+        {"off":41,"key":"814","tid":[1,181],"dead":false},
+        {"off":42,"key":"816","tid":[1,182],"dead":false}
+       ],
+       "n": 42
+      },
+      {
+       "blk": 3,
+       "type": "r",
+       "level": 1,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"","tid":[1,0],"dead":false},
+        {"off":2,"key":"326","tid":[4,1],"dead":false},
+        {"off":3,"key":"734","tid":[2,1],"dead":false}
+       ]
+      },
+      {
+       "blk": 4,
+       "type": "l",
+       "level": 0,
+       "prev": 1,
+       "next": 2,
+       "high": "734",
+       "items": [
+        {"off":2,"key":"326","tid":[0,163],"dead":false},
+        {"off":3,"key":"328","tid":[0,164],"dead":false},
+        {"off":4,"key":"330","tid":[0,165],"dead":false},
+        {"off":203,"key":"728","tid":[1,138],"dead":false},
+        {"off":204,"key":"730","tid":[1,139],"dead":false},
+        {"off":205,"key":"732","tid":[1,140],"dead":false}
+       ],
+       "n": 204
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

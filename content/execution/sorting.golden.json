@@ -1,0 +1,106 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "19bfb5c1e3a9dbe7": {
+      "db": "events",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at\nFROM events\nORDER BY kind, occurred_at DESC;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "8644f04ca36ba987",
+          "rows": [
+            ["Sort (actual rows=25000.00 loops=1)"],
+            ["  Sort Key: kind, occurred_at DESC"],
+            ["  Sort Method: quicksort  Memory: 1684kB"],
+            ["  Buffers: shared hit=6 read=335"],
+            ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+            ["        Buffers: shared read=335"],
+            ["Planning:"],
+            ["  Buffers: shared hit=65 read=5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "53bf11f938b89562": {
+      "db": "events",
+      "sql": "SET work_mem = '1MB';\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at\nFROM events\nORDER BY kind, occurred_at DESC;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b32dd859c7713bee",
+          "rows": [
+            ["Sort (actual rows=25000.00 loops=1)"],
+            ["  Sort Key: kind, occurred_at DESC"],
+            ["  Sort Method: external merge  Disk: 1040kB"],
+            ["  Buffers: shared hit=6 read=335, temp read=130 written=131"],
+            ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+            ["        Buffers: shared read=335"],
+            ["Planning:"],
+            ["  Buffers: shared hit=65 read=5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5b43d2e571f19072": {
+      "db": "events",
+      "sql": "CREATE INDEX ON events (user_id);\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, occurred_at\nFROM events\nORDER BY user_id, occurred_at\nLIMIT 10;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "9ab13c7d418675bc",
+          "rows": [
+            ["Limit (actual rows=10.00 loops=1)"],
+            ["  Buffers: shared hit=337 read=3"],
+            ["  ->  Incremental Sort (actual rows=10.00 loops=1)"],
+            ["        Sort Key: user_id, occurred_at"],
+            ["        Presorted Key: user_id"],
+            ["        Full-sort Groups: 1  Sort Method: top-N heapsort  Average Memory: 17kB  Peak Memory: 17kB"],
+            ["        Pre-sorted Groups: 1  Sort Method: top-N heapsort  Average Memory: 17kB  Peak Memory: 17kB"],
+            ["        Buffers: shared hit=337 read=3"],
+            ["        ->  Index Scan using events_user_id_idx on events (actual rows=1135.00 loops=1)"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared hit=331 read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=70 read=6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

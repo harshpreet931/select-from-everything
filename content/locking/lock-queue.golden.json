@@ -1,0 +1,81 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "d2915bcc7b1f574e": {
+      "db": "empty",
+      "sql": "SHOW lock_timeout;\nSET lock_timeout = '2s';\nSHOW lock_timeout;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["lock_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ca4f6bc2beee106f",
+          "rows": [
+            ["0"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["lock_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "f4f966fe85a70fcc",
+          "rows": [
+            ["2s"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e9853c551414369f": {
+      "db": "empty",
+      "sql": "CREATE TABLE accounts (id int PRIMARY KEY, balance numeric(12,2) NOT NULL);\nDO $$\nBEGIN\n  FOR attempt IN 1..5 LOOP\n    BEGIN\n      SET LOCAL lock_timeout = '500ms';\n      ALTER TABLE accounts ADD COLUMN note text;\n      RETURN;                                   -- got the lock, done\n    EXCEPTION WHEN lock_not_available THEN\n      PERFORM pg_sleep(attempt);                -- back off, then try again\n    END;\n  END LOOP;\n  RAISE EXCEPTION 'could not get the lock after 5 tries';\nEND $$;\nSELECT column_name FROM information_schema.columns\nWHERE table_name = 'accounts' ORDER BY ordinal_position;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "digest": "30fce313be622839"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["column_name", "name", 19]
+          ],
+          "rowCount": 3,
+          "digest": "3fb2507f60d5f77d",
+          "rows": [
+            ["id"],
+            ["balance"],
+            ["note"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

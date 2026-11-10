@@ -1,0 +1,131 @@
+import { LeafGrid } from "@/components/figures/indexes/LeafGrid";
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import grid from "./traces/composite-grid.pgtrace.json";
+import order from "./traces/composite-order.pgtrace.json";
+
+{/* the grid reads traces/composite-grid.scenario.sql (a btree probe of an (a, b) index and, per
+    query, its rows and its EXPLAIN); the plans read traces/composite-order.scenario.sql (shop's
+    orders with the two columns in either order). both captured on PGlite. */}
+
+export const plan = (t, i) => t.steps[i].explain.Plan;
+export const idx = (t, i) => plan(t, i).Plans[0];
+export const since = order.steps[7].result.data[0][0];
+export const pg = (n) => n["Shared Hit Blocks"] + n["Shared Read Blocks"];
+
+<InShort>
+an index on `(a, b)` is sorted by `a`, and by `b` only among rows with the same `a`. so it narrows a scan for `a`, for `a` and `b`, and for a range on `b` once `a` is fixed. that's the **leftmost prefix**. for `b` on its own, the matches are scattered across the whole index.
+
+the rule of thumb that falls out of it: **equality columns first, the range column last.**
+</InShort>
+
+## the picture
+
+you know the phone book? sorted by last name, then first name. finding every Patel is easy: they're all together. finding Ravi Patel is easy too. finding everyone called Ravi means reading the whole book, because the Ravis are scattered one per surname.
+
+an index on `(a, b)` is that phone book. here's a real one, 240 entries: six values of `a`, forty of `b`. each row of the grid is one value of `a`, and reading the rows left to right, top to bottom, is reading the index in order. pick a query.
+
+<Figure wide caption={<>an index on (a, b), read in order, one row per value of a. the two shades are its seven leaf pages. pick a query: <C k="hot">the entries it returns</C> are a contiguous run for <code>a = 3</code>, for <code>a = 3 AND b &gt; 30</code> and for <code>a = 3 AND b = 7</code>. for <code>b = 7</code> alone they're scattered, one per value of a, across every leaf page.</>}>
+<LeafGrid
+  trace={grid}
+  index="ab_a_b"
+  at={0}
+  queries={[
+    { label: "a = 3", rows: 2, plan: 3 },
+    { label: "a = 3 AND b > 30", rows: 4, plan: 5 },
+    { label: "a = 3 AND b = 7", rows: 6, plan: 7 },
+    { label: "b = 7", rows: 8, plan: 9 },
+  ]}
+/>
+</Figure>
+
+the first three need one trip down the tree (`Index Searches: 1`) and then a short walk to the right, stopping when the run ends. the index is built with `fillfactor = 10`, so 240 entries take seven leaf pages instead of one, and the grid has page boundaries worth seeing.
+
+`b = 7` is different. its six entries sit in six different places. postgres 18 can still use the index for it, by hopping: one trip down the tree per value of `a` (the figure says `Index Searches: 7`). that's a [skip scan](/learn/indexes/skip-scan), and it only pays off because `a` has six values here. before postgres 18, the choice was reading the whole index or the whole table.
+
+## the leftmost prefix
+
+shop already has a composite index: `order_items`' primary key is `(order_id, line_no)`. the leading column works on its own:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM order_items WHERE order_id = 42;
+```
+
+both columns, one descent, one entry:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM order_items WHERE order_id = 42 AND line_no = 2;
+```
+
+<Predict question="the same index, and only the second column. what does postgres do?" options={["index scan", "skip scan", "seq scan"]} answer={2}>
+```sql
+EXPLAIN SELECT * FROM order_items WHERE line_no = 4;
+```
+<Explain>
+a seq scan. about a quarter of the orders have a line 4, and they're spread over all 10,000 values of order_id. a skip scan would mean up to 10,000 trips down the tree, and reading the 159-page table once is cheaper. skip scans only win when the leading column has few distinct values.
+</Explain>
+</Predict>
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM order_items WHERE line_no = 4;
+```
+
+the manual states the exact rule: equality conditions on the leading columns, plus a range condition on the first column without an equality, are what limit the part of the index that's scanned. conditions on columns after that are still checked inside the index (so they save heap visits), but they don't shrink the scan.
+
+<Figure caption={<>which conditions narrow a scan of an index on (a, b, c), following the manual's rule. "checked" means tested on each index entry the scan reads, which saves visits to the table but not reads of the index.</>}>
+<Tree>{`
+index on (a, b, c)
+    WHERE a = 1 AND b = 2 AND c > 3       // all three narrow the scan
+    WHERE a = 1 AND b > 2 AND c = 3       // a and b narrow it, c is checked
+    WHERE a > 1 AND b = 2                 // a narrows it, b is checked (or hopped, in 18)
+    WHERE b = 2 AND c = 3                 // nothing leads: a skip scan, or no index
+`}</Tree>
+</Figure>
+
+## equality first, range last
+
+the order of the columns decides which of those you get. say you look up cancelled orders since january, all the time. two candidate indexes: `(status, ordered_at)` and `(ordered_at, status)`. same columns, same size.
+
+<Figure wide caption={<>switch the index. with status first, the cancelled orders since january are one contiguous run: {pg(idx(order, 0))} index pages. with the date first, every order since january is in range and the status has to be checked entry by entry: postgres picks a seq scan instead, and forcing the index reads {pg(idx(order, 4))} index pages for the same 134 rows.</>}>
+<PlanPick
+  trace={order}
+  keyLabel="index"
+  pages
+  plans={[
+    { label: "(status, ordered_at)", step: 0 },
+    { label: "(ordered_at, status)", step: 2 },
+    { label: "(ordered_at, status), forced", step: 4 },
+    { label: "two single-column", step: 6 },
+  ]}
+/>
+</Figure>
+
+equality on `status` jumps to the one slice of the index where status is `'cancelled'`. inside it, entries are sorted by date, so `ordered_at >= '2026-01-01'` is a single run from a starting point to the end of the slice. flip the columns and the date range comes first: the scan starts at january 1 and reads every order from there on, cancelled or not ({Number(since).toLocaleString("en-US")} of them), testing the status of each.
+
+so: columns you compare with `=` go first, the one you compare with `<`, `>` or `BETWEEN` goes last. if there are several equality columns, their order among themselves matters less for this query; pick it for the other queries that should share the index (the most common one leading).
+
+<Gotcha title="two single-column indexes are not one composite index">
+the last option above has an index on `status` and another on `ordered_at`. postgres can combine two indexes with a BitmapAnd, but here it didn't bother: it used the status index alone and filtered the dates on the heap, visiting {plan(order, 6)["Rows Removed by Filter"]} rows it then threw away. one composite index answers both conditions inside the index. if the same pair of columns shows up together in the hot queries, index them together.
+</Gotcha>
+
+## what else the order decides
+
+- **ORDER BY.** an index on `(customer_id, ordered_at)` hands back one customer's orders already sorted by date, so `WHERE customer_id = 42 ORDER BY ordered_at DESC LIMIT 3` needs no sort at all. [indexes for ORDER BY](/learn/indexes/indexes-and-order-by) has the rules for directions and NULLs.
+- **covering.** extra columns at the end can make an [index-only scan](/learn/indexes/index-only-scans) possible. if they're never searched on, `INCLUDE` them instead of adding them as keys.
+- **the prefix comes free.** an index on `(a, b)` also serves `WHERE a = ...`, so a separate index on `a` alone is usually dead weight ([what indexes cost](/learn/indexes/index-costs)). the reverse isn't true.
+
+how the tree stores the two columns (one key, compared column by column, with suffix truncation in the internal pages) is in [a real b-tree, page by page](/learn/index-internals/nbtree-pages).
+
+<Interview q="how do you choose the column order for a multicolumn index?">
+by the queries. an index on (a, b) is sorted by a, then by b within each a, so it narrows a scan for conditions on a leading prefix of the columns: a, or a and b. put the columns the hot queries test with equality first and the one they test with a range last, because after a range, later columns can only be checked entry by entry. then consider ORDER BY: if the index order matches the query's sort, the sort disappears. bonus point: postgres 18's skip scan can use the index without a condition on the leading column, but only when that column has few distinct values.
+</Interview>
+
+<Keylines>
+- an index on (a, b) is sorted by a, then by b inside each a.
+- it narrows scans on a leftmost prefix: a, or a and b.
+- b alone is scattered across the index. postgres 18 can hop it if a has few values.
+- equality columns first, the range column last.
+- one composite index beats two single-column ones for queries that use both.
+</Keylines>

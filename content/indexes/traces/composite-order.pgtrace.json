@@ -1,0 +1,375 @@
+{
+ "v": 1,
+ "scenario": "content/indexes/traces/composite-order.scenario.sql",
+ "title": "cancelled orders since january, with the index columns in either order",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "orders_status": {"kind":"index","am":"btree","columns":[{"name":"status","type":"text"}],"on":"orders"},
+  "orders_ordered_at": {"kind":"index","am":"btree","columns":[{"name":"ordered_at","type":"timestamptz"}],"on":"orders"}
+ },
+ "base": {"xid":799,"lsn":33903840},
+ "setup": "CREATE INDEX orders_status_at ON orders (status, ordered_at);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE status = 'cancelled' AND ordered_at >= '2026-01-01'",
+   "note": "equality first: status = 'cancelled' picks one slice of the index, and the date range is a contiguous run inside it.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 5.88,
+     "Total Cost": 92.17,
+     "Plan Rows": 156,
+     "Plan Width": 4,
+     "Actual Rows": 134,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Recheck Cond": "((status = 'cancelled'::text) AND (ordered_at >= '2026-01-01 00:00:00+00'::timestamp with time zone))",
+     "Rows Removed by Index Recheck": 0,
+     "Exact Heap Blocks": 41,
+     "Lossy Heap Blocks": 0,
+     "Shared Hit Blocks": 41,
+     "Shared Read Blocks": 3,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "orders_status_at",
+       "Startup Cost": 0,
+       "Total Cost": 5.85,
+       "Plan Rows": 156,
+       "Plan Width": 0,
+       "Actual Rows": 134,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Index Cond": "((status = 'cancelled'::text) AND (ordered_at >= '2026-01-01 00:00:00+00'::timestamp with time zone))",
+       "Index Searches": 1,
+       "Shared Hit Blocks": 0,
+       "Shared Read Blocks": 3,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 31,
+     "Shared Read Blocks": 3,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "DROP INDEX orders_status_at;\nCREATE INDEX orders_at_status ON orders (ordered_at, status)",
+   "note": "now the other order: the range column first.",
+   "status": "ok",
+   "result": {"command":"CREATE INDEX","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE status = 'cancelled' AND ordered_at >= '2026-01-01'",
+   "note": "range first: postgres doesn't even want the index. it reads the table.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 0,
+     "Total Cost": 233,
+     "Plan Rows": 156,
+     "Plan Width": 4,
+     "Actual Rows": 134,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Filter": "((ordered_at >= '2026-01-01 00:00:00+00'::timestamp with time zone) AND (status = 'cancelled'::text))",
+     "Rows Removed by Filter": 9866,
+     "Shared Hit Blocks": 83,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 23,
+     "Shared Read Blocks": 1,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SET enable_seqscan = off",
+   "note": "take the seq scan away, to see what the index would have cost.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE status = 'cancelled' AND ordered_at >= '2026-01-01'",
+   "note": "the index on (ordered_at, status) has to read every entry since january and check the status of each.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 153.38,
+     "Total Cost": 239.67,
+     "Plan Rows": 156,
+     "Plan Width": 4,
+     "Actual Rows": 134,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Recheck Cond": "((ordered_at >= '2026-01-01 00:00:00+00'::timestamp with time zone) AND (status = 'cancelled'::text))",
+     "Rows Removed by Index Recheck": 0,
+     "Exact Heap Blocks": 41,
+     "Lossy Heap Blocks": 0,
+     "Shared Hit Blocks": 50,
+     "Shared Read Blocks": 26,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "orders_at_status",
+       "Startup Cost": 0,
+       "Total Cost": 153.34,
+       "Plan Rows": 156,
+       "Plan Width": 0,
+       "Actual Rows": 134,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Index Cond": "((ordered_at >= '2026-01-01 00:00:00+00'::timestamp with time zone) AND (status = 'cancelled'::text))",
+       "Index Searches": 1,
+       "Shared Hit Blocks": 9,
+       "Shared Read Blocks": 26,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 0,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "RESET enable_seqscan;\nDROP INDEX orders_at_status;\nCREATE INDEX orders_status ON orders (status);\nCREATE INDEX orders_ordered_at ON orders (ordered_at)",
+   "note": "two separate indexes instead of one on both columns.",
+   "status": "ok",
+   "result": {"command":"CREATE INDEX","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE status = 'cancelled' AND ordered_at >= '2026-01-01'",
+   "note": "two single-column indexes: postgres picks the status one and filters the dates on the heap.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "orders_status",
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 0.29,
+     "Total Cost": 61.62,
+     "Plan Rows": 156,
+     "Plan Width": 4,
+     "Actual Rows": 134,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Index Cond": "(status = 'cancelled'::text)",
+     "Rows Removed by Index Recheck": 0,
+     "Filter": "(ordered_at >= '2026-01-01 00:00:00+00'::timestamp with time zone)",
+     "Rows Removed by Filter": 183,
+     "Index Searches": 1,
+     "Shared Hit Blocks": 83,
+     "Shared Read Blocks": 2,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 27,
+     "Shared Read Blocks": 2,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT count(*) AS since_january FROM orders WHERE ordered_at >= '2026-01-01'",
+   "note": "how many orders are in the date range, cancelled or not.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"since_january","type":"int8"}],"data":[["4906"]]}
+  }
+ ],
+ "db": "shop"
+}

@@ -1,0 +1,141 @@
+import { PageBars } from "@/components/figures/storage/PageBars";
+import { FsmTree } from "@/components/figures/storage/FsmTree";
+import fsmVm from "./traces/fsm-vm.pgtrace.json";
+
+export const leaves = fsmVm.steps[3].result.data.map((r) => ({ blkno: Number(r[0]), avail: Number(r[6]) }));
+export const fsmSource = { engine: fsmVm.engine, scenario: fsmVm.scenario };
+
+<InShort>
+every table has two small sidecar files. the **free space map** (the `_fsm` fork) remembers roughly how much room each page has, so an INSERT can find a page with space without reading the table. the **visibility map** (the `_vm` fork) keeps two bits per page: **all-visible** and **all-frozen**.
+
+VACUUM keeps both up to date. any change to a page clears its visibility bits. vacuum skips the pages whose bits are set, and an index-only scan trusts them instead of reading the heap.
+</InShort>
+
+## the picture
+
+you know how an INSERT has to put the row somewhere, and the table might have a million pages? it can't look at them all. and VACUUM, which has to visit pages to clean them, would like to skip the ones that have nothing to clean.
+
+think of a big parking garage. at the entrance there's a board with roughly how many free spots each level has (the free space map), so you drive straight to a level with room. and each level has a sticker on the door, "swept, nothing changed since" (the visibility map), so the cleaner can skip it. park a car on a level and the sticker comes off.
+
+here's an 8-page table living through a delete, two inserts, a VACUUM and an update. each bar is a page, and under each one are its two visibility bits:
+
+<Figure wide caption={<>step through. <C k="live">live tuples</C> at the bottom, <C k="dead">dead</C> ones above them, free space on top. the dots are the <C k="meta">visibility map</C>: ● all-visible, ■ all-frozen. nothing sets them until the VACUUM, and the update in the last step clears them on the two pages it touched.</>}>
+<PageBars trace={fsmVm} />
+</Figure>
+
+the whole chapter is in that stepper. the DELETE leaves pages 2 and 5 full of dead tuples, and the insert right after it ignores them and grows the table to 9 pages. the VACUUM empties pages 2 and 5, tells the free space map, and sets the bits. the next insert lands on page 2. and the update in the last step costs two pages their all-visible bit: the one the old version was on, and the one the new version went to.
+
+## the free space map
+
+the same table, in a block you can run. it starts as 8 pages of 34 rows:
+
+```sql run db=lab session=fsm
+CREATE TABLE t (id int PRIMARY KEY, pad text);
+INSERT INTO t SELECT g, repeat('x', 200) FROM generate_series(1, 272) AS g ORDER BY g;
+SELECT blkno, avail FROM pg_freespace('t') ORDER BY blkno;
+```
+
+the free space map already knows something: as the insert filled each page and moved on to the next, it wrote down what was left on the page it was leaving. 144 bytes were free on each, and the map says 128. it only stores free space in steps of 1/256 of a page, 32 bytes, rounded down, so a whole page's worth fits in one byte. the last page reads 0 because nobody has moved past it yet.
+
+<Predict question="delete every row on pages 2 and 5, then insert one row. where does it go?" options={["page 2, now empty", "page 7, the last page", "a new page 8"]} answer={2}>
+```sql
+DELETE FROM t WHERE id BETWEEN 69 AND 102 OR id BETWEEN 171 AND 204;
+INSERT INTO t VALUES (1001, repeat('y', 200)) RETURNING ctid;
+```
+<Explain>
+a new page 8. a DELETE only stamps xmax on the tuples: they're still there, still taking the space, and nobody tells the free space map anything. so the insert asks the map for a page with 232 bytes, gets nothing, tries the last page (144 bytes free, not enough), and extends the table.
+</Explain>
+</Predict>
+
+```sql run session=fsm
+DELETE FROM t WHERE id BETWEEN 69 AND 102 OR id BETWEEN 171 AND 204;
+INSERT INTO t VALUES (1001, repeat('y', 200)) RETURNING ctid;
+SELECT blkno, avail FROM pg_freespace('t') ORDER BY blkno;
+```
+
+now VACUUM. it removes the dead tuples, and records every page's free space as it goes:
+
+```sql run session=fsm
+VACUUM t;
+SELECT blkno, avail FROM pg_freespace('t') ORDER BY blkno;
+INSERT INTO t VALUES (1002, repeat('y', 200)) RETURNING ctid;
+```
+
+pages 2 and 5 now say 8,160, and the next row goes to `(2,1)`. the map knows. inserts don't update it, by the way (only VACUUM does, and an insert moving off a page it found too full), so page 2 still says 8,160 even though it now has a row on it. the map is a hint. the inserting backend always checks the real page, and fixes the map if the hint was wrong.
+
+how does a lookup find "a page with at least 232 bytes" without scanning every entry? the map is a tree. each leaf is one heap page's free space, each node above holds the max of its children, so the root says how much the best page in the whole table has:
+
+<Figure wide caption={<>pick how much room the new row needs. the leaves are the table's real free space after the VACUUM. the walk goes down from the root, always toward a child that still has enough, and finds a page in a few steps. ask for more than any page has and the root says no in one look.</>}>
+<FsmTree leaves={leaves} needs={[232, 4000, 8160, 8170]} source={fsmSource} />
+</Figure>
+
+on disk the tree is in pages too. each fsm page is one of these trees with about 4,000 leaves, and three levels of fsm pages cover the biggest table postgres allows. that's why even a tiny table's free space map is three pages, 24 KB:
+
+```sql run session=fsm
+SELECT pg_relation_size('t', 'main') AS main, pg_relation_size('t', 'fsm') AS fsm,
+       pg_relation_size('t', 'vm') AS vm;
+SELECT fsm_page_contents(get_raw_page('t', 'fsm', 2));
+```
+
+<Figure caption={<>the three pages of t's free space map. each holds one tree like the one above; the leaf page's leaves are heap pages, the upper pages' leaves are the pages below them.</>}>
+<Tree>{`
+t_fsm: 3 pages, 24 KB #meta
+    block 0: the root page // one byte per page below it: the most free space under it
+        block 1: an inner page // one byte per leaf page
+            block 2: a leaf page // one byte per heap page: 4 4 255 4 4 255 4 4 247
+`}</Tree>
+</Figure>
+
+block 2 of the fork is the first leaf page, and it's the figure's tree, for real. the lines from node 4095 on are the leaves, one byte per heap page: 4 is 4 × 32 = 128 bytes, 255 is an empty page, 247 is page 8's 7,904. every line above them is an inner node holding the max of its two children, all the way up to node 0, the root of this page, which says 255: there's an empty page somewhere under here. `fp_next_slot` is where the next search starts, which spreads concurrent inserts across pages instead of piling them all onto the same one.
+
+## the visibility map
+
+the visibility map is 2 bits per heap page, so one 8 KB map page covers 32,672 heap pages, about 255 MB of table. **all-visible** means every tuple on the page is visible to every transaction, now and later: no dead tuples, nothing in progress. **all-frozen** means every tuple is also frozen, so the page never needs another look for [wraparound](/learn/mvcc/freezing-and-wraparound).
+
+```sql run session=fsm
+SELECT blkno, all_visible, all_frozen FROM pg_visibility_map('t') ORDER BY blkno;
+```
+
+VACUUM set all-visible everywhere, and all-frozen on page 5, which it emptied (nothing left to freeze). page 2 already lost its bit to the insert. and an UPDATE clears the bit on both pages it touches:
+
+```sql run session=fsm
+UPDATE t SET pad = repeat('z', 200) WHERE id = 210 RETURNING ctid;
+SELECT blkno, all_visible FROM pg_visibility_map('t') WHERE NOT all_visible ORDER BY blkno;
+```
+
+row 210 lived on page 6, and its new version went to page 2 (the free space map pointed there). both pages are no longer all-visible. clearing the bit is part of the change itself, done before the page is modified and logged with it, so the map can never claim a page is all-visible when it isn't. setting the bit is only ever VACUUM's job.
+
+## who uses it
+
+two readers trust those bits:
+
+- **VACUUM** skips all-visible pages: there's nothing on them to clean. on a big, mostly static table that's the difference between reading all of it and reading the few pages that changed. (an aggressive vacuum for wraparound skips only all-frozen ones.)
+- an **index-only scan** skips the heap for all-visible pages. the index has the value but not the visibility information, so for any page that isn't all-visible it has to go and check the tuple. EXPLAIN counts those as `Heap Fetches`:
+
+```sql run session=fsm
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*) FROM t WHERE id BETWEEN 1 AND 272;
+VACUUM t;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*) FROM t WHERE id BETWEEN 1 AND 272;
+```
+
+before the VACUUM, 35 heap fetches: the 34 index entries pointing into page 6 (one of them at row 210's old version), plus the one pointing at its new version on page 2. after it, every page is all-visible again and the count comes straight from the index. that's the whole story of [index-only scans](/learn/indexes/index-only-scans): they're only as good as the visibility map, and the visibility map is only as fresh as the last VACUUM.
+
+<Gotcha title="no vacuum, no visibility map">
+a freshly loaded table has no visibility bits at all, until something vacuums it. on a real server autovacuum eventually does, but a big bulk load followed straight away by queries gets no index-only scans and a first vacuum that reads everything. run `VACUUM (ANALYZE)` after a bulk load. the lab engine has no autovacuum at all, which is why every bit in this chapter was set by a VACUUM you can see.
+</Gotcha>
+
+<Interview q="what is the visibility map and what uses it?">
+a fork of every table with two bits per heap page. all-visible: every tuple on the page is visible to all transactions, so there's nothing for vacuum to clean and no need to check visibility tuple by tuple. all-frozen: every tuple is frozen, so anti-wraparound vacuum can skip it too. VACUUM sets the bits; any insert, update or delete on the page clears them, as part of the same WAL-logged change. vacuum uses it to skip pages, and index-only scans use it to skip heap fetches. bonus point: that's why an index-only scan on a table that changes a lot (or isn't vacuumed) still reports thousands of Heap Fetches.
+</Interview>
+
+<Keylines>
+- the free space map stores each page's free space in 32-byte steps, as a tree of max values, three levels of pages deep.
+- inserts ask it for a page with room; a DELETE doesn't update it, VACUUM does.
+- the visibility map has two bits per page: all-visible and all-frozen. one map page covers about 255 MB of table.
+- VACUUM sets the bits, any change to a page clears them.
+- vacuum skips all-visible pages; index-only scans skip the heap for them.
+</Keylines>

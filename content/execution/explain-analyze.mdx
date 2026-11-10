@@ -1,0 +1,169 @@
+import { LoopBars } from "@/components/figures/execution/LoopBars";
+import { jsonNodes, planField } from "@/components/figures/execution/source";
+import { ExplainReader } from "@/components/figures/execution/ExplainReader";
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import trace from "./traces/explain-analyze.pgtrace.json";
+import buffers from "./traces/buffers.pgtrace.json";
+
+{/* the buffers switch reads traces/buffers.scenario.sql (the run block under it, captured on
+    PGlite). the plan reader and the loop bars read traces/explain-analyze.scenario.sql, captured on
+    PGlite with the shop dataset, in the same order as this page's session=ea block: an index on
+    orders.customer_id, the paris-and-FR join as text (step 1, the same output as the run button)
+    and as json (step 2), and the order count of each of its 66 customers (step 3). */}
+
+export const inner = jsonNodes(trace, 2).find((n) => n["Node Type"] === "Index Only Scan");
+export const scanEst = planField(trace, 2, "Plan Rows", "Seq Scan");
+export const scanGot = planField(trace, 2, "Actual Rows", "Seq Scan");
+
+<InShort>
+plain EXPLAIN guesses. **EXPLAIN ANALYZE runs the query** and prints, next to every guess, what really happened: **actual rows** and **loops** for every node, and since postgres 18 the **buffers** each node touched, without being asked.
+
+two things trip everyone up: actual rows is **per loop**, and the statement **really runs**, DELETE included.
+</InShort>
+
+## the picture
+
+you know how a plan can look perfectly sensible and still take a minute? the plan isn't lying, it's guessing. EXPLAIN ANALYZE prints the forecast next to the weather.
+
+the forecast is the estimate: rows the planner expected each node to return. the weather is what came out when the query actually ran. read them side by side, and the node where they part ways is usually where the plan went wrong.
+
+here are paris customers in france with their order counts, on shop with an index on `orders.customer_id`:
+
+<Figure wide caption={<>switch between estimates and actuals, and step through it from the scan up. the scan of customers expected {scanEst} rows and got {scanGot}: a <C k="dead">33x miss</C>, and every node above it was planned for 2 customers. the inner index scan ran 66 times (<em>loops</em>), once per customer.</>}>
+<ExplainReader
+  trace={trace}
+  text={1}
+  json={2}
+  start="actuals"
+  notes={[
+    "the GroupAggregate counts each customer's rows as they go by, in id order: 66 groups, where it expected 2. it can stream, because its input arrives sorted by the group key.",
+    "the Sort puts the 369 joined rows in c.id order for the aggregate. it was sized for 10 rows and got 369, which still fit in 29kB of memory.",
+    "the Nested Loop takes the customers one at a time and runs the index scan for each: 369 rows out, planned as 10.",
+    "start here. the scan keeps the customers in paris and in france: 66 of 2,000. the planner expected 2, and every node above it inherits that 33x miss.",
+    "the inner side runs once per customer: loops=66. it found 5.59 orders per run on average, 369 in all, with one trip down the b-tree per loop (Index Searches: 66).",
+  ]}
+/>
+</Figure>
+
+why 2? the planner knows 3.3% of customers live in paris and roughly as many in france, and it multiplies the two as if they had nothing to do with each other. every parisian is in france, so the real answer is 66. that's the independence assumption, and the fix (CREATE STATISTICS) is in [extended statistics](/learn/optimizer/extended-statistics). this chapter is about reading the evidence.
+
+## run it
+
+```sql run db=shop session=ea
+CREATE INDEX ON orders (customer_id);
+
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF)
+SELECT c.name, count(*) AS orders
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+WHERE c.city = 'Paris' AND c.country = 'FR'
+GROUP BY c.id;
+```
+
+every node line has a second parenthesis now, `(actual rows=66.00 loops=1)`, and a `Buffers:` line under it. the 2 the planner expected changed the whole shape: for 2 customers, looking up their orders one at a time in the index (a nested loop) is cheaper than hashing all of them. for 66 it's still fine. for 6,600 it wouldn't be, and that's how a misestimate turns into a slow query ([when estimates go wrong](/learn/optimizer/misestimates)).
+
+## loops: rows are per loop
+
+look at the index only scan under the Nested Loop: `actual rows=5.59 loops=66`. it ran 66 times, once for each customer the scan above it found, and **5.59 is the average** per run, not the total.
+
+<Figure wide caption={<>the 66 runs of the inner index scan, one bar per paris customer, as tall as the orders it found for them. EXPLAIN prints only the <C k="hot">average</C>. the total is rows × loops: the 369 rows the Nested Loop returned.</>}>
+<LoopBars trace={trace} step={3} rows={Number(inner["Actual Rows"])} loops={Number(inner["Actual Loops"])} label="orders per customer" />
+</Figure>
+
+<Predict question="the inner scan says rows=5.59 loops=66. how many rows did it return in total?" options={["5.59", "66", "369"]} answer={2}>
+```text
+->  Index Only Scan using orders_customer_id_idx on orders o
+      (actual rows=5.59 loops=66)
+```
+<Explain>
+369. actual rows is the average per loop, so the total is rows × loops: 5.59 × 66 ≈ 369, which is exactly what the Nested Loop above it returned. a node with `rows=1 loops=50000` returned 50,000 rows, and that's how a "1 row" node can be the slowest thing in the plan.
+</Explain>
+</Predict>
+
+the estimate is per loop too: `rows=5` on that line means 5 per customer, not 5 in all. and the decimals are new <Since v={18} />: before postgres 18, actual rows was rounded to a whole number, so an inner scan that found a row half the time printed `rows=0`, and rows × loops gave you nothing.
+
+## buffers, by default <Since v={18} />
+
+the `Buffers:` lines count pages, not rows: every 8 KB page a node asked [the buffer pool](/learn/storage/buffer-pool) for. `hit` means it was already in shared buffers, `read` means postgres had to ask the operating system for it. in postgres 18, EXPLAIN ANALYZE prints them whether you ask or not (`BUFFERS OFF` turns them off).
+
+the same lookup, run twice in a row on a fresh copy of the database:
+
+<Figure wide caption={<>one lookup of three customers, first run and second run. the bar counts the pages that had to come from the operating system (<C k="hot">read</C>); the rest were already in shared buffers (<C k="live">hit</C>). same 9 pages both times.</>}>
+<PlanSwitch
+  trace={buffers}
+  axes={[{ key: "run", values: ["first", "second"] }]}
+  runs={{ first: 0, second: 1 }}
+  hot={["Buffers:", "Index Searches"]}
+  metric={{ label: "pages read from the OS (Buffers: shared read)", re: /Buffers: shared(?: hit=\d+)? read=(\d+)/, unit: "pages" }}
+/>
+</Figure>
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT name FROM customers WHERE id IN (1, 500, 1000);
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT name FROM customers WHERE id IN (1, 500, 1000);
+```
+
+the same 9 pages both times. the first run has to read most of them in; the second finds them all. the `Planning:` section under the first plan is the planner's own reading (catalog pages, the index's metapage), and it's gone the second time because the backend caches what it learned. this is why "it was slow the first time" is so often true, and why a benchmark has to say whether it ran warm or cold.
+
+the other new line, `Index Searches: 3` <Since v={18} />, counts how many times the scan went down the b-tree from the root. one IN list, three keys, three descents. a plain `id = 42` says 1. it's the number to look at when an index scan is slower than it should be: a nested loop's inner index scan says one search per loop (66 in the plan above), and [skip scan](/learn/indexes/skip-scan) shows up as one per value it skips to.
+
+## it really runs
+
+EXPLAIN ANALYZE doesn't simulate anything. it executes the statement and throws the rows away instead of sending them to you. for a SELECT that's harmless. for this, it isn't:
+
+<Predict question="no BEGIN. after this, how many cancelled orders are left?" options={["317, it was only EXPLAIN", "0", "an error"]} answer={1}>
+```sql
+EXPLAIN ANALYZE DELETE FROM orders WHERE status = 'cancelled';
+SELECT count(*) FROM orders WHERE status = 'cancelled';
+```
+<Explain>
+0. the DELETE ran, committed (autocommit), and EXPLAIN printed how it went. the 317 cancelled orders are gone, and so are their order_items, because the foreign key cascades. EXPLAIN ANALYZE is a real execution with a report attached.
+</Explain>
+</Predict>
+
+wrap it in a transaction and roll it back:
+
+```sql run db=shop
+BEGIN;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+DELETE FROM orders WHERE status = 'cancelled';
+ROLLBACK;
+
+SELECT count(*) FROM orders WHERE status = 'cancelled';
+```
+
+all 317 still there. the plan is worth a look too: `Delete on orders` returned 0 rows (it returns nothing without RETURNING), its buffers include 84 pages it dirtied, and the last line is the foreign key's cascade, a trigger that fired once per deleted order. that trigger is often where a slow DELETE spends its time, and plain EXPLAIN can't show it. (the rollback undoes the rows, not the work: the xid was used and the dead versions stay until [VACUUM](/learn/mvcc/vacuum).)
+
+## what it doesn't count
+
+- **sending the rows.** EXPLAIN ANALYZE throws the result away, so turning rows into text and shipping them over the network isn't in it. `SERIALIZE` <Since v={17} /> adds that step back and says how big the result was.
+- **the clock, unless you ask.** by default every node is timed (`actual time=first..last`: milliseconds to its first row and to its last, per loop). reading the clock twice per row costs something, so on a big plan TIMING OFF runs faster and still gives rows and loops. every EXPLAIN ANALYZE in this book has TIMING OFF, so the output on the page is the output you get.
+
+```sql run db=shop
+EXPLAIN (ANALYZE, SERIALIZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM customers;
+```
+
+191kB of text for 2,000 customers, that the client would have had to receive.
+
+<Gotcha title="the time is per loop too">
+with timing on, a node line reads `actual time=first..last rows=… loops=…`, and like rows, both times are averages per loop. a node that looks like it took a few microseconds and ran ten thousand times took tens of milliseconds. multiply by loops before you decide which node is the slow one.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/using-explain.html#USING-EXPLAIN-ANALYZE" title="EXPLAIN ANALYZE">
+the manual's walk through EXPLAIN ANALYZE: per-loop averages, buffers, and the caveats (no network cost, timing overhead, a LIMIT's child that stops early). the options are listed on the <a href="https://www.postgresql.org/docs/18/sql-explain.html">EXPLAIN</a> page.
+</Docs>
+
+<Interview q="a query is slow. what do you look for in EXPLAIN ANALYZE?">
+first, the node where estimated rows and actual rows part ways by 10x or more: everything above it was planned for the wrong number. then rows × loops on the inner side of nested loops, since rows is per loop: `rows=1 loops=200000` is 200,000 index lookups. then buffers: lots of `read` means cold cache or a big scan; huge `hit` counts on a small result mean the plan is touching far more than it returns. bonus point: wrap DML in BEGIN/ROLLBACK, because EXPLAIN ANALYZE executes it, and use TIMING OFF if per-node timing overhead is distorting a big plan.
+</Interview>
+
+<Keylines>
+- EXPLAIN ANALYZE runs the query and prints actual rows and loops next to every estimate.
+- actual rows (and time) are per loop. the total is rows × loops.
+- postgres 18 prints buffers by default: hit was in shared buffers, read came from the OS.
+- Index Searches (postgres 18) counts trips down the b-tree, one per loop for an inner index scan.
+- it really executes DML. wrap it in BEGIN ... ROLLBACK.
+</Keylines>

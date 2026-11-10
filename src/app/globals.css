@@ -1,0 +1,921 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   select * from everything
+   a book you can poke at. warm paper, a serif for reading, mono for code and
+   figures, and five colours that each mean exactly one thing. see DESIGN.md.
+   --------------------------------------------------------------------------- */
+
+:root,
+:root[data-theme="light"] {
+  /* paper */
+  --bg: #fdfbf7;
+  --ink: #2a2723; /* body text */
+  --hi: #141210; /* headings, emphasis, the active thing */
+  --mute: #6d675f; /* secondary text */
+  --faint: #8c8579; /* labels, hints, line numbers */
+  --line: #ece6dc; /* hairlines */
+  --line-2: #ddd5c8; /* stronger lines, outlines */
+  --well: #f7f3ec; /* figure panels */
+  --well-2: #efe9de; /* nested panels, selected options */
+  --accent: #8b7355; /* ornaments, drop caps */
+  --accent-2: #b09a7e;
+  --link: #4f6f80;
+  --link-hover: #2f4f60;
+
+  /* semantic: each colour means exactly one thing, everywhere */
+  --ref: #3a74ad; /* a reference / pointer / "points at" */
+  --live: #3b8556; /* reachable, valid, correct */
+  --dead: #b5473c; /* garbage, bug, race, exception */
+  --meta: #7552ad; /* runtime machinery: class metadata, locks, loaders */
+  --hot: #b06f12; /* look here: current line, the thing that changed */
+
+  --code-lit: #8b6237;
+  --code-kw: #4f6878;
+  --code-str: #55704a;
+  --code-ty: #6e5444;
+  --code-fn: #6a4f3c;
+  --code-cmt: #a09888;
+  --code-punc: #8a7e72;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --gutter: clamp(16px, 4vw, 40px);
+  --bar-h: 60px;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  /* night: warm, never pure black */
+  --bg: #191816;
+  --ink: #e4ded3;
+  --hi: #f6f1e8;
+  --mute: #a69f93;
+  --faint: #857e73;
+  --line: #2b2925;
+  --line-2: #3b3833;
+  --well: #201f1c;
+  --well-2: #2a2824;
+  --accent: #c2a47e;
+  --accent-2: #9c8467;
+  --link: #95b4c6;
+  --link-hover: #c0d6e2;
+
+  --ref: #7aaad8;
+  --live: #78bd8a;
+  --dead: #e2806f;
+  --meta: #b49bdc;
+  --hot: #e2a94e;
+
+  --code-lit: #d9b285;
+  --code-kw: #a3b8c4;
+  --code-str: #b3c49a;
+  --code-ty: #dcc6ad;
+  --code-fn: #e8d2b8;
+  --code-cmt: #857e73;
+  --code-punc: #a0968a;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-bg: var(--bg);
+  --color-ink: var(--ink);
+  --color-hi: var(--hi);
+  --color-mute: var(--mute);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-well: var(--well);
+  --color-well-2: var(--well-2);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-link: var(--link);
+  --color-ref: var(--ref);
+  --color-live: var(--live);
+  --color-dead: var(--dead);
+  --color-meta: var(--meta);
+  --color-hot: var(--hot);
+
+  --font-*: initial;
+  --font-serif: var(--font-serif), "Iowan Old Style", Georgia, serif;
+  --font-display: var(--font-display), var(--font-serif), Georgia, serif;
+  --font-mono: var(--font-code), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: var(--font-serif), Georgia, serif;
+
+  --text-11: 0.6875rem;
+  --text-12: 0.75rem;
+  --text-13: 0.8125rem;
+  --text-14: 0.875rem;
+  --text-15: 0.9375rem;
+  --text-16: 1rem;
+  --text-17: 1.0625rem;
+  --text-18: 1.125rem;
+  --text-20: 1.25rem;
+  --text-24: 1.5rem;
+  --text-28: 1.75rem;
+  --text-40: 2.5rem;
+
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --ease-sfe: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ---- base ---------------------------------------------------------------- */
+
+@layer base {
+  html {
+    background: var(--bg);
+    -webkit-text-size-adjust: 100%;
+    scroll-padding-top: calc(var(--bar-h) + 24px);
+  }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-serif), Georgia, serif;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "kern" 1, "liga" 1;
+  }
+  code,
+  kbd,
+  pre,
+  samp,
+  .font-mono {
+    font-family: var(--font-code), ui-monospace, "SF Mono", Menlo, monospace;
+    font-feature-settings: "zero" 1, "calt" 0;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent-2) 40%, transparent);
+    color: var(--hi);
+  }
+  a {
+    color: inherit;
+  }
+  :focus-visible {
+    outline: 1.5px solid var(--link);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+  p,
+  li {
+    text-wrap: pretty;
+  }
+  button {
+    cursor: pointer;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-2) transparent;
+  }
+}
+
+/* ---- shared bits ----------------------------------------------------------- */
+
+@layer components {
+  .link {
+    color: var(--link);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--link) 35%, transparent);
+    transition:
+      color 200ms var(--ease),
+      border-color 200ms var(--ease);
+  }
+  .link:hover {
+    color: var(--link-hover);
+    border-bottom-color: var(--link-hover);
+  }
+
+  /* small mono words used as tabs/options. selected = a soft filled chip */
+  .word {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 0 9px;
+    border-radius: var(--radius-sm);
+    color: var(--mute);
+    font-family: var(--font-code), ui-monospace, monospace;
+    font-size: var(--text-12);
+    transition:
+      color 120ms var(--ease),
+      background-color 120ms var(--ease),
+      box-shadow 120ms var(--ease);
+  }
+  .word:hover {
+    color: var(--hi);
+  }
+  .word[aria-selected="true"],
+  .word[aria-pressed="true"],
+  .word[data-on] {
+    background: var(--well-2);
+    color: var(--hi);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+  }
+
+  /* actions */
+  .act {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-code), ui-monospace, monospace;
+    font-size: var(--text-12);
+    white-space: nowrap;
+    user-select: none;
+    transition:
+      border-color 150ms var(--ease),
+      color 150ms var(--ease),
+      background-color 150ms var(--ease),
+      scale 150ms var(--ease);
+  }
+  .act:hover {
+    border-color: var(--mute);
+    color: var(--hi);
+  }
+  .act:active {
+    scale: 0.96;
+  }
+  .act:disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+  .act.solid {
+    background: var(--hi);
+    border-color: var(--hi);
+    color: var(--bg);
+  }
+  .act.solid:hover {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--bg);
+  }
+
+  kbd,
+  .kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border: 1px solid var(--line-2);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    color: var(--mute);
+    font: 400 var(--text-11) / 1 var(--font-code), monospace;
+  }
+
+  /* the figure panel. (the name is historical: it used to be corner ticks) */
+  .ticks {
+    border-radius: var(--radius-lg);
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+
+  .dots {
+    background-image: radial-gradient(color-mix(in srgb, var(--ink) 10%, transparent) 1px, transparent 1.3px);
+    background-size: 12px 12px;
+  }
+
+  .hair {
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* a small centered ornament line, used above headings and at section ends */
+  .ornament {
+    display: block;
+    width: 44px;
+    height: 1px;
+    margin-inline: auto;
+    background: var(--accent-2);
+    opacity: 0.7;
+  }
+
+  /* figures speak mono */
+  .figure-body,
+  .memstep,
+  .memory,
+  .slides,
+  .flow,
+  .bits,
+  [data-stepper] {
+    font-family: var(--font-code), ui-monospace, monospace;
+    font-size: var(--text-13);
+    line-height: 1.6;
+  }
+}
+
+/* ---- article prose ---------------------------------------------------------- */
+
+@layer components {
+  .prose {
+    --measure: 40rem;
+    font-size: 1.1875rem;
+    line-height: 1.85;
+    color: var(--ink);
+  }
+  @media (max-width: 640px) {
+    .prose {
+      font-size: 1.09rem;
+      line-height: 1.8;
+    }
+  }
+  .prose > :where(p, ul, ol, blockquote, h2, h3, h4, .measure, dl) {
+    max-width: var(--measure);
+    margin-inline: auto;
+  }
+  .prose > * + * {
+    margin-top: 1.25em;
+  }
+  @media (min-width: 640px) {
+    .prose > p {
+      text-align: justify;
+      hyphens: auto;
+      -webkit-hyphens: auto;
+    }
+  }
+  .prose h2 {
+    margin-top: 3.4em;
+    color: var(--hi);
+    font-family: var(--font-display), Georgia, serif;
+    font-size: clamp(1.6rem, 1.3rem + 0.9vw, 2rem);
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    line-height: 1.2;
+    text-align: center;
+  }
+  .prose h2::before {
+    content: "";
+    display: block;
+    width: 40px;
+    height: 1px;
+    margin: 0 auto 1.1em;
+    background: var(--accent-2);
+    opacity: 0.7;
+  }
+  .prose h3 {
+    margin-top: 2.4em;
+    color: var(--hi);
+    font-family: var(--font-display), Georgia, serif;
+    font-size: 1.45rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    line-height: 1.3;
+  }
+  .prose h2 + *,
+  .prose h3 + * {
+    margin-top: 0.9em;
+  }
+  .prose :where(h2, h3) > a.anchor {
+    color: inherit;
+    text-decoration: none;
+  }
+  .prose :where(h2, h3) > a.anchor::after {
+    content: "§";
+    margin-left: 0.4em;
+    color: var(--accent-2);
+    font-size: 0.7em;
+    opacity: 0;
+    transition: opacity 200ms var(--ease);
+  }
+  .prose :where(h2, h3):hover > a.anchor::after {
+    opacity: 1;
+  }
+  .prose a:not(.anchor):not(.act):not(.plain):not(.word) {
+    color: var(--link);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--link) 32%, transparent);
+    transition:
+      color 200ms var(--ease),
+      border-color 200ms var(--ease);
+  }
+  .prose a:not(.anchor):not(.act):not(.plain):not(.word):hover {
+    color: var(--link-hover);
+    border-bottom-color: var(--link-hover);
+  }
+  .prose strong {
+    color: var(--hi);
+    font-weight: 600;
+  }
+  .prose em {
+    font-style: italic;
+  }
+  .prose ul:not([class]),
+  .prose ol:not([class]) {
+    padding-left: 0;
+    list-style: none;
+  }
+  .prose ul:not([class]) > li,
+  .prose ol:not([class]) > li {
+    position: relative;
+    padding-left: 1.6em;
+  }
+  .prose ul:not([class]) > li + li,
+  .prose ol:not([class]) > li + li {
+    margin-top: 0.5em;
+  }
+  .prose ul:not([class]) > li::before {
+    content: "–";
+    position: absolute;
+    left: 0.2em;
+    color: var(--accent-2);
+  }
+  .prose ol:not([class]) {
+    counter-reset: li;
+  }
+  .prose ol:not([class]) > li {
+    counter-increment: li;
+  }
+  .prose ol:not([class]) > li::before {
+    content: counter(li) ".";
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  /* inline code: quiet, a hairline under it, like a margin note */
+  .prose :not(pre) > code,
+  .inline-code {
+    padding: 0.05em 0.3em;
+    border-bottom: 1px solid var(--line-2);
+    color: color-mix(in srgb, var(--hi) 82%, var(--accent));
+    font-size: 0.8em;
+    white-space: nowrap;
+  }
+  .prose blockquote {
+    padding-left: 1.6em;
+    border-left: 2px solid var(--accent-2);
+    color: var(--mute);
+    font-style: italic;
+  }
+  .prose hr {
+    margin: 3.5em auto;
+    border: 0;
+    width: 60px;
+    border-top: 1px solid var(--accent-2);
+    opacity: 0.6;
+  }
+  .prose table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.86em;
+    line-height: 1.55;
+  }
+  .prose .table-wrap {
+    overflow-x: auto;
+  }
+  .prose th {
+    padding: 10px 14px 10px 0;
+    border-bottom: 1px solid var(--line-2);
+    color: var(--mute);
+    font-family: var(--font-display), serif;
+    font-weight: 500;
+    font-size: 1.05em;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .prose td {
+    padding: 11px 14px 11px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .prose td:first-child {
+    color: var(--hi);
+  }
+}
+
+/* ---- code blocks (shiki via rehype-pretty-code) ----------------------------- */
+
+@layer components {
+  .code-frame pre {
+    overflow-x: auto;
+    padding: 16px 0;
+    font-size: 0.8125rem;
+    line-height: 1.75;
+    tab-size: 4;
+  }
+  .code-frame code {
+    display: grid;
+    min-width: max-content;
+    counter-reset: line;
+  }
+  .code-frame [data-line] {
+    position: relative;
+    padding: 0 22px 0 0;
+    border-left: 2px solid transparent;
+  }
+  .code-frame code:not([data-nolines]) > [data-line] {
+    padding-left: calc(4ch + 16px);
+  }
+  .code-frame code:not([data-nolines]) > [data-line]::before {
+    counter-increment: line;
+    content: counter(line);
+    position: absolute;
+    left: 0;
+    width: 4ch;
+    text-align: right;
+    color: var(--faint);
+    opacity: 0.55;
+    font-variant-numeric: tabular-nums;
+  }
+  .code-frame code[data-nolines] > [data-line] {
+    padding-left: 20px;
+  }
+
+  /* notation: // [!code highlight] */
+  .code-frame [data-line].highlighted,
+  .code-frame [data-highlighted-line] {
+    background: color-mix(in srgb, var(--hot) 10%, transparent);
+    border-left-color: var(--hot);
+  }
+  .code-frame [data-line].diff.add {
+    background: color-mix(in srgb, var(--live) 10%, transparent);
+    border-left-color: var(--live);
+  }
+  .code-frame [data-line].diff.remove {
+    background: color-mix(in srgb, var(--dead) 9%, transparent);
+    border-left-color: var(--dead);
+    opacity: 0.8;
+  }
+  .code-frame [data-line].diff.add::after,
+  .code-frame [data-line].diff.remove::after {
+    position: absolute;
+    right: 10px;
+  }
+  .code-frame [data-line].diff.add::after {
+    content: "+";
+    color: var(--live);
+  }
+  .code-frame [data-line].diff.remove::after {
+    content: "-";
+    color: var(--dead);
+  }
+  .code-frame [data-line].highlighted.error {
+    background: color-mix(in srgb, var(--dead) 10%, transparent);
+    border-left-color: var(--dead);
+  }
+  .code-frame [data-line].highlighted.warning {
+    background: color-mix(in srgb, var(--hot) 10%, transparent);
+    border-left-color: var(--hot);
+  }
+  .code-frame pre.has-focused [data-line]:not(.focused) {
+    opacity: 0.4;
+    filter: blur(0.5px);
+    transition:
+      opacity 200ms var(--ease),
+      filter 200ms var(--ease);
+  }
+  .code-frame:hover pre.has-focused [data-line]:not(.focused) {
+    opacity: 1;
+    filter: none;
+  }
+  .code-frame .highlighted-word,
+  .code-frame [data-highlighted-chars] {
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--hot) 15%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--hot) 40%, transparent);
+  }
+}
+
+/* shiki colours: our themes emit --shiki-light / --shiki-dark on every token */
+[style*="--shiki-light"] {
+  color: var(--shiki-light);
+}
+:root[data-theme="dark"] [style*="--shiki-dark"] {
+  color: var(--shiki-dark);
+}
+
+/* ---- range input (scrubbers, sliders) ------------------------------------------- */
+
+@layer components {
+  input[type="range"].scrub,
+  input[type="range"].slider {
+    appearance: none;
+    height: 20px;
+    background: transparent;
+    cursor: pointer;
+  }
+  input[type="range"].scrub::-webkit-slider-runnable-track,
+  input[type="range"].slider::-webkit-slider-runnable-track {
+    height: 2px;
+    border-radius: 1px;
+    background: var(--line-2);
+  }
+  input[type="range"].scrub::-moz-range-track,
+  input[type="range"].slider::-moz-range-track {
+    height: 2px;
+    background: var(--line-2);
+  }
+  input[type="range"].scrub::-webkit-slider-thumb,
+  input[type="range"].slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -6px;
+    border-radius: 50%;
+    background: var(--bg);
+    box-shadow:
+      0 0 0 1.5px var(--hi),
+      0 1px 3px rgb(0 0 0 / 0.12);
+    transition: box-shadow 120ms var(--ease);
+  }
+  input[type="range"].scrub::-moz-range-thumb,
+  input[type="range"].slider::-moz-range-thumb {
+    width: 13px;
+    height: 13px;
+    border: 1.5px solid var(--hi);
+    border-radius: 50%;
+    background: var(--bg);
+  }
+  [data-stepper]:focus-visible {
+    outline: 1.5px solid var(--line-2);
+    outline-offset: 10px;
+    border-radius: 6px;
+  }
+}
+
+/* ---- figure motion ---------------------------------------------------------------- */
+
+@keyframes sfe-flash {
+  from {
+    background: color-mix(in srgb, var(--hot) 30%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+.flash {
+  border-radius: 3px;
+  animation: sfe-flash 1s var(--ease) both;
+}
+@keyframes sfe-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.obj-in,
+.frame-in,
+.arrow-in {
+  animation: sfe-in 240ms var(--ease) both;
+}
+
+/* ---- <Flow> travelling dot ------------------------------------------------------------ */
+
+@keyframes sfe-flow-y {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  20%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    top: calc(100% - 5px);
+    opacity: 0;
+  }
+}
+@keyframes sfe-flow-x {
+  0% {
+    left: 0;
+    opacity: 0;
+  }
+  20%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    left: calc(100% - 5px);
+    opacity: 0;
+  }
+}
+.flow-dot {
+  left: calc(50% - 2.5px);
+  animation: sfe-flow-y 1.8s linear infinite;
+}
+@media (min-width: 640px) {
+  .flow-dot:not(.flow-dot-v) {
+    top: calc(50% - 2.5px);
+    animation-name: sfe-flow-x;
+  }
+}
+
+/* ---- the line-art illustrations (home + chapter openers) --------------------------- */
+
+@keyframes sfe-sink {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.lineart .sink {
+  stroke-dasharray: 3 3;
+  animation: sfe-sink 2.4s linear infinite;
+}
+
+/* ---- part glyphs (home wall). still by default, they move on hover ---------------------- */
+
+.group:hover .glyph .g-blink {
+  animation: g-blink 1.2s steps(2) infinite;
+}
+.group:hover .glyph .g-dash {
+  stroke-dasharray: 3 2;
+  animation: g-dash 0.8s linear infinite;
+}
+.group:hover .glyph .g-flow {
+  animation: g-flow 1.2s var(--ease) infinite;
+}
+.group:hover .glyph .g-spin {
+  animation: g-spin 2.4s linear infinite;
+}
+.group:hover .glyph .g-pop {
+  animation: g-pop 1.2s var(--ease) infinite;
+}
+.group:hover .glyph .g-fade {
+  animation: g-fade 1.4s var(--ease) infinite;
+}
+.group:hover .glyph .g-needle {
+  animation: g-needle 1.6s var(--ease) infinite alternate;
+}
+.group:hover .glyph .g-rise {
+  animation: g-rise 1.6s var(--ease) infinite alternate;
+}
+.group:hover .glyph .g-steam {
+  animation: g-fade 1.6s var(--ease) infinite;
+}
+@keyframes g-blink {
+  50% {
+    opacity: 0.15;
+  }
+}
+@keyframes g-dash {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+@keyframes g-flow {
+  from {
+    transform: translateX(-4px);
+    opacity: 0;
+  }
+  40% {
+    opacity: 1;
+  }
+  to {
+    transform: translateX(6px);
+    opacity: 0;
+  }
+}
+@keyframes g-spin {
+  to {
+    transform: rotate(45deg);
+  }
+}
+@keyframes g-pop {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+@keyframes g-fade {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes g-needle {
+  from {
+    transform: rotate(-70deg);
+  }
+  to {
+    transform: rotate(10deg);
+  }
+}
+@keyframes g-rise {
+  from {
+    transform: translateY(3px);
+  }
+  to {
+    transform: translateY(-1px);
+  }
+}
+
+/* home: garbage cells blink out and back, like a collector sweeping */
+@keyframes gc-sweep {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  70%,
+  90% {
+    opacity: 0.08;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+.gc-dead {
+  animation: gc-sweep 4.5s var(--ease) infinite;
+}
+
+/* ---- motion preferences ------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---- the opening paragraph (InShort) and chapter line-art ---------------------------- */
+
+@layer components {
+  .inshort {
+    color: var(--hi);
+    font-size: 1.3rem;
+    line-height: 1.7;
+  }
+  .inshort > * + * {
+    margin-top: 0.8em;
+  }
+  .inshort > p:first-child::first-letter {
+    float: left;
+    margin: 0.06em 0.1em 0 0;
+    color: var(--accent);
+    font-family: var(--font-display), Georgia, serif;
+    font-size: 3.7em;
+    font-weight: 300;
+    line-height: 0.82;
+    text-transform: uppercase;
+  }
+  @media (max-width: 640px) {
+    .inshort {
+      font-size: 1.18rem;
+    }
+  }
+  .lineart-glyph * {
+    vector-effect: non-scaling-stroke;
+  }
+}
+[style*="--shiki-light-font-style"] {
+  font-style: var(--shiki-light-font-style);
+}
+:root[data-theme="dark"] [style*="--shiki-dark-font-style"] {
+  font-style: var(--shiki-dark-font-style);
+}
+
+/* code shows exactly what you type: no ligatures (-> must look like ->) */
+code,
+pre,
+kbd,
+.font-mono,
+.cm-editor,
+.figure-body,
+.memstep,
+[data-stepper] {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "zero" 1;
+}
+
+/* on phones, long inline code may wrap instead of pushing the page sideways */
+@media (max-width: 640px) {
+  .prose :not(pre) > code,
+  .inline-code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}

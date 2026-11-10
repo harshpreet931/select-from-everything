@@ -1,0 +1,107 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "3850c78fe00d3e5f": {
+      "db": "lab",
+      "sql": "SELECT count(*) FROM accounts;\nBEGIN;\nUPDATE accounts SET balance = balance - 25.00 WHERE id = 1;\nSELECT lsn AS page_lsn,\n       pg_current_wal_insert_lsn() AS inserted,\n       pg_current_wal_flush_lsn() AS flushed\nFROM page_header(get_raw_page('accounts', 0));",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c52673244bcc470e",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5693d3fc01d98245"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0b180bc9b96cf94b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["page_lsn", "pg_lsn", 3220],
+            ["inserted", "pg_lsn", 3220],
+            ["flushed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "3a1af54dcf7faa95",
+          "rows": [
+            ["0/17EBD80", "0/17F2B90", "0/17DB878"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "T"
+    },
+    "fe63877c4152c44a": {
+      "db": "lab",
+      "sql": "SELECT buffer_evicted\nFROM pg_buffercache_evict((SELECT bufferid FROM pg_buffercache\n                           WHERE relfilenode = pg_relation_filenode('accounts')\n                             AND relforknumber = 0));\nSELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;\nCOMMIT;\nSELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["buffer_evicted", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "707553f2c2237d9c",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["inserted", "pg_lsn", 3220],
+            ["flushed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "46381bd418361ebf",
+          "rows": [
+            ["0/17FA760", "0/17FA760"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f634ecd471a56cb0"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["inserted", "pg_lsn", 3220],
+            ["flushed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "b8a756c35ecf3e6d",
+          "rows": [
+            ["0/17FA788", "0/17FA788"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

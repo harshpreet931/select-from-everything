@@ -1,0 +1,79 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "c6d9d4f43f71a11f": {
+      "db": "school",
+      "sql": "SELECT name FROM instructors\nWHERE id NOT IN (SELECT instructor_id FROM courses)\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 0,
+          "digest": "1e73e8853470d32c",
+          "rows": []
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bafe01a8a904984d": {
+      "db": "school",
+      "sql": "SELECT name FROM instructors\nWHERE id NOT IN (SELECT instructor_id FROM courses WHERE instructor_id IS NOT NULL)\nORDER BY id;\n\nSELECT name FROM instructors AS i\nWHERE NOT EXISTS (SELECT 1 FROM courses AS c WHERE c.instructor_id = i.id)\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "279ad16356d41858",
+          "rows": [
+            ["Sofia Petrova"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "07c4a161daef3dd3",
+          "rows": [
+            ["Sofia Petrova"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3bff744bd210e3b1": {
+      "db": "empty",
+      "sql": "SELECT 8 NOT IN (1, 2, NULL) AS \"8 NOT IN (1, 2, NULL)\",\n       1 NOT IN (1, 2, NULL) AS \"1 NOT IN (1, 2, NULL)\",\n       8 IN (1, 2, NULL)     AS \"8 IN (1, 2, NULL)\",\n       1 IN (1, 2, NULL)     AS \"1 IN (1, 2, NULL)\";",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["8 NOT IN (1, 2, NULL)", "bool", 16],
+            ["1 NOT IN (1, 2, NULL)", "bool", 16],
+            ["8 IN (1, 2, NULL)", "bool", 16],
+            ["1 IN (1, 2, NULL)", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "43ed404429413fe7",
+          "rows": [
+            [null, "f", null, "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

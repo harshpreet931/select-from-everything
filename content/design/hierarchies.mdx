@@ -1,0 +1,156 @@
+import { prov, resultOf } from "@/lib/db/captured";
+import trees from "./traces/trees.pgtrace.json";
+
+{/* everything numeric here reads traces/trees.scenario.sql (PGlite, org): the subtree query on
+    each model, then the rows each model writes to add one person and to move one team. */}
+
+export const subtree = {
+  "adjacency list": resultOf(trees, 3),
+  "materialized path": resultOf(trees, 4),
+  "nested sets": resultOf(trees, 5),
+  "closure table": resultOf(trees, 6),
+};
+export const n = (i) => trees.steps[i].result.rows;
+export const adds = [
+  { label: "adjacency list", value: n(7) },
+  { label: "materialized path", value: n(8) },
+  { label: "closure table", value: n(9) },
+  { label: "nested sets", value: n(10) + n(11) + n(12), tone: "dead" },
+];
+export const moves = [
+  { label: "adjacency list", value: n(13) },
+  { label: "materialized path", value: n(14) },
+  { label: "closure table", value: n(15) + n(16), tone: "dead" },
+];
+export const source = prov(trees);
+
+<InShort>
+a tree in a table is usually an **adjacency list**: each row points at its parent (`manager_id`), and a **recursive CTE** walks it. it's the simplest to write to and fine to read for most trees.
+
+when "everything under this node" has to be one indexed lookup, store more: a **materialized path** (`1.2.5`, or the **ltree** type), a **closure table** of every ancestor-descendant pair, or **nested sets** (lft/rgt numbers). each makes reads cheaper and some writes much more expensive. pick by the queries you'll run, and by how often the tree changes.
+</InShort>
+
+## the picture
+
+you know the org chart question: "everyone who reports to Olivia, directly or not"? with one `manager_id` per row, there's no column that says "is somewhere under Olivia". you have to follow the pointers, one level at a time.
+
+think of a family tree. you can store it as "each person names their mother" (adjacency), as "each person writes out their whole line of descent on their card" (path), or as a big ledger of every ancestor-descendant pair (closure table). the first is quickest to update when a baby arrives; the last answers "all of grandma's descendants" by reading one page of the ledger.
+
+the org dataset is a tree like this, 300 people, 6 levels:
+
+<Figure caption={<>the top of the org dataset, from <code>employees</code>: each row&apos;s manager_id points at the row above it. click a node to fold it. the numbers are ids.</>}>
+<Tree>{`
+Fatima Lopez                // ceo, 1
+    Olivia Lopez            #hot // vp, 2 (the subtree below)
+        Rahul Singh         // director, 5
+        Amelia Hansen       // director, 6
+        Olivia Singh        // director, 7
+    Mei Dubois              // vp, 3
+        Noah Silva          // director, 8
+        Valentina Haddad    // director, 9
+        Kenji Larsen        // director, 10
+    Chen Smith              // vp, 4
+        Valentina Okafor    // director, 11
+`}</Tree>
+</Figure>
+
+```sql run db=org
+SELECT id, name, manager_id, title FROM employees WHERE id <= 11 ORDER BY id;
+```
+
+## adjacency list and a recursive CTE
+
+the table already is one. walking down is a [recursive CTE](/learn/analytics/recursive-ctes): start from Olivia's direct reports, and keep joining employees whose manager is in the last round:
+
+```sql run db=org
+WITH RECURSIVE team AS (
+  SELECT id, name, 1 AS depth FROM employees WHERE manager_id = 2
+  UNION ALL
+  SELECT e.id, e.name, team.depth + 1
+  FROM employees AS e JOIN team ON e.manager_id = team.id
+)
+SELECT depth, count(*) AS people FROM team GROUP BY depth ORDER BY depth;
+```
+
+walking up, the chain of command from anyone to the CEO, is the same shape in the other direction. with an index on manager_id, each round is an index lookup per row of the previous round, so the cost grows with the size of the answer, not of the table. for an org chart, a category tree or threaded comments, that's usually all you need. writes are one row: add a person, move a team, all a single UPDATE of manager_id.
+
+what it can't do: answer "is 287 under 2?" without walking, or give you the subtree from an index in one probe. a foreign key on manager_id also can't stop a cycle (A manages B manages A); the CTE's [CYCLE clause](/learn/analytics/recursive-ctes) detects them when you read.
+
+## three ways to store more
+
+each of these keeps the adjacency list's facts and precomputes the ancestry. all four answer "Olivia's team" correctly:
+
+<Figure wide caption={<>the same question, "everyone under Olivia Lopez (id 2)", against four models built from the same org data. same answer each time. compare the shape of each query: a recursion, a prefix, a range, a lookup. nested sets don&apos;t know depth without more work, hence the null.</>}>
+<RunPick options={[{ key: "model", values: ["adjacency list", "materialized path", "nested sets", "closure table"] }]} runs={subtree} file="team.sql" trace={source} />
+</Figure>
+
+- **materialized path** stores `1.2.5.17` on each row. a subtree is a prefix match (`LIKE '1.2.%'`, which a b-tree with `text_pattern_ops`, or the C collation, can serve), and the ancestors are the path itself. moving a subtree rewrites every path in it.
+- **nested sets** number nodes in a depth-first walk: each gets lft and rgt, and a node's subtree is exactly the nodes numbered between them. reads are a range scan; inserting anywhere renumbers everything to the right.
+- **closure table** stores every (ancestor, descendant, depth) pair. 300 people need 1,621 rows here. subtree and ancestor queries are one lookup each, in either direction, and depth comes free.
+
+## what the writes cost
+
+now add one person under Rahul Singh, then move Rahul's whole team under Mei Dubois. the row counts are what each model's statements reported:
+
+<Figure caption={<>rows written to add one employee, and to move a 41-person team, per model. the adjacency list always writes one row. nested sets <C k="dead">renumber</C> half the table for a single insert; the closure table rewrites every pair crossing the move.</>}>
+<div className="grid gap-2">
+<div className="text-11 text-faint">add one person under Rahul Singh</div>
+<Bars data={adds} unit="rows" />
+<div className="mt-4 text-11 text-faint">move Rahul Singh&apos;s team under Mei Dubois</div>
+<Bars data={moves} unit="rows" />
+</div>
+</Figure>
+
+nested sets were a classic in databases without recursive queries. in postgres, with recursive CTEs since 8.4, they're rarely worth that insert cost; the moving-team case isn't even shown, since it renumbers much of the table. the closure table's moves cost pairs (subtree size times ancestors) but its inserts stay small, which suits trees that grow a lot and move rarely.
+
+## ltree
+
+postgres ships a materialized path type as a contrib extension: `ltree` stores labels like `1.2.5`, with operators for ancestor and descendant (`@>`, `<@`), pattern matching, and GiST index support. `ext=ltree` creates it before the block runs:
+
+```sql run db=org ext=ltree
+CREATE TABLE org_paths AS
+WITH RECURSIVE t AS (
+  SELECT id, name, text2ltree(id::text) AS path FROM employees WHERE manager_id IS NULL
+  UNION ALL
+  SELECT e.id, e.name, t.path || e.id::text FROM employees AS e JOIN t ON e.manager_id = t.id
+) SELECT * FROM t;
+CREATE INDEX ON org_paths USING gist (path);
+
+SELECT count(*) AS team FROM org_paths WHERE path <@ '1.2' AND path <> '1.2';
+SELECT path, name FROM org_paths WHERE path @> (SELECT path FROM org_paths WHERE id = 287) ORDER BY nlevel(path);
+```
+
+the same 120, and the chain from employee 287 up to the CEO read straight off the path. ltree is the path model with real operators and an index that understands them; moving a subtree still rewrites every path under it.
+
+## picking one
+
+| model | subtree read | ancestors | add a node | move a subtree | integrity |
+| --- | --- | --- | --- | --- | --- |
+| adjacency list | recursive CTE | recursive CTE | 1 row | 1 row | foreign key on parent |
+| path / ltree | prefix or `<@`, indexed | parse the path | 1 row | every row in the subtree | none built in |
+| nested sets | range | range | renumber half the table | renumber | none built in |
+| closure table | one lookup | one lookup | depth + 1 rows | subtree × ancestors | foreign keys on both columns |
+
+start with the adjacency list. add a path or a closure table, kept in sync by a [trigger](/learn/writes/triggers), when a measured subtree query is too slow, which for most trees is never.
+
+<Predict options={["1 row", "about 40 rows", "about 260 rows"]} answer={0}>
+```sql
+-- adjacency list: move Rahul Singh's team of 40 under Mei Dubois.
+UPDATE employees SET manager_id = 3 WHERE id = 5;
+```
+<Explain>
+1 row. the team members still point at Rahul, and Rahul now points at Mei. nothing else stores the shape of the tree, so nothing else changes. that's the adjacency list's whole advantage, and why every derived model needs something (usually a trigger) to keep up with this one UPDATE.
+</Explain>
+</Predict>
+
+<Interview q="how would you store and query a category tree in postgres?">
+an adjacency list (parent_id references the same table) and WITH RECURSIVE for subtrees and ancestor chains, with an index on parent_id. it's one row per write and correct by construction. if subtree queries are hot and the tree is large, add a materialized path (ltree with a GiST index) or a closure table maintained by triggers. avoid nested sets for trees that change: an insert renumbers everything after it. bonus point: guard against cycles, since a foreign key won't, with a check in the trigger or the CYCLE clause when reading.
+</Interview>
+
+<Keylines>
+- an adjacency list (parent_id) plus a recursive CTE is the default, and writes are one row.
+- materialized path and ltree make subtrees a prefix match; moves rewrite the subtree.
+- a closure table stores every ancestor pair: one-lookup reads, more rows to write.
+- nested sets make reads a range and inserts a renumbering.
+- pick by the queries you run and how often the tree changes.
+</Keylines>

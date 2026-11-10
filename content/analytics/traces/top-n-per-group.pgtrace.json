@@ -1,0 +1,287 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/top-n-per-group.scenario.sql",
+ "title": "the best sellers in every category, three ways: row_number, LATERAL and DISTINCT ON",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "product_sales": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"units","type":"int4"}
+   ]
+  }
+ },
+ "base": {"xid":800,"lsn":33644808},
+ "setup": "CREATE TABLE product_sales AS\nSELECT p.id, p.name, p.category, sum(oi.qty)::int AS units\nFROM products AS p\nJOIN order_items AS oi ON oi.product_id = p.id\nGROUP BY p.id\nORDER BY p.id;\nANALYZE product_sales;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT category, name, units, n\nFROM (SELECT *, row_number() OVER (PARTITION BY category ORDER BY units DESC, id) AS n\n      FROM product_sales) AS ranked\nWHERE n <= 3\nORDER BY category, n",
+   "note": "the three best sellers in every category, numbered within it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 33,
+    "columns": [
+     {"name":"category","type":"text"},
+     {"name":"name","type":"text"},
+     {"name":"units","type":"int4"},
+     {"name":"n","type":"int8"}
+    ],
+    "data": [
+     ["audio","studio headphones","773","1"],
+     ["audio","folding earbuds","627","2"],
+     ["audio","basic earbuds","351","3"],
+     ["bath","classic shower caddy","379","1"],
+     ["bath","small shower caddy","298","2"],
+     ["bath","mini bath mat","232","3"],
+     ["books","the art of sql","1046","1"],
+     ["books","bamboo cookbook","357","2"],
+     ["books","mini notebook","239","3"],
+     ["games","travel dice tower","317","1"],
+     ["games","bamboo board game","299","2"],
+     ["games","retro go board","262","3"],
+     ["garden","hose reel","735","1"],
+     ["garden","spare trowel","346","2"],
+     ["garden","bamboo watering can","320","3"],
+     ["kitchen","chef's knife","3476","1"],
+     ["kitchen","cast iron pan","1386","2"],
+     ["kitchen","large whisk","561","3"],
+     ["office","paper clips, free sample","968","1"],
+     ["office","heavy stapler","547","2"],
+     ["office","folding desk lamp","299","3"],
+     ["outdoor","linen hammock","514","1"],
+     ["outdoor","cotton lantern","385","2"],
+     ["outdoor","travel lantern","291","3"],
+     ["pets","cat tree","621","1"],
+     ["pets","pro leash","473","2"],
+     ["pets","folding brush","404","3"],
+     ["toys","linen yo-yo","511","1"],
+     ["toys","small puzzle","448","2"],
+     ["toys","smart yo-yo","308","3"],
+     [null,"wooden train","665","1"],
+     [null,"smart stapler","148","2"],
+     [null,"large lantern","146","3"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT category, name, units\nFROM (SELECT *, row_number() OVER (PARTITION BY category ORDER BY units DESC, id) AS n\n      FROM product_sales) AS ranked\nWHERE n = 1\nORDER BY category",
+   "note": "row_number: number each category's products, keep number 1. the three products with no category are a partition of their own, so there's a NULL row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 11,
+    "columns": [{"name":"category","type":"text"},{"name":"name","type":"text"},{"name":"units","type":"int4"}],
+    "data": [
+     ["audio","studio headphones","773"],
+     ["bath","classic shower caddy","379"],
+     ["books","the art of sql","1046"],
+     ["games","travel dice tower","317"],
+     ["garden","hose reel","735"],
+     ["kitchen","chef's knife","3476"],
+     ["office","paper clips, free sample","968"],
+     ["outdoor","linen hammock","514"],
+     ["pets","cat tree","621"],
+     ["toys","linen yo-yo","511"],
+     [null,"wooden train","665"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT c.category, s.name, s.units\nFROM (SELECT DISTINCT category FROM product_sales) AS c\nCROSS JOIN LATERAL (\n  SELECT name, units FROM product_sales AS s\n  WHERE s.category = c.category\n  ORDER BY units DESC, id\n  LIMIT 1\n) AS s\nORDER BY c.category",
+   "note": "LATERAL: list the categories, then run a top-1 subquery for each. the NULL category is gone: s.category = NULL is never true.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 10,
+    "columns": [{"name":"category","type":"text"},{"name":"name","type":"text"},{"name":"units","type":"int4"}],
+    "data": [
+     ["audio","studio headphones","773"],
+     ["bath","classic shower caddy","379"],
+     ["books","the art of sql","1046"],
+     ["games","travel dice tower","317"],
+     ["garden","hose reel","735"],
+     ["kitchen","chef's knife","3476"],
+     ["office","paper clips, free sample","968"],
+     ["outdoor","linen hammock","514"],
+     ["pets","cat tree","621"],
+     ["toys","linen yo-yo","511"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT DISTINCT ON (category) category, name, units\nFROM product_sales\nORDER BY category, units DESC, id",
+   "note": "DISTINCT ON: sort by category and units, keep the first row of each category. NULLs are equal for DISTINCT, so the NULL category stays.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 11,
+    "columns": [{"name":"category","type":"text"},{"name":"name","type":"text"},{"name":"units","type":"int4"}],
+    "data": [
+     ["audio","studio headphones","773"],
+     ["bath","classic shower caddy","379"],
+     ["books","the art of sql","1046"],
+     ["games","travel dice tower","317"],
+     ["garden","hose reel","735"],
+     ["kitchen","chef's knife","3476"],
+     ["office","paper clips, free sample","968"],
+     ["outdoor","linen hammock","514"],
+     ["pets","cat tree","621"],
+     ["toys","linen yo-yo","511"],
+     [null,"wooden train","665"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "EXPLAIN (COSTS OFF)\nSELECT category, name, units\nFROM (SELECT *, row_number() OVER (PARTITION BY category ORDER BY units DESC, id) AS n\n      FROM product_sales) AS ranked\nWHERE n = 1\nORDER BY category",
+   "note": "one sort by category and units, a WindowAgg that stops numbering each category after 1 (the run condition), and a filter on top.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Subquery Scan on ranked"],
+     ["  Filter: (ranked.n = 1)"],
+     ["  ->  WindowAgg"],
+     [
+      "        Window: w1 AS (PARTITION BY product_sales.category ORDER BY product_sales.units, product_sales.id ROWS UNBOUNDED PRECEDING)"
+     ],
+     ["        Run Condition: (row_number() OVER w1 <= 1)"],
+     ["        ->  Sort"],
+     ["              Sort Key: product_sales.category, product_sales.units DESC, product_sales.id"],
+     ["              ->  Seq Scan on product_sales"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "EXPLAIN (COSTS OFF)\nSELECT c.category, s.name, s.units\nFROM (SELECT DISTINCT category FROM product_sales) AS c\nCROSS JOIN LATERAL (\n  SELECT name, units FROM product_sales AS s\n  WHERE s.category = c.category\n  ORDER BY units DESC, id\n  LIMIT 1\n) AS s\nORDER BY c.category",
+   "note": "a nested loop: the distinct categories outside, and inside, once per category, a scan of the whole table, a sort and a limit.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Sort"],
+     ["  Sort Key: product_sales.category"],
+     ["  ->  Nested Loop"],
+     ["        ->  HashAggregate"],
+     ["              Group Key: product_sales.category"],
+     ["              ->  Seq Scan on product_sales"],
+     ["        ->  Limit"],
+     ["              ->  Sort"],
+     ["                    Sort Key: s.units DESC, s.id"],
+     ["                    ->  Seq Scan on product_sales s"],
+     ["                          Filter: (category = product_sales.category)"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "EXPLAIN (COSTS OFF)\nSELECT DISTINCT ON (category) category, name, units\nFROM product_sales\nORDER BY category, units DESC, id",
+   "note": "one sort, then Unique keeps the first row of each category. the smallest plan of the three.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Unique"],
+     ["  ->  Sort"],
+     ["        Sort Key: category, units DESC, id"],
+     ["        ->  Seq Scan on product_sales"]
+    ]
+   }
+  }
+ ],
+ "db": "shop"
+}

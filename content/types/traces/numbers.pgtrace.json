@@ -1,0 +1,157 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/numbers.scenario.sql",
+ "title": "the bits of four doubles, what each number type costs on disk, and ten 0.1s added up three ways",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "w": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"i2","type":"int2"},
+    {"name":"i4","type":"int4"},
+    {"name":"i8","type":"int8"},
+    {"name":"f8","type":"float8"},
+    {"name":"n1","type":"numeric"},
+    {"name":"n2","type":"numeric"},
+    {"name":"n3","type":"numeric"}
+   ]
+  }
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "WITH v (n, label, x) AS (\n  VALUES (1, '0.1', 0.1::float8), (2, '0.2', 0.2::float8), (3, '0.3', 0.3::float8), (4, '0.1 + 0.2', 0.1::float8 + 0.2::float8)\n),\nb AS (SELECT n, label, x, ('x' || encode(float8send(x), 'hex'))::bit(64) AS bits FROM v),\np AS (SELECT n, label, x, bits, bits::bigint AS i, ((bits::bigint >> 52) & 2047)::int AS e FROM b)\nSELECT label, x AS shown, encode(float8send(x), 'hex') AS hex, bits::text AS bits, e - 1023 AS exponent,\n       rtrim('0.' || lpad(((4503599627370496 + (i & 4503599627370495))::numeric * 5::numeric ^ (1075 - e))::text, 1075 - e, '0'), '0') AS exactly\nFROM p\nORDER BY n",
+   "note": "four doubles as postgres stores them: float8send's 8 bytes, split into bits, and the exact decimal those bits hold, computed in numeric.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"label","type":"text"},
+     {"name":"shown","type":"float8"},
+     {"name":"hex","type":"text"},
+     {"name":"bits","type":"text"},
+     {"name":"exponent","type":"int4"},
+     {"name":"exactly","type":"text"}
+    ],
+    "data": [
+     [
+      "0.1",
+      "0.1",
+      "3fb999999999999a",
+      "0011111110111001100110011001100110011001100110011001100110011010",
+      "-4",
+      "0.1000000000000000055511151231257827021181583404541015625"
+     ],
+     [
+      "0.2",
+      "0.2",
+      "3fc999999999999a",
+      "0011111111001001100110011001100110011001100110011001100110011010",
+      "-3",
+      "0.200000000000000011102230246251565404236316680908203125"
+     ],
+     [
+      "0.3",
+      "0.3",
+      "3fd3333333333333",
+      "0011111111010011001100110011001100110011001100110011001100110011",
+      "-2",
+      "0.299999999999999988897769753748434595763683319091796875"
+     ],
+     [
+      "0.1 + 0.2",
+      "0.30000000000000004",
+      "3fd3333333333334",
+      "0011111111010011001100110011001100110011001100110011001100110100",
+      "-2",
+      "0.3000000000000000444089209850062616169452667236328125"
+     ]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "CREATE TABLE w (i2 smallint, i4 integer, i8 bigint, f8 float8, n1 numeric, n2 numeric, n3 numeric);\nINSERT INTO w VALUES (1, 1, 1, 0.1, 1, 12345.67, 0.1000000000000000055511151231257827021181583404541015625)",
+   "note": "one row with a value of every kind, stored in a table so each gets its on-disk header.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT t.label, t.bytes\nFROM w\nCROSS JOIN LATERAL (VALUES\n  (1, 'smallint', pg_column_size(i2)),\n  (2, 'integer', pg_column_size(i4)),\n  (3, 'bigint', pg_column_size(i8)),\n  (4, 'float8', pg_column_size(f8)),\n  (5, 'numeric 1', pg_column_size(n1)),\n  (6, 'numeric 12345.67', pg_column_size(n2)),\n  (7, 'numeric, 55 digits', pg_column_size(n3))\n) AS t (n, label, bytes)\nORDER BY t.n",
+   "note": "bytes per value. the integers and floats are fixed; numeric grows with its digits.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"label","type":"text"},{"name":"bytes","type":"int4"}],
+    "data": [
+     ["smallint","2"],
+     ["integer","4"],
+     ["bigint","8"],
+     ["float8","8"],
+     ["numeric 1","5"],
+     ["numeric 12345.67","9"],
+     ["numeric, 55 digits","31"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT sum(0.1::float4) AS total, sum(0.1::float4) = 1 AS is_one FROM generate_series(1, 10)",
+   "note": "ten float4 0.1s: real has about 7 significant digits, and the error shows in the 8th.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"total","type":"float4"},{"name":"is_one","type":"bool"}],
+    "data": [["1.0000001","f"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT sum(0.1::float8) AS total, sum(0.1::float8) = 1 AS is_one FROM generate_series(1, 10)",
+   "note": "ten float8 0.1s: each one is a hair over 0.1, the additions round, and the total lands a hair under 1.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"total","type":"float8"},{"name":"is_one","type":"bool"}],
+    "data": [["0.9999999999999999","f"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT sum(0.1::numeric) AS total, sum(0.1::numeric) = 1 AS is_one FROM generate_series(1, 10)",
+   "note": "ten numeric 0.1s: exact decimal arithmetic, exactly 1.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"total","type":"numeric"},{"name":"is_one","type":"bool"}],
+    "data": [["1.0","t"]]
+   }
+  }
+ ]
+}

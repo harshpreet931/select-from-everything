@@ -1,0 +1,193 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/views.scenario.sql",
+ "title": "views: rows escaping an updatable view, a view running as its owner or its caller, and a materialized view going stale",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"price","type":"numeric"}]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "order_lines": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"product_id","type":"int4"},{"name":"qty","type":"int4"}]
+  },
+  "revenue": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"revenue","type":"numeric"}]
+  },
+  "revenue_id_idx": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"revenue"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE products (id int PRIMARY KEY, name text NOT NULL, price numeric(8,2) NOT NULL);\nINSERT INTO products VALUES (1, 'assam tea', 6.50), (2, 'blue mug', 12.00), (3, 'teapot', 45.00);\nCREATE VIEW cheap AS SELECT id, name, price FROM products WHERE price < 10;\nCREATE VIEW cheap_checked AS SELECT id, name, price FROM products WHERE price < 10 WITH CHECK OPTION",
+   "note": "products, and two views of the cheap ones: one plain, one WITH CHECK OPTION.",
+   "status": "ok",
+   "result": {"command":"CREATE VIEW","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO cheap VALUES (4, 'tea chest', 30.00)",
+   "note": "through the plain view, insert a product at 30.00. the view's WHERE says under 10, and nothing stops it.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id, name, price FROM cheap ORDER BY id",
+   "note": "the row went into products, and the view can't see what it just inserted.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"price","type":"numeric"}],
+    "data": [["1","assam tea","6.50"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "INSERT INTO cheap_checked VALUES (5, 'tea chest', 30.00)",
+   "note": "the same insert through the checked view: the new row would be invisible to the view, so it's refused.",
+   "status": "error",
+   "error": {
+    "sqlstate": "44000",
+    "message": "new row violates check option for view \"cheap_checked\"",
+    "detail": "Failing row contains (5, tea chest, 30.00)."
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "UPDATE cheap_checked SET price = 15.00 WHERE id = 1",
+   "note": "and an UPDATE that would push a row out of the view is refused too.",
+   "status": "error",
+   "error": {
+    "sqlstate": "44000",
+    "message": "new row violates check option for view \"cheap_checked\"",
+    "detail": "Failing row contains (1, assam tea, 15.00)."
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "CREATE ROLE views_clerk;\nCREATE VIEW price_list AS SELECT name, price FROM products;\nCREATE VIEW price_list_invoker WITH (security_invoker = true) AS SELECT name, price FROM products;\nGRANT SELECT ON price_list, price_list_invoker TO views_clerk",
+   "note": "a role that may read a view of products, but not products itself.",
+   "status": "ok",
+   "result": {"command":"GRANT","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SET ROLE views_clerk;\nSELECT name, price FROM price_list ORDER BY name",
+   "note": "as the clerk, the default view: it reads products with its owner's rights, so it works.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"name","type":"text"},{"name":"price","type":"numeric"}],
+    "data": [["assam tea","6.50"],["blue mug","12.00"],["tea chest","30.00"],["teapot","45.00"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT name, price FROM price_list_invoker ORDER BY name",
+   "note": "the security_invoker view checks the clerk's own rights on products, and the clerk has none.",
+   "status": "error",
+   "error": {"sqlstate":"42501","message":"permission denied for table products"}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "RESET ROLE;\nCREATE TABLE order_lines (order_id int, product_id int REFERENCES products, qty int NOT NULL);\nINSERT INTO order_lines VALUES (100, 1, 2), (100, 2, 1), (101, 1, 3);\nCREATE MATERIALIZED VIEW revenue AS\nSELECT p.id, p.name, sum(l.qty * p.price) AS revenue\nFROM products AS p JOIN order_lines AS l ON l.product_id = p.id GROUP BY p.id, p.name",
+   "note": "back to the owner. a materialized view of revenue per product, from order lines.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "INSERT INTO order_lines VALUES (102, 3, 3)",
+   "note": "a new order comes in: three teapots.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SELECT id, name, revenue FROM revenue ORDER BY id",
+   "note": "the materialized view still shows what was true when it was built. no teapot.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"revenue","type":"numeric"}],
+    "data": [["1","assam tea","32.50"],["2","blue mug","12.00"]]
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT p.id, p.name, sum(l.qty * p.price) AS revenue\nFROM products AS p JOIN order_lines AS l ON l.product_id = p.id GROUP BY p.id, p.name ORDER BY p.id",
+   "note": "the same query, live, sees it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"revenue","type":"numeric"}],
+    "data": [["1","assam tea","32.50"],["2","blue mug","12.00"],["3","teapot","135.00"]]
+   }
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "REFRESH MATERIALIZED VIEW CONCURRENTLY revenue",
+   "note": "REFRESH ... CONCURRENTLY needs a unique index to match old rows to new ones, and there isn't one.",
+   "status": "error",
+   "error": {"sqlstate":"55000","message":"cannot refresh materialized view \"public.revenue\" concurrently"}
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "CREATE UNIQUE INDEX ON revenue (id);\nREFRESH MATERIALIZED VIEW CONCURRENTLY revenue",
+   "note": "with a unique index on id, the concurrent refresh works: readers keep the old rows until it commits.",
+   "status": "ok",
+   "result": {"command":"REFRESH MATERIALIZED VIEW","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "SELECT id, name, revenue FROM revenue ORDER BY id",
+   "note": "after the refresh.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"revenue","type":"numeric"}],
+    "data": [["1","assam tea","32.50"],["2","blue mug","12.00"],["3","teapot","135.00"]]
+   }
+  }
+ ]
+}

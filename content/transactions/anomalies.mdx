@@ -1,0 +1,125 @@
+import { AnomalyLab } from "@/components/figures/transactions/AnomalyLab";
+import { AnomalyStrip } from "@/components/figures/transactions/AnomalyStrip";
+import dirty from "./traces/anomaly-dirty-read.pgtrace.json";
+import nonrep from "./traces/anomaly-non-repeatable-read.pgtrace.json";
+import phantom from "./traces/anomaly-phantom.pgtrace.json";
+import lost from "./traces/anomaly-lost-update.pgtrace.json";
+import skew from "./traces/anomaly-read-skew.pgtrace.json";
+import wskew from "./traces/anomaly-write-skew.pgtrace.json";
+
+{/* every schedule on this page is captured on a real postgres 18.6 server with two sessions
+    (traces/anomaly-*.scenario.sql). each file runs the same schedule four times, once per
+    isolation level, and the figures judge each run by its results: two reads that differ,
+    a total that's off, a 40001. nothing in the grid's postgres half is typed in. */}
+
+export const traces = { "dirty read": dirty, "non-repeatable read": nonrep, phantom, "lost update": lost, "read skew": skew, "write skew": wskew };
+
+<InShort>
+an **anomaly** is a result two transactions produce together that neither could produce running alone. six are worth knowing: **dirty reads**, **non-repeatable reads**, **phantoms**, **lost updates**, **read skew** and **write skew**. postgres never allows the first one. which of the other five you get depends on the isolation level.
+</InShort>
+
+## the picture
+
+you know how a transaction feels like having the database to yourself? BEGIN, do your thing, COMMIT. at the default level, it isn't quite that. other people's commits land in the middle of your transaction, and some combinations of them leave the data in a state nobody intended.
+
+think of a shared notebook (the database) and two people writing in it at once (two transactions). each anomaly is one way the other person's writing leaks into your work: you copy down a number they're about to cross out (dirty read), you look at the same line twice and it changed (non-repeatable read), a new line appears under a heading you already counted (phantom), you both overwrite the same line and one edit vanishes (lost update), you add up two lines from two different moments (read skew), or you each check the other's line, then each change your own (write skew).
+
+every cell below is a real run. the top half is what the SQL standard allows at that level, the bottom half is what postgres 18.6 did when two sessions actually ran the schedule.
+
+<Figure wide caption={<>click any cell, then step through its run underneath. the top of a cell is the standard, as the postgres manual's table describes it. the bottom is what postgres did: <C k="dead">happens</C>, <C k="live">no</C>, or <C k="live">40001</C> when it stopped the anomaly by aborting a transaction.</>}>
+<AnomalyLab traces={traces} start={["lost update", "read committed"]} />
+</Figure>
+
+read it by columns. postgres's read uncommitted column is the same as its read committed one, cell for cell: the level exists by name only. repeatable read stops everything except write skew, and it stops lost updates with an error rather than quietly. serializable stops all six, write skew with an error too. the rest of the chapter is the six rows, one at a time.
+
+## dirty reads: never, at any level
+
+a dirty read is reading another transaction's uncommitted write. the standard allows it at READ UNCOMMITTED. postgres doesn't, and can't: a snapshot never includes a transaction that's still running, so its new row versions are invisible to everyone else no matter what level they asked for ([the visibility rules](/learn/mvcc/visibility-rules) are the whole story).
+
+<Figure wide caption={<>T2 asks for read uncommitted and gets it, by name. its read still returns the <C k="live">committed</C> 100.00, not T1's 0.00, which T1 then rolls back.</>}>
+<AnomalyStrip anomaly="dirty read" trace={dirty} level="read uncommitted" mark={4} />
+</Figure>
+
+that SHOW is the funny part. postgres accepts `READ UNCOMMITTED`, reports it back, and runs the transaction as READ COMMITTED. the manual says so in one line, and the capture agrees.
+
+## non-repeatable reads
+
+read a row, read it again in the same transaction, get a different answer, because someone committed in between. READ COMMITTED does this on purpose: it takes a [new snapshot for every statement](/learn/transactions/read-committed). REPEATABLE READ takes one snapshot at its first statement and keeps it.
+
+<Figure wide caption={<>at read committed, the second read returns T1's <C k="dead">150.00</C>. the snapshot under each session's name moves forward with every statement.</>}>
+<AnomalyStrip anomaly="non-repeatable read" trace={nonrep} level="read committed" mark={3} />
+</Figure>
+
+is that bad? only if your code assumes the two reads agree. a page that reads a balance to decide, then reads it again to display, can decide on one number and show another.
+
+## phantoms
+
+a phantom is the same thing for a whole set of rows: run a query with a WHERE, run it again, and rows that match have appeared or disappeared. nothing you read changed; the set did.
+
+<Figure wide caption={<>T2 counts the accounts with at least 100.00, twice. in between, T1 opens carol's account. at read committed the count goes from 2 to <C k="dead">3</C>.</>}>
+<AnomalyStrip anomaly="phantom" trace={phantom} level="read committed" mark={3} />
+</Figure>
+
+<Predict question="same schedule at repeatable read. what does T2's second count return?" options={["2", "3", "an error: the set changed"]} answer={0}>
+```sql
+/* T2 */ BEGIN ISOLATION LEVEL REPEATABLE READ;
+/* T2 */ SELECT count(*) FROM accounts WHERE balance >= 100.00;  -- 2
+/* T1 */ INSERT INTO accounts VALUES (3, 'carol', 100.00);
+/* T2 */ SELECT count(*) FROM accounts WHERE balance >= 100.00;  -- ?
+```
+<Explain>
+2. the standard allows phantoms at REPEATABLE READ, so a database that implements it by locking the rows it read (and not the gaps between them) is allowed to show 3 here. postgres's repeatable read reads everything from one snapshot, and carol's row was committed after it, so she isn't in it. the manual's table marks this cell "allowed, but not in PG". click the phantom row of the grid above, repeatable read column, to watch it run.
+</Explain>
+</Predict>
+
+## lost updates
+
+two transactions read the same value, each computes a new one in the app, each writes it back. the second write lands on top of the first, and the first one's change is gone.
+
+<Figure wide caption={<>two deposits, 10.00 and 20.00, each read, added up in the app, and written back at read committed. T2 waits for T1's row lock, then writes its 120.00 anyway. the balance ends at <C k="dead">120.00</C>.</>}>
+<AnomalyStrip anomaly="lost update" trace={lost} level="read committed" mark={8} />
+</Figure>
+
+notice T2 did wait. postgres never lets two transactions write the same row at the same time (that would be a dirty write, which no level allows): the second writer queues behind the first one's row lock. the trouble is what it does after waiting. at read committed it writes the value it computed from its stale read. at repeatable read it gets `40001` instead and has to start over. [lost updates](/learn/transactions/lost-updates) has four ways out, compared on the same capture.
+
+## read skew
+
+read skew is two reads, each correct on its own, that together describe a moment that never happened. bank's invariant is that alice and bob hold 200.00 between them, always. T1 moves 50.00 from one to the other in a single transaction, so every committed state adds up. T2 reads one before the transfer and the other after.
+
+<Figure wide caption={<>T2 reads alice (100.00), T1's transfer commits, T2 reads bob (<C k="dead">150.00</C>). T2 now believes there's 250.00, a state the bank was never in.</>}>
+<AnomalyStrip anomaly="read skew" trace={skew} level="read committed" mark={4} />
+</Figure>
+
+this is the one that bites reports and exports: anything that reads many rows across several statements. a balance sheet that doesn't balance, a dump with half a transfer in it. it's why pg_dump runs the whole dump inside one repeatable read transaction: one snapshot, one moment.
+
+## write skew
+
+write skew is the subtle one. two transactions read the same rows, decide based on what they read, and then each writes a *different* row. no row is written twice, so no row lock ever makes anyone wait. both commit. the rule both of them checked is broken.
+
+<Figure wide caption={<>two doctors on call, the rule is at least one stays on. each checks (2 on call), each takes only themselves off. at repeatable read both commit, and <C k="dead">0</C> doctors are on call.</>}>
+<AnomalyStrip anomaly="write skew" trace={wskew} level="repeatable read" mark={8} />
+</Figure>
+
+repeatable read can't see it coming: each transaction's snapshot really did show two doctors, and neither wrote anything the other wrote. only SERIALIZABLE notices, by tracking who read what, and it refuses the second COMMIT. [write skew and SERIALIZABLE](/learn/transactions/write-skew) walks through it, and [serializable snapshot isolation](/learn/locking/ssi) shows how postgres does the tracking.
+
+<Gotcha title="it worked on my laptop">
+every anomaly here needs two transactions overlapping in time. a test suite that runs one request at a time never sees any of them, and neither does a dev box with one user. they show up under load, rarely, in data you can't reproduce. if a rule matters (money adds up, someone is on call, a seat is sold once), decide which anomaly could break it and pick the level or the lock that stops that one. [isolation levels](/learn/transactions/isolation-levels) has the table to pick from.
+</Gotcha>
+
+<Deep title="where the names come from">
+the SQL-92 standard defines its levels by three phenomena (dirty read, non-repeatable read, phantom) and says SERIALIZABLE must behave like some one-at-a-time order. in 1995 Berenson, Bernstein, Gray, Melton, O'Neil and O'Neil published "a critique of ANSI SQL isolation levels", which showed the phenomena were worded loosely enough to read two ways, added the ones the standard never named (dirty write, lost update, read skew, write skew), and described snapshot isolation, the thing postgres calls REPEATABLE READ. the postgres manual cites that paper for the full treatment.
+
+so for the last three rows of the grid, the "the standard allows" half needs a footnote: the standard doesn't mention them at all. they're serialization anomalies, and the manual's table marks serialization anomalies possible at every level below SERIALIZABLE.
+</Deep>
+
+<Interview q="which anomalies can happen at READ COMMITTED in postgres?">
+non-repeatable reads, phantoms, lost updates (read, compute in the app, write back), read skew and write skew. not dirty reads: postgres never shows uncommitted data, at any level, and READ UNCOMMITTED is just READ COMMITTED by another name. bonus point: REPEATABLE READ stops all of those except write skew, and it stops lost updates by failing the second writer with SQLSTATE 40001, so the app has to be ready to [retry](/learn/transactions/retry-loops).
+</Interview>
+
+<Keylines>
+- an anomaly is a result two overlapping transactions produce that no one-at-a-time order would.
+- postgres never shows uncommitted data. READ UNCOMMITTED is READ COMMITTED.
+- READ COMMITTED allows the other five. REPEATABLE READ stops all but write skew.
+- some anomalies are stopped with an error (40001), not silently. your app has to retry.
+- write skew writes different rows, so no lock ever notices. only SERIALIZABLE does.
+</Keylines>

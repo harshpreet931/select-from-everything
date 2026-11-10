@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "c67a8bafae2a9fd2": {
+      "db": "lab",
+      "sql": "SELECT name, setting, context FROM pg_settings\nWHERE name IN ('wal_level', 'max_replication_slots', 'max_wal_senders')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25],
+            ["context", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "c8adce1896b555b8",
+          "rows": [
+            ["max_replication_slots", "10", "postmaster"],
+            ["max_wal_senders", "10", "postmaster"],
+            ["wal_level", "replica", "postmaster"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

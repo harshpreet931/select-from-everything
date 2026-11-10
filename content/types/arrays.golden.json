@@ -1,0 +1,260 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ecc55ac7fb012031": {
+      "db": "empty",
+      "sql": "SELECT ARRAY['eco', 'new']                      AS constructor,\n       '{eco,new}'::text[]                      AS literal,\n       '{\"left handed\", NULL, \"NULL\", \"\"}'::text[] AS tricky,\n       (ARRAY[10, 20, 30, 40])[2:3]             AS slice;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["constructor", "text[]", 1009],
+            ["literal", "text[]", 1009],
+            ["tricky", "text[]", 1009],
+            ["slice", "int4[]", 1007]
+          ],
+          "rowCount": 1,
+          "digest": "0a95c98cac576f9e",
+          "rows": [
+            ["{eco,new}", "{eco,new}", "{\"left handed\",NULL,\"NULL\",\"\"}", "{20,30}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b027b306e9b2c634": {
+      "db": "empty",
+      "sql": "SELECT cardinality('{}'::int[]) AS cardinality, array_length('{}'::int[], 1) AS array_length;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["cardinality", "int4", 23],
+            ["array_length", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "ac5646f4414a177b",
+          "rows": [
+            ["0", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d039280fb9a06b3c": {
+      "db": "empty",
+      "sql": "SELECT 3 = ANY (ARRAY[1, NULL]) AS not_found, 1 = ANY (ARRAY[1, NULL]) AS found, 'x' = ANY ('{}'::text[]) AS empty_list;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["not_found", "bool", 16],
+            ["found", "bool", 16],
+            ["empty_list", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "ace8defd695a4461",
+          "rows": [
+            [null, "t", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "72b52ce87528b894": {
+      "db": "shop",
+      "sql": "SELECT tag, count(*) AS products, array_agg(id ORDER BY id) FILTER (WHERE id < 30) AS some_ids\nFROM products, unnest(tags) AS tag\nGROUP BY tag\nORDER BY count(*) DESC, tag\nLIMIT 4;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["tag", "text", 25],
+            ["products", "int8", 20],
+            ["some_ids", "int4[]", 1007]
+          ],
+          "rowCount": 4,
+          "digest": "291e8fec5fa80270",
+          "rows": [
+            ["new", "68", "{16,17,22,23,24}"],
+            ["eco", "34", "{16,22}"],
+            ["sale", "33", "{10,20,27}"],
+            ["outdoor", "10", "{12,21,29}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bf461cd42f469a21": {
+      "db": "empty",
+      "sql": "CREATE TABLE posts AS\nSELECT i AS id, CASE WHEN i % 97 = 0 THEN ARRAY['rare', 'sql'] ELSE ARRAY['sql'] END AS tags\nFROM generate_series(1, 20000) AS i;\nCREATE INDEX posts_tags ON posts USING gin (tags);\nANALYZE posts;\nEXPLAIN (COSTS OFF) SELECT count(*) FROM posts WHERE tags @> '{rare}';\nEXPLAIN (COSTS OFF) SELECT count(*) FROM posts WHERE 'rare' = ANY (tags);",
+      "statements": [
+        {
+          "tag": "SELECT 20000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 20000,
+          "digest": "7678671f52872919"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "14fb9e067afaea58",
+          "rows": [
+            ["Aggregate"],
+            ["  ->  Bitmap Heap Scan on posts"],
+            ["        Recheck Cond: (tags @> '{rare}'::text[])"],
+            ["        ->  Bitmap Index Scan on posts_tags"],
+            ["              Index Cond: (tags @> '{rare}'::text[])"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "1553a73afefdd408",
+          "rows": [
+            ["Aggregate"],
+            ["  ->  Seq Scan on posts"],
+            ["        Filter: ('rare'::text = ANY (tags))"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "28469b624984fae2": {
+      "db": "shop",
+      "sql": "UPDATE products SET tags = array_replace(tags, 'eco', 'green') WHERE tags @> '{eco}';",
+      "statements": [
+        {
+          "tag": "UPDATE 34",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 34,
+          "digest": "17af2e34adc85b29"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "caff11e6a905a804": {
+      "db": "empty",
+      "sql": "CREATE TABLE tag_names (name text PRIMARY KEY);\nCREATE TABLE items (id int PRIMARY KEY, tags text[] REFERENCES tag_names (name));",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42804",
+            "message": "foreign key constraint \"items_tags_fkey\" cannot be implemented",
+            "detail": "Key columns \"tags\" of the referencing table and \"name\" of the referenced table are of incompatible types: text[] and text."
+          },
+          "digest": "7dd7b72016b41360"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42804",
+        "message": "foreign key constraint \"items_tags_fkey\" cannot be implemented",
+        "detail": "Key columns \"tags\" of the referencing table and \"name\" of the referenced table are of incompatible types: text[] and text.",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "fcfecbf3492e6682": {
+      "db": "shop",
+      "sql": "CREATE TABLE tags (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text UNIQUE NOT NULL);\nCREATE TABLE product_tags (product_id int REFERENCES products, tag_id int REFERENCES tags, PRIMARY KEY (product_id, tag_id));\nINSERT INTO tags (name) SELECT DISTINCT tag FROM products, unnest(tags) AS tag ORDER BY tag;\nINSERT INTO product_tags SELECT p.id, t.id FROM products AS p, unnest(p.tags) AS u (tag) JOIN tags AS t ON t.name = u.tag;\nUPDATE tags SET name = 'green' WHERE name = 'eco';\nSELECT count(*) AS products_now_green FROM product_tags JOIN tags ON tags.id = tag_id WHERE name = 'green';",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 22",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 22,
+          "digest": "adfc4cc0fb80bbe8"
+        },
+        {
+          "tag": "INSERT 0 202",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 202,
+          "digest": "c2fb2d87bc93d25f"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "8076d3d0a61a7e81"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["products_now_green", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "2b26c819661a9231",
+          "rows": [
+            ["34"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

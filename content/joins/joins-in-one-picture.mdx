@@ -1,0 +1,225 @@
+import { OnGrid } from "@/components/figures/joins/OnGrid";
+import { VennLie } from "@/components/figures/joins/VennLie";
+import { prov, resultOf, runsOf, valueOf } from "@/components/figures/joins/captured";
+import grid from "./traces/on-grid.pgtrace.json";
+import venn from "./traces/venn.pgtrace.json";
+
+{/* the grid reads traces/on-grid.scenario.sql and the venn figure reads traces/venn.scenario.sql,
+    both captured on PGlite: every tick, padded row and count is a real result. the JoinLab at the
+    top is the model in src/lib/db/sim/join.ts, checked against postgres for all six join kinds,
+    and it's fed the same two tables the runnable blocks create. */}
+
+export const people = resultOf(grid, 0);
+export const shops = resultOf(grid, 1);
+export const gridRuns = runsOf(
+  grid,
+  ["= | inner", "true | inner", "<> | inner", "and | inner", "idf | inner", "false | inner", "= | left", "true | left", "<> | left", "and | left", "idf | left", "false | left"],
+  2,
+);
+export const gridSrc = prov(grid);
+export const vennSrc = prov(venn);
+
+<InShort>
+a join is a **cross product with a filter**: pair every row of one table with every row of the other, then keep the pairs where **ON** is true. an **outer join** then puts back the rows that found no partner at all, padded with NULLs.
+
+that's every join there is. the venn diagram on the cheat sheet is a picture of something else.
+</InShort>
+
+## the picture
+
+you know the venn diagram on every join cheat sheet? two circles, the overlap shaded for INNER, the whole left circle for LEFT. it looks tidy, it's easy to remember, and it's wrong in ways that will cost you a wrong total one day.
+
+here's the picture that's right. think of a speed-dating night. every customer sits down once across from every store (that's the cross product). each pair answers one question, say "are we in the same city?" (that's the ON). INNER JOIN goes home with the pairs that said yes. LEFT JOIN also sends home every customer who never got a single yes, alone, with an empty chair where a partner would be (NULLs).
+
+<Figure wide caption={<>four customers, four stores, every pair of them. switch the join type, then press <em>add a duplicate key</em>: a second London store meets both Londoners, so London goes from 2 rows to 2 × 2. rows that matched nobody come back <C k="ref">padded</C>.</>}>
+<JoinLab left={{ name: "customers", columns: ["name", "city"], rows: people.rows }} right={{ name: "stores", columns: ["city", "store"], rows: shops.rows }} on={["city", "city"]} logical />
+</Figure>
+
+that grid is the whole chapter. the rest is taking it apart, and then showing what the circles get wrong.
+
+## every pair first
+
+here are the two tables from the figure, for real. Edsger has no city, and the online store has no city either.
+
+```sql run session=tiny
+CREATE TABLE customers (name text, city text);
+INSERT INTO customers VALUES ('Ada', 'London'), ('Alan', 'London'), ('Grace', 'Paris'), ('Edsger', NULL);
+CREATE TABLE stores (city text, store text);
+INSERT INTO stores VALUES ('London', 'soho'), ('Paris', 'marais'), ('Berlin', 'mitte'), (NULL, 'online');
+```
+
+`CROSS JOIN` is the join with no filter at all. every customer, next to every store:
+
+```sql run session=tiny rows=8
+SELECT c.name, c.city, s.city, s.store
+FROM customers AS c CROSS JOIN stores AS s
+ORDER BY c.name, s.store;
+```
+
+16 rows: 4 × 4. that's the **cross product** (also called the Cartesian product), and every join starts from it, at least on paper. (`AS c` gives the table a short name for the rest of the query. both tables have a `city`, so every column gets its table's name in front.)
+
+## then ON throws pairs out
+
+an ON isn't a lookup ("go find the matching row"). it's a test, and every pair in the grid takes it. pairs where it comes out true stay. pairs where it's false, or unknown, go.
+
+<Figure wide caption={<>pick an ON. the grid never changes size, only which pairs <C k="live">pass</C>. then switch to left: a customer whose whole row is empty comes back once, <C k="ref">padded</C> with NULLs, whatever the ON was.</>}>
+<OnGrid
+  left={{ name: "customers", columns: people.columns, rows: people.rows, key: 0, label: [0] }}
+  right={{ name: "stores", columns: shops.columns, rows: shops.rows, key: 1, label: [1] }}
+  at={[0, 3]}
+  ons={[
+    { v: "=", label: "s.city = c.city" },
+    { v: "true", label: "true" },
+    { v: "<>", label: "s.city <> c.city" },
+    { v: "and", label: "s.city = c.city AND s.store <> 'soho'" },
+    { v: "idf", label: "s.city IS NOT DISTINCT FROM c.city" },
+    { v: "false", label: "false" },
+  ]}
+  kinds={["inner", "left"]}
+  runs={gridRuns}
+  trace={gridSrc}
+/>
+</Figure>
+
+`ON true` keeps all 16 pairs, which is why `CROSS JOIN` and `JOIN ... ON true` are the same query. `ON false` keeps none. and the ON can test anything at all: columns from both sides, a column from one side only, a constant. the common case, an `=` between a column on each side, has a name, the **equi-join**, and it's the only kind the venn diagram even tries to draw.
+
+the one you'll write most days:
+
+```sql run session=tiny
+SELECT c.name, c.city, s.city, s.store
+FROM customers AS c JOIN stores AS s ON s.city = c.city
+ORDER BY c.name, s.store;
+```
+
+(`JOIN` on its own means `INNER JOIN`. the next chapter, [INNER JOIN](/learn/joins/inner-join), has the spellings.)
+
+and look who's missing: Edsger, and the online store. both cities are NULL, and `NULL = NULL` isn't true, it's unknown ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) has why). unknown fails the test like false does. two missing cities are not the same city.
+
+## then outer joins put back the leftovers
+
+an outer join is the inner join plus a second pass. after the filter, look for rows that passed with nobody, and bring each one back once, with NULLs in the other table's columns:
+
+<Defs>
+<dt>LEFT JOIN</dt><dd>the pairs that passed, plus every left row that passed with no one</dd>
+<dt>RIGHT JOIN</dt><dd>the pairs that passed, plus every right row that passed with no one</dd>
+<dt>FULL JOIN</dt><dd>the pairs that passed, plus the leftovers from both sides</dd>
+</Defs>
+
+so the row count is plain arithmetic: pairs that passed + leftovers. here that's 3 + 1 for LEFT, 3 + 2 for RIGHT, and 3 + 1 + 2 for FULL:
+
+```sql run session=tiny
+SELECT c.name, c.city, s.city, s.store
+FROM customers AS c FULL JOIN stores AS s ON s.city = c.city
+ORDER BY c.name, s.store;
+```
+
+the NULL-padded rows aren't data anyone stored. they're the join saying "nobody". [LEFT, RIGHT and FULL joins](/learn/joins/outer-joins) is about living with them, including the WHERE that quietly turns a LEFT JOIN back into an inner one.
+
+<Predict options={["4 rows", "5 rows", "6 rows"]} answer={1}>
+```sql
+INSERT INTO stores VALUES ('London', 'camden');
+
+SELECT c.name, s.store
+FROM customers AS c JOIN stores AS s ON s.city = c.city;
+```
+<Explain>
+one new row in stores, two new rows in the result. Ada and Alan each meet both London stores now: 2 × 2 = 4 London rows, plus Grace in Paris. a join doesn't add up rows, it multiplies them, key by key.
+</Explain>
+</Predict>
+
+the same thing, run:
+
+```sql run session=tiny
+INSERT INTO stores VALUES ('London', 'camden');
+
+SELECT c.name, s.store
+FROM customers AS c JOIN stores AS s ON s.city = c.city
+ORDER BY c.name, s.store;
+```
+
+## why the venn diagram lies
+
+now take the cheat sheet's picture to real data: the shop's 200 products and its 24,942 order lines. a venn diagram draws each table as a circle and a join as some shaded part of them. so the picture makes promises before you've run anything. an overlap can't be bigger than either circle. a whole circle is exactly its own size.
+
+<Figure wide caption={<>pick a query. the bound under the diagram follows from the picture alone. the count is what postgres returned. the joins break the picture <C k="dead">by 125x</C>. the set operations keep it.</>}>
+<VennLie
+  left={{ name: "products", n: valueOf(venn, 0) }}
+  right={{ name: "order_items", n: valueOf(venn, 1) }}
+  modes={[
+    { v: "inner", label: "INNER JOIN", shade: "inner", got: valueOf(venn, 2), shape: "a product glued to an order line, 14 columns wide", note: "the overlap holds 24,942 rows, out of a circle with 200 in it. each order line pairs with its product, so a product that sold often is in a lot of rows: the chef's knife alone is in 1,826." },
+    { v: "left", label: "LEFT JOIN", shade: "left", got: valueOf(venn, 3), shape: "a product glued to an order line, or to 5 NULLs", note: "\"the whole left circle\" sounds like 200 rows. it's every matching pair, plus the one product that matched nothing (the left-handed teapot), padded with NULLs." },
+    { v: "intersect", label: "INTERSECT", shade: "intersect", got: valueOf(venn, 5), shape: "a product id, same shape as both inputs", note: "this is what the overlap really draws: values that appear on both sides, once each. 199 product ids show up in order lines." },
+    { v: "except", label: "EXCEPT", shade: "except", got: valueOf(venn, 6), shape: "a product id, same shape as both inputs", note: "the left circle minus the overlap: product ids no order line mentions. one, and it's the teapot. the picture is right again." },
+  ]}
+  trace={vennSrc}
+/>
+</Figure>
+
+three lies, then:
+
+1. **duplicates multiply.** a circle's overlap can't hold more than the smaller circle, but a join can be bigger than both tables. one product with 1,826 order lines is 1,826 rows. two duplicates on each side of a key are 4 rows. sum anything over that and you count it again and again, which is a whole chapter: [join fan-out](/learn/joins/fan-out).
+2. **an outer join isn't a union.** the shaded left circle suggests "the products, and maybe some more". a LEFT JOIN row is a product glued to an order line, or to a row of NULLs, and there are 24,943 of them, not 200.
+3. **circles hold one kind of thing.** a venn diagram is about sets of the same kind of element, which is exactly what INTERSECT, UNION and EXCEPT combine: rows of the same shape, stacked or compared. that's the one place the picture works. [UNION, INTERSECT and EXCEPT](/learn/joins/set-operations) has it.
+
+the counts, for real:
+
+```sql run db=shop
+SELECT count(*) FROM products;
+SELECT count(*) FROM products AS p JOIN order_items AS oi ON oi.product_id = p.id;
+SELECT count(*) FROM products AS p LEFT JOIN order_items AS oi ON oi.product_id = p.id;
+```
+
+and the reason, product by product. the overlap is made of pairs, and the busiest products are in a lot of pairs:
+
+```sql run db=shop
+SELECT p.id, p.name, count(*) AS rows_in_join
+FROM products AS p JOIN order_items AS oi ON oi.product_id = p.id
+GROUP BY p.id
+ORDER BY rows_in_join DESC, p.id
+LIMIT 3;
+```
+
+and the overlap the circles actually draw, a set operation on product ids:
+
+```sql run db=shop
+SELECT count(*) FROM (SELECT id FROM products INTERSECT SELECT product_id FROM order_items) AS sold;
+SELECT id, name FROM products EXCEPT SELECT p.id, p.name FROM products AS p JOIN order_items AS oi ON oi.product_id = p.id;
+```
+
+## the grid is the meaning, not the method
+
+if postgres really built every pair, this query would make 4,988,400 of them (200 × 24,942) and throw almost all away:
+
+```sql run db=shop
+SELECT count(*) FROM products CROSS JOIN order_items;
+```
+
+it doesn't. the grid tells you what the answer has to be. how to get there is the planner's problem, and for an equi-join it never looks at most of the pairs:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT p.name, oi.qty
+FROM products AS p JOIN order_items AS oi ON oi.product_id = p.id;
+```
+
+a Hash Join: put the 200 products in a hash table keyed on `id`, then stream the order lines past it, one lookup each. that's one of three ways postgres runs a join, and each has a chapter in part 9: [nested loop](/learn/execution/nested-loop-join), [hash](/learn/execution/hash-join) and [merge](/learn/execution/merge-join). the answer is the same every time, because it's defined by the grid.
+
+<Gotcha title="NULL never matches anything">
+`ON a.x = b.x` drops every row where `x` is NULL, on both sides, and an inner join gives no sign that it happened. if two NULLs should count as a match, say so: `ON a.x IS NOT DISTINCT FROM b.x`. that's the option in the grid above that finally pairs Edsger with the online store. (it's rarely what you want for keys. a missing city really isn't a city.)
+</Gotcha>
+
+<Interview q="draw a LEFT JOIN for me.">
+don't draw circles. draw the grid: left rows down the side, right rows across the top, a tick where ON is true. INNER JOIN is the ticks. LEFT JOIN is the ticks plus one row for each left row with no tick, padded with NULLs. so a LEFT JOIN never returns fewer rows than its left table, and it can return many more. bonus point: say out loud that a key appearing twice on both sides gives four rows, and that this is why a venn diagram can't show joins: its overlap can never be bigger than a circle.
+</Interview>
+
+<Deep title="the textbook's version: θ, σ and ×">
+relational algebra writes a join as a selection over a product: σ<sub>condition</sub>(A × B). Codd's 1970s papers called the general one a θ-join (θ for any comparison: =, &lt;, &lt;&gt; ...), and the equality-only case an equi-join. the outer joins came later, and the SQL standard spelled them out in SQL-92 as `LEFT OUTER JOIN`, `RIGHT OUTER JOIN` and `FULL OUTER JOIN` (the word `OUTER` is optional, and nobody types it). [relational algebra](/learn/execution/relational-algebra) has the rest of the operators. the important part survives the notation: the product comes first, the filter second, and the padding last.
+</Deep>
+
+<Keylines>
+- a join is every pair of rows (the cross product), filtered by ON.
+- ON is a test each pair takes, true keeps it. unknown and false both drop it.
+- an outer join adds back the rows that passed with nobody, padded with NULLs.
+- duplicates multiply: 2 matching rows on each side give 4.
+- venn diagrams draw set operations, not joins.
+</Keylines>

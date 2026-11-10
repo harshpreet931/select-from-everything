@@ -1,0 +1,116 @@
+import { ClockDial } from "@/components/figures/storage/ClockDial";
+import usageClimb from "./traces/usage-climb.pgtrace.json";
+
+<InShort>
+when a page has to come in and every frame is taken, something has to go. postgres picks it with a **clock sweep**: every frame has a **usage count** from 0 to 5, and every hit adds one. a **hand** goes round the frames looking for a victim. each frame it passes loses one, and the first frame it finds at 0 is reused.
+
+pages used often keep getting topped up and survive lap after lap. a page used once is gone after one lap. it's most of what LRU gives you, at almost none of the cost.
+</InShort>
+
+## the picture
+
+you know how a cache is supposed to throw out the least recently used item? that needs a list of every page in the order it was last touched, reshuffled on every single access. postgres doesn't keep one.
+
+think of a cleaner walking round a circle of desks, over and over. every time someone uses a desk, they add a tally mark to its card, up to five. every time the cleaner walks past a desk, they rub one mark out. a desk with no marks left gets cleared for the next person who needs one. busy desks get marked faster than the cleaner can rub them out. a desk somebody used once and walked away from is cleared the second time round.
+
+that's the whole algorithm. request pages and watch it, one tick at a time:
+
+<Figure wide caption={<>pick a pattern, or click pages to request them yourself, and step. the pips are each frame's usage count. a hit adds one (<C k="live">live</C>); a miss sends the <C k="hot">hand</C> round, taking one off every frame it passes until it finds a frame at zero. this is the tested model of postgres's StrategyGetBuffer, not a capture.</>}>
+<ClockDial
+  frames={6}
+  pages={10}
+  presets={[
+    { label: "one hot page", seq: [0, 1, 2, 0, 3, 4, 0, 5, 6, 0, 7, 8, 0, 9, 1, 0] },
+    { label: "a hot set, then a scan", seq: [0, 1, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1] },
+    { label: "a scan, twice", seq: [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7] },
+  ]}
+/>
+</Figure>
+
+three things to notice. in "one hot page", t·0 stays in its frame for the whole run while everything else churns past it: every time the hand gets near it, it's been topped up again. in "a scan, twice", nothing survives: eight pages through six frames, each used once, and the second pass misses on every single page, because each page was thrown out just before it was needed again. and the hand only moves on a miss. hits never touch it.
+
+## real usage counts
+
+the counts are real, and `pg_buffercache` shows them. the lab's accounts table is one page. read it once, three times, then seven:
+
+```sql run db=lab
+SELECT count(*) FROM accounts;
+SELECT usagecount FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;
+SELECT count(*) FROM accounts;
+SELECT count(*) FROM accounts;
+SELECT usagecount FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;
+SELECT count(*) FROM accounts;
+SELECT count(*) FROM accounts;
+SELECT count(*) FROM accounts;
+SELECT count(*) FROM accounts;
+SELECT usagecount FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;
+```
+
+the same seven scans, captured step by step on the same engine:
+
+<Figure wide caption={<>step through. the frame holding accounts·0 gains a pip per scan, and stops at five. the pool starts cold, so the only other lab page in it is accounts_pkey·0, untouched by these scans.</>}>
+<BufferPool trace={usageClimb} />
+</Figure>
+
+1, then 3, then 5, and there it stops. every scan pins the page once and bumps its count by one, and 5 is the ceiling (`BM_MAX_USAGE_COUNT` in the source).
+
+<Predict question="page A has been hit 50 times, page B 5 times, and neither is used again. which survives more passes of the hand?" options={["A, by a lot", "B", "neither: the same"]} answer={2}>
+```text
+page A: 50 hits    page B: 5 hits
+the hand comes round, again and again...
+```
+<Explain>
+the same. the count stops at 5, so both pages sit at 5. each pass takes one off, and both reach 0 on the fifth pass and are evicted on the sixth. clock sweep remembers "used a lot recently", not how much. the cap is the point: a page that was hammered an hour ago and never since can't squat on a frame forever.
+</Explain>
+</Predict>
+
+across the whole pool, `pg_buffercache_usage_counts()` gives the distribution. after a few queries on shop:
+
+```sql run db=shop ext=pg_buffercache
+SELECT count(*) FROM orders;
+SELECT count(*) FROM orders;
+SELECT name, city FROM customers WHERE id = 42;
+SELECT usage_count, buffers, dirty, pinned
+FROM pg_buffercache_usage_counts()
+ORDER BY usage_count;
+```
+
+most of the 16,384 frames are at 0 because they're empty: the browser's pool starts out empty for every block. on a busy server that's been up a while, the pool is full, and the shape of this table tells you how much pressure it's under. lots of frames at 5 means a hot working set that fits; most frames at 0 or 1 means pages are being cycled through faster than they're reused.
+
+## why not plain LRU
+
+because of what a hit costs. with an LRU list, every page access has to move that page to the front of a shared list, and a shared list needs a lock. a busy server does millions of buffer accesses a second across all its backends, and they'd all queue on that one lock. postgres had exactly that problem, and [postgres 8.1](https://www.postgresql.org/docs/release/8.1.0/) replaced its buffer replacement with the clock sweep to get rid of it. now a hit is one atomic add on the frame's state word. no lock, no list.
+
+and clock sweep isn't worse at choosing, either. plain LRU has a known weakness: one big scan touches every page once, which makes every scanned page the "most recent", and flushes out the hot pages that were actually useful. usage counts are a little memory of frequency, so a page used five times outlives one used once. here's the same request stream under three policies:
+
+<Figure wide caption={<>step to the end and compare the hits. the stream is a small hot set used a few times, then one long scan, then the hot set again. switch the policy, or the number of frames, and run it again.</>}>
+<BufferPool lab={{ frames: 9, policy: "clock-sweep", workload: "hot+scan" }} />
+</Figure>
+
+with 9 frames, clock sweep keeps all three hot pages through the scan: they had usage to spare, and every scanned page arrived with just 1, so the hand took scan pages first. lru and fifo lose every hot page, and finish with 6 hits to clock sweep's 9. but make the scan long enough, many times the size of the pool, and even usage 5 runs out after five laps. that's the job of [ring buffers](/learn/storage/ring-buffers): a big scan recycles a few frames of its own instead of borrowing everyone's.
+
+## the hand's real job
+
+in the model, the hand only moves when a backend needs a frame. in postgres, it's the same: there's one shared hand, `nextVictimBuffer`, and whichever backend misses advances it. two more things happen on a real server:
+
+- if the frame the hand picks is **dirty**, the backend has to write it out before reusing it. that's a write in the middle of somebody's SELECT. the **background writer** exists to get there first: it looks ahead of the hand and writes out dirty pages that are about to be reached, so backends usually find clean ones. that's [writing dirty pages back](/learn/storage/writing-pages-back).
+- a frame that's **pinned** is skipped, whatever its count. if every frame is pinned, the sweep gives up with an error. that takes a pool far too small for the number of connections.
+
+<Gotcha title="a bigger pool isn't free">
+with a huge shared_buffers and a working set much smaller than it, everything sits at usage 5 and nobody misses: perfect. but the moment the pool fills with pages used about equally, a miss can make the hand walk a long way, knocking down counts all the way round before anything reaches 0. the usual advice (a quarter of RAM, see [the buffer pool](/learn/storage/buffer-pool)) is a starting point to measure from, not a law.
+</Gotcha>
+
+<Interview q="how does postgres decide which page to evict from shared buffers?">
+clock sweep. every buffer has a usage count, incremented (up to 5) each time a backend pins it. when a backend needs a free buffer and there are none unused, it advances a shared clock hand over the buffers: pinned ones are skipped, ones with a usage count above zero get decremented, and the first unpinned buffer with count zero is the victim. if it's dirty, it's written out first. it approximates LRU with frequency information, and a hit only costs an atomic increment instead of reordering a locked list. bonus point: large sequential scans, VACUUM and bulk writes use small ring buffers instead, so they don't push everyone else's pages out, and the background writer cleans dirty buffers ahead of the hand.
+</Interview>
+
+<Keylines>
+- every frame has a usage count, 0 to 5. each hit adds one.
+- on a miss, the hand goes round: pinned frames are skipped, others lose one, the first at 0 is the victim.
+- pages used often survive many laps, pages used once survive one.
+- the count caps at 5, so old popularity fades.
+- postgres uses it since 8.1 because a hit is one atomic add, not a reordering of a locked list.
+</Keylines>

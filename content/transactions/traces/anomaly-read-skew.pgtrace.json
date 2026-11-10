@@ -1,0 +1,372 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/anomaly-read-skew.scenario.sql",
+ "title": "read skew at all four isolation levels: T2 adds up alice and bob while T1 moves 50.00 between them",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23210088},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL READ UNCOMMITTED",
+   "note": "read uncommitted. T2 wants alice + bob, which is always 200.00.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read uncommitted","inTxn":true}
+   }
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "T2 reads alice: 100.00.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"read uncommitted","inTxn":true}
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 1;\nUPDATE accounts SET balance = balance + 50.00 WHERE id = 2",
+   "note": "T1 moves 50.00 from alice to bob, in one transaction.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":759,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"read committed","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"read uncommitted","inTxn":true}
+   },
+   "xact": {"759":"in progress"}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits. alice 50.00, bob 150.00, still 200.00 in total.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":760,"xmax":760,"xip":[]},"iso":"read uncommitted","inTxn":true}
+   }
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 2",
+   "note": "T2 reads bob: 150.00. so T2 thinks there's 100.00 + 150.00 = 250.00. that total never existed.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["150.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":760,"xmax":760,"xip":[]},"iso":"read uncommitted","inTxn":true}
+   }
+  },
+  {
+   "i": 5,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 finishes.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   }
+  },
+  {
+   "i": 6,
+   "session": "obs",
+   "sql": "UPDATE accounts SET balance = 100.00",
+   "note": "next level. both balances go back to 100.00.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":2,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   }
+  },
+  {
+   "i": 7,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL READ COMMITTED",
+   "note": "read committed. T2 wants alice + bob, which is always 200.00.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":761,"xmax":761,"xip":[]},"iso":"read committed","inTxn":true}
+   }
+  },
+  {
+   "i": 8,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "T2 reads alice: 100.00.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":761,"xmax":761,"xip":[]},"iso":"read committed","inTxn":true}
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 1;\nUPDATE accounts SET balance = balance + 50.00 WHERE id = 2",
+   "note": "T1 moves 50.00 from alice to bob, in one transaction.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":761,"snap":{"xmin":761,"xmax":761,"xip":[]},"iso":"read committed","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":761,"xmax":761,"xip":[]},"iso":"read committed","inTxn":true}
+   },
+   "xact": {"761":"in progress"}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits. alice 50.00, bob 150.00, still 200.00 in total.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":762,"xmax":762,"xip":[]},"iso":"read committed","inTxn":true}
+   }
+  },
+  {
+   "i": 11,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 2",
+   "note": "T2 reads bob: 150.00. so T2 thinks there's 100.00 + 150.00 = 250.00. that total never existed.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["150.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":762,"xmax":762,"xip":[]},"iso":"read committed","inTxn":true}
+   }
+  },
+  {
+   "i": 12,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 finishes.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   }
+  },
+  {
+   "i": 13,
+   "session": "obs",
+   "sql": "UPDATE accounts SET balance = 100.00",
+   "note": "next level. both balances go back to 100.00.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":2,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   }
+  },
+  {
+   "i": 14,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL REPEATABLE READ",
+   "note": "repeatable read. T2 wants alice + bob, which is always 200.00.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"repeatable read","inTxn":true}
+   }
+  },
+  {
+   "i": 15,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "T2 reads alice: 100.00.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":763,"xmax":763,"xip":[]},"iso":"repeatable read","inTxn":true}
+   }
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 1;\nUPDATE accounts SET balance = balance + 50.00 WHERE id = 2",
+   "note": "T1 moves 50.00 from alice to bob, in one transaction.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":763,"snap":{"xmin":763,"xmax":763,"xip":[]},"iso":"read committed","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":763,"xmax":763,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "xact": {"763":"in progress"}
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits. alice 50.00, bob 150.00, still 200.00 in total.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":763,"xmax":763,"xip":[]},"iso":"repeatable read","inTxn":true}
+   }
+  },
+  {
+   "i": 18,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 2",
+   "note": "T2 reads bob: 100.00, from the same snapshot as alice. 200.00, a total that really existed.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":763,"xmax":763,"xip":[]},"iso":"repeatable read","inTxn":true}
+   }
+  },
+  {
+   "i": 19,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 finishes.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   }
+  },
+  {
+   "i": 20,
+   "session": "obs",
+   "sql": "UPDATE accounts SET balance = 100.00",
+   "note": "next level. both balances go back to 100.00.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":2,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   }
+  },
+  {
+   "i": 21,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE",
+   "note": "serializable. T2 wants alice + bob, which is always 200.00.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"serializable","inTxn":true}
+   }
+  },
+  {
+   "i": 22,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "T2 reads alice: 100.00.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":765,"xmax":765,"xip":[]},"iso":"serializable","inTxn":true}
+   }
+  },
+  {
+   "i": 23,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 1;\nUPDATE accounts SET balance = balance + 50.00 WHERE id = 2",
+   "note": "T1 moves 50.00 from alice to bob, in one transaction.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":765,"snap":{"xmin":765,"xmax":765,"xip":[]},"iso":"read committed","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":765,"xmax":765,"xip":[]},"iso":"serializable","inTxn":true}
+   },
+   "xact": {"765":"in progress"}
+  },
+  {
+   "i": 24,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits. alice 50.00, bob 150.00, still 200.00 in total.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":765,"xmax":765,"xip":[]},"iso":"serializable","inTxn":true}
+   }
+  },
+  {
+   "i": 25,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 2",
+   "note": "T2 reads bob: 100.00, from the same snapshot as alice. 200.00, a total that really existed.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":{"xmin":765,"xmax":765,"xip":[]},"iso":"serializable","inTxn":true}
+   }
+  },
+  {
+   "i": 26,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 finishes.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   }
+  }
+ ]
+}

@@ -1,0 +1,152 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "9307bb389f5adfa7": {
+      "db": "events",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT user_id, count(*)\nFROM events\nGROUP BY user_id\nORDER BY user_id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ae2c782174fc9b41",
+          "rows": [
+            ["Sort (actual rows=500.00 loops=1)"],
+            ["  Sort Key: user_id"],
+            ["  Sort Method: quicksort  Memory: 32kB"],
+            ["  Buffers: shared hit=3 read=335"],
+            ["  ->  HashAggregate (actual rows=500.00 loops=1)"],
+            ["        Group Key: user_id"],
+            ["        Batches: 1  Memory Usage: 53kB"],
+            ["        Buffers: shared read=335"],
+            ["        ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+            ["              Buffers: shared read=335"],
+            ["Planning:"],
+            ["  Buffers: shared hit=46 read=4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "568c5b9f515418ac": {
+      "db": "events",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT kind, user_id, count(*)\nFROM events\nGROUP BY ROLLUP (kind, user_id);",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7a38f911db0d3e20",
+          "rows": [
+            ["MixedAggregate (actual rows=2441.00 loops=1)"],
+            ["  Hash Key: kind, user_id"],
+            ["  Hash Key: kind"],
+            ["  Group Key: ()"],
+            ["  Batches: 1  Memory Usage: 265kB"],
+            ["  Buffers: shared read=335"],
+            ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+            ["        Buffers: shared read=335"],
+            ["Planning:"],
+            ["  Buffers: shared hit=61 read=5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3b7c422f15c52986": {
+      "db": "events",
+      "sql": "CREATE TABLE ev (user_id int, kind text, occurred_at timestamptz) PARTITION BY RANGE (occurred_at);\nCREATE TABLE ev_mar PARTITION OF ev FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');\nCREATE TABLE ev_apr PARTITION OF ev FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');\nCREATE TABLE ev_may PARTITION OF ev FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');\nINSERT INTO ev SELECT user_id, kind, occurred_at FROM events ORDER BY id;\nANALYZE ev;\n\nSET enable_partitionwise_aggregate = on;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT kind, count(*) FROM ev GROUP BY kind ORDER BY kind;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "INSERT 0 25000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 25000,
+          "digest": "c7858dad28b15c65"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "0158666dab518b98"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4fb5a04ba467901b"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "aeb8b21cae78a36f",
+          "rows": [
+            ["Finalize GroupAggregate (actual rows=5.00 loops=1)"],
+            ["  Group Key: ev.kind"],
+            ["  ->  Sort (actual rows=14.00 loops=1)"],
+            ["        Sort Key: ev.kind"],
+            ["        Sort Method: quicksort  Memory: 17kB"],
+            ["        ->  Append (actual rows=14.00 loops=1)"],
+            ["              ->  Partial HashAggregate (actual rows=5.00 loops=1)"],
+            ["                    Group Key: ev.kind"],
+            ["                    Batches: 1  Memory Usage: 32kB"],
+            ["                    ->  Seq Scan on ev_mar ev (actual rows=8517.00 loops=1)"],
+            ["              ->  Partial HashAggregate (actual rows=5.00 loops=1)"],
+            ["                    Group Key: ev_1.kind"],
+            ["                    Batches: 1  Memory Usage: 32kB"],
+            ["                    ->  Seq Scan on ev_apr ev_1 (actual rows=7966.00 loops=1)"],
+            ["              ->  Partial HashAggregate (actual rows=4.00 loops=1)"],
+            ["                    Group Key: ev_2.kind"],
+            ["                    Batches: 1  Memory Usage: 32kB"],
+            ["                    ->  Seq Scan on ev_may ev_2 (actual rows=8517.00 loops=1)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

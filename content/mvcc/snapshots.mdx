@@ -1,0 +1,120 @@
+import { SnapshotTimeline } from "@/components/figures/mvcc/SnapshotTimeline";
+import snapXip from "./traces/snapshot-xip.pgtrace.json";
+
+export const t3 = snapXip.steps[3].xids.T3.snap;
+export const t3xact = snapXip.steps[3].xact;
+export const t4a = snapXip.steps[4].xids.T4.snap;
+export const t4b = snapXip.steps[7].xids.T4.snap;
+export const xactEnd = snapXip.steps[7].xact;
+
+<InShort>
+a **snapshot** is three things: **xmin**, the oldest transaction still running when it was taken; **xmax**, one past the newest one that had finished; and **xip**, the list of transactions in between that were still running. a transaction's work counts for you if it finished before your snapshot, and that's decided from those three numbers alone.
+</InShort>
+
+## the picture
+
+you know how a query on a busy table returns a consistent answer, even while other sessions are halfway through changing the rows it reads? nobody locks anything for that. the query just carries a note of which transactions it's allowed to believe.
+
+think of a photo of the departures board at an airport. flights that had landed when you took it (committed), flights still in the air (in progress, the xip list), and flights that hadn't even taken off yet (at or past xmax). you plan your whole trip from the photo. the real board keeps changing; your photo doesn't.
+
+postgres prints a snapshot as `xmin:xmax:xip`. here's one from a real server, taken by T3 while T1 (xid 759) was still open and T2 (760) had just committed:
+
+<Figure caption={<>T3's snapshot, {t3.xmin}:{t3.xmax}:{t3.xip.join(",")}. click an xid. the <C k="meta">bracket</C> is xmin to xmax, the dot marks an xid in the in-progress list, and <C k="live">green</C> is work this snapshot can see.</>}>
+<SnapshotLine snap={t3} xact={t3xact} range={[757, 762]} />
+</Figure>
+
+<Defs>
+<dt>below xmin</dt><dd>finished before anything still running began. committed means visible, aborted means not. no list to check.</dd>
+<dt>in xip</dt><dd>was running when the snapshot was taken. invisible, even if it commits a millisecond later.</dd>
+<dt>between xmin and xmax, not in xip</dt><dd>had finished. visible if it committed.</dd>
+<dt>xmax or above</dt><dd>hadn't started yet, as far as this snapshot knows. invisible, whatever it does later.</dd>
+</Defs>
+
+notice what a snapshot doesn't say: whether 760 committed or aborted. it only says 760 was done. the outcome comes from the [commit log](/learn/mvcc/commit-log-and-hint-bits). the [visibility rules](/learn/mvcc/visibility-rules) use both.
+
+## reading one
+
+the browser engine is one session, so its snapshots are dull: nothing else is ever running.
+
+```sql run db=lab session=snap
+SELECT pg_current_snapshot() AS snap,
+       pg_snapshot_xmin(pg_current_snapshot()) AS xmin,
+       pg_snapshot_xmax(pg_current_snapshot()) AS xmax,
+       ARRAY(SELECT pg_snapshot_xip(pg_current_snapshot())) AS xip;
+```
+
+753:753 with an empty list: everything up to 752 is settled, 753 is the next xid anyone will get. now with an xid of our own:
+
+```sql run session=snap
+BEGIN;
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+SELECT pg_current_snapshot() AS snap, pg_current_xact_id_if_assigned() AS me;
+COMMIT;
+```
+
+still 753:753, and we're 753. a transaction is never in its own xip list, and by the numbers alone our own xid looks like "not started yet". that's why the visibility rules ask "is it mine?" before they look at the snapshot at all.
+
+`pg_visible_in_snapshot()` runs the snapshot half of the test, so you can check the table above against T3's snapshot from the server:
+
+```sql run session=snap
+SELECT x, pg_visible_in_snapshot(x::text::xid8, '759:761:759') AS done_for_t3
+FROM (VALUES (758), (759), (760), (761)) AS v(x)
+ORDER BY x;
+```
+
+758 is below xmin, 759 is in the list, 760 is between and done, 761 is at xmax. only 758 and 760 count for T3.
+
+## when a snapshot is taken
+
+<Predict question="T3 (repeatable read) read alice before T1 committed. T1 commits. T3 reads alice again. what does it see?" options={["T1's new balance", "the old balance", "an error"]} answer={1}>
+```sql
+/* T1 */ BEGIN; UPDATE accounts SET balance = balance + 10 WHERE id = 1;
+/* T3 */ BEGIN ISOLATION LEVEL REPEATABLE READ;
+/* T3 */ SELECT balance FROM accounts WHERE id = 1;   -- 100.00
+/* T1 */ COMMIT;
+/* T3 */ SELECT balance FROM accounts WHERE id = 1;   -- ?
+```
+<Explain>
+the old one, 100.00. at repeatable read the snapshot is taken by the transaction's first statement and kept until it ends. T1's xid is in that snapshot's in-progress list, and it stays there, even after T1 commits. at read committed the second SELECT would take a new snapshot and see 110.00.
+</Explain>
+</Predict>
+
+T4 is read committed, so each of its statements gets a new snapshot. here are the two it used, before and after T1 committed:
+
+<Figure caption={<>T4's two snapshots, {t4a.xmin}:{t4a.xmax}:{t4a.xip.join(",")} for its first read and {t4b.xmin}:{t4b.xmax}: for its second. click 759 in each: in the first it's in the <C k="meta">in-progress list</C>, in the second it's <C k="live">visible</C> history. the commit statuses are the ones at the end of the capture.</>}>
+<SnapshotLine snap={t4a} xact={xactEnd} range={[757, 762]} />
+<SnapshotLine snap={t4b} xact={xactEnd} range={[757, 762]} />
+</Figure>
+
+that's the whole difference between the two isolation levels most people use, in terms of snapshots:
+
+- **[read committed](/learn/transactions/read-committed)** (the default) takes a fresh snapshot for every statement.
+- **repeatable read** and **serializable** take one at the first statement of the transaction and keep it. `BEGIN` itself doesn't take one. (serializable adds [conflict tracking](/learn/locking/ssi) on top; which anomalies each level allows is in [isolation levels](/learn/transactions/isolation-levels).)
+
+the capture below has both. T1 is a transfer that stays open, T2 commits a change, then T3 (repeatable read) and T4 (read committed) both read. then T1 commits and both read again.
+
+<Figure wide caption={<>step through and switch between T3 and T4. T3's snapshot never moves after its first read. T4's moves forward on its next statement, and T1's xid drops out of the <C k="meta">in-progress list</C> into the <C k="live">visible</C> past. before a session's first statement there's no snapshot to show.</>}>
+<SnapshotTimeline trace={snapXip} who={["T3", "T4"]} start={4} rel="accounts" />
+</Figure>
+
+after T1 commits, the same table read by two sessions, one step apart: T3 gets alice at 100.00, T4 gets 110.00. both are correct for their snapshot. (for a read committed session that's idle, the figure shows the snapshot its next statement would get, which is what the capture's probe read.)
+
+<Gotcha title="the snapshot isn't taken at BEGIN">
+`BEGIN ISOLATION LEVEL REPEATABLE READ` takes no snapshot. the first query does, so everything that commits between `BEGIN` and that query is visible. if you need several sessions to see exactly the same data (parallel dumps do), one exports its snapshot with `pg_export_snapshot()` and the others adopt it with `SET TRANSACTION SNAPSHOT`, before their first query. that's how `pg_dump -j` keeps its workers consistent.
+</Gotcha>
+
+## what a snapshot costs
+
+building one means walking every backend's slot in shared memory to find who's running, which is why postgres caches the result until any transaction ends. a snapshot's size is the number of running transactions with xids, not the size of your data. and its xmin matters to everyone else: while your snapshot is alive, nothing that you might still see can be cleaned up. a repeatable read transaction left open for an hour pins that hour of dead versions. that's [the xmin horizon](/learn/mvcc/xmin-horizon).
+
+<Interview q="what is a snapshot in postgres, and when is it taken?">
+a snapshot is xmin (the oldest transaction still running), xmax (one past the last finished transaction) and the list of xids in between that were in progress when it was taken. a transaction's changes are visible to you if its xid is below xmin and committed, or between xmin and xmax, not in the list, and committed. read committed takes a new snapshot per statement; repeatable read and serializable take one at the first statement and keep it. bonus point: BEGIN doesn't take the snapshot, and a transaction never appears in its own in-progress list, which is why "my own changes" is checked separately.
+</Interview>
+
+<Keylines>
+- a snapshot is xmin, xmax and the in-progress list. postgres prints it as `xmin:xmax:xip`.
+- below xmin: settled. in the list or at xmax and above: invisible. otherwise: visible if committed.
+- read committed: a snapshot per statement. repeatable read: one per transaction, taken by the first query.
+- the snapshot says who was done; the commit log says how it ended.
+- an old snapshot holds back cleanup for everyone.
+</Keylines>

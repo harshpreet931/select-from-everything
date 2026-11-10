@@ -1,0 +1,140 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/subqueries.pgtrace.json";
+
+{/* the figures read traces/subqueries.scenario.sql, captured on PGlite with the shop dataset
+    (`pnpm pgtrace <file> --engine=pglite --twice`): for every way of writing a query, a step
+    with its result and an @explain step (EXPLAIN ANALYZE) right after it. */}
+
+export const run = (i, pre = "") => ({ ...resultOf(trace, i), sql: pre + resultOf(trace, i).sql, plan: planOf(trace, i + 1) });
+export const semi = { "IN | refunded": run(0), "EXISTS | refunded": run(2), "IN | any order": run(4), "EXISTS | any order": run(6) };
+export const anti = {
+  "NOT IN | 4MB": run(8),
+  "NOT EXISTS | 4MB": run(10),
+  "NOT IN | 64kB": run(13, "SET work_mem = '64kB';\n\n"),
+  "NOT EXISTS | 64kB": run(15, "SET work_mem = '64kB';\n\n"),
+};
+export const ctes = { inlined: run(18), MATERIALIZED: run(20), "OFFSET 0": run(22) };
+export const scalar = planOf(trace, 25);
+
+<InShort>
+a subquery in your SQL is rarely a subquery in the plan. the planner **pulls up** subqueries in FROM into the outer query, turns `IN` and `EXISTS` into **semi joins** (which is why they usually get the same plan), and `NOT EXISTS` into an **anti join**.
+
+what it can't flatten stays a **SubPlan**: a little plan run for the outer query. `NOT IN` is the famous one, and how fast it is depends on whether its result fits in a hash table.
+</InShort>
+
+## the picture
+
+you know the advice "use EXISTS, not IN, it's faster"? in postgres it's usually the same plan. the planner rewrites both into the same thing before it costs anything.
+
+think of an editor handed a sentence with a nested clause: "customers who are among the people who placed refunded orders". before typesetting, they rewrite it flat: "customers matched against refunded orders, each customer once". the meaning is the same; the flat version is just easier to work with. postgres does that rewrite on the query tree, right after parsing ([the query's lifecycle](/learn/execution/query-lifecycle)).
+
+<Figure wide caption={<>switch between IN and EXISTS, for refunded orders and for any order. the plans are identical: the subquery's customer ids are de-duplicated (the Aggregate) and joined to customers, so each customer comes out once. that's a semi join, done as a de-duplicate and a plain join.</>}>
+<RunPick options={[{ key: "written as", values: ["IN", "EXISTS"] }, { key: "subquery", values: ["refunded", "any order"] }]} runs={semi} trace={prov(trace)} hot={["IN", "EXISTS"]} />
+</Figure>
+
+## pull-up
+
+the simplest rewrite: a subquery in FROM (a derived table, [subqueries](/learn/joins/subqueries)) is merged into the outer query, so its tables join the outer ones and its WHERE merges with the outer WHERE:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT *
+FROM (SELECT id, name, city FROM customers WHERE country = 'FR') AS fr
+WHERE city = 'Paris'
+ORDER BY id;
+```
+
+one scan, both conditions on it. no trace of the subquery. pulled-up tables also join the outer query's list for [join ordering](/learn/optimizer/join-ordering), up to from_collapse_limit.
+
+a subquery can't be pulled up when merging would change its meaning: it has `LIMIT` or `OFFSET`, aggregates or `GROUP BY` (those can sometimes still have conditions pushed into them), `DISTINCT`, window functions, set operations, or volatile functions in its output.
+
+## IN and EXISTS become semi joins
+
+a **semi join** returns each outer row at most once if it has a match ([EXISTS, semi and anti joins](/learn/joins/exists-semi-anti)). `IN (SELECT …)` and a correlated `EXISTS (SELECT …)` both mean exactly that, so both get converted, and then the planner costs every way to run a semi join like any other join: a Semi Join node, or de-duplicating the inner side and doing a plain join (what you see above), with hash, merge or nested loop under it.
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT name FROM customers
+WHERE id IN (SELECT customer_id FROM orders WHERE status = 'refunded')
+ORDER BY id;
+```
+
+a subquery that can't be converted stays a SubPlan. `IN` under an `OR` is the common case, since a semi join can't express "this or that":
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT name FROM customers AS c
+WHERE c.id IN (SELECT o.customer_id FROM orders AS o WHERE o.status = 'refunded')
+   OR c.city = 'Paris'
+ORDER BY id;
+```
+
+`hashed SubPlan 1`: the subquery runs once, its result goes into a hash table, and each customer probes it. fine when the result fits in work_mem.
+
+## NOT IN, NOT EXISTS, and the hash table
+
+`NOT EXISTS` becomes an **anti join**: outer rows with no match. `NOT IN` can't, because of NULL: if the subquery returns a single NULL, `x NOT IN (…)` is never true, which an anti join doesn't model. ([the NOT IN trap](/learn/joins/not-in-trap) has the wrong-answer half of that story.) so NOT IN is always a SubPlan, and work_mem decides which kind:
+
+<Figure wide caption={<>NOT IN against NOT EXISTS, at the default work_mem and at 64kB. NOT IN's SubPlan is hashed when the hash table fits; when it doesn't, it's a plain SubPlan over a Materialize that runs <C k="dead">loops=2000</C>, one partial scan per customer. NOT EXISTS is an anti join either way.</>}>
+<RunPick options={[{ key: "written as", values: ["NOT IN", "NOT EXISTS"] }, { key: "work_mem", values: ["4MB", "64kB"] }]} runs={anti} trace={prov(trace)} hot={["NOT IN", "NOT EXISTS", "64kB"]} />
+</Figure>
+
+notice the estimate on NOT IN's scan, too: 1,000 customers for a real 38. the planner can't see into a SubPlan filter, so it guesses half the table.
+
+the plain SubPlan is quadratic: for each of 2,000 customers, rescan the materialized orders until a match turns up (or doesn't). on these sizes it's still quick. on a million customers and ten million orders it's the query that never finishes, and it's why "NOT IN is slow" became folklore. the fix is to write NOT EXISTS, which is also the one that's correct with NULLs.
+
+<Predict question="SELECT … WHERE id NOT IN (SELECT customer_id FROM orders): can postgres plan it as an anti join if customer_id is NOT NULL?" options={["yes, it checks the constraint", "no, NOT IN is always a SubPlan", "only with an index"]} answer={1}>
+```sql
+SELECT count(*) FROM customers WHERE id NOT IN (SELECT customer_id FROM orders);
+```
+<Explain>
+no, not in postgres 18: orders.customer_id is NOT NULL here, and the plan is still a SubPlan. the planner doesn't use the constraint to prove NOT IN is safe to convert. write NOT EXISTS when you mean "no match".
+</Explain>
+</Predict>
+
+## SubPlans and InitPlans
+
+a subquery that stays a subquery shows up in EXPLAIN under its parent node:
+
+- an **InitPlan** doesn't depend on the outer row, so it runs once, before its parent needs it. `WHERE id = (SELECT max(…) FROM …)` is one.
+- a **SubPlan** depends on the outer row (it's correlated), so it runs once per outer row. a scalar subquery in the SELECT list is the usual case:
+
+<Figure wide caption={<>a correlated scalar subquery, per paris customer. the SubPlan's Aggregate shows <C k="hot">loops=66</C>: 66 runs of the subquery, each a full scan of orders. postgres doesn't rewrite this one into a join with GROUP BY; you'd write that yourself (or use LATERAL).</>}>
+<PlanTree plan={scalar} show={["est", "actual"]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT name FROM customers
+WHERE id = (SELECT customer_id FROM orders ORDER BY ordered_at DESC LIMIT 1);
+```
+
+the InitPlan finds the most recent order's customer once, and the index scan uses its result like a constant (`(InitPlan 1).col1`).
+
+## CTEs: inlined unless you say otherwise
+
+since postgres 12, a non-recursive CTE that's referenced once, has no side effects and isn't marked `MATERIALIZED` is inlined like a subquery in FROM, and pulled up the same way ([CTEs](/learn/joins/ctes)):
+
+<Figure wide caption={<>the same filter three ways. inlined, the CTE disappears and both conditions sit on one scan. MATERIALIZED runs the CTE first (68 French customers) and filters its result. OFFSET 0 in a subquery does the same, the pre-12 trick for a fence.</>}>
+<RunPick options={[{ key: "written as", values: ["inlined", "MATERIALIZED", "OFFSET 0"] }]} runs={ctes} trace={prov(trace)} hot={["MATERIALIZED", "OFFSET 0"]} />
+</Figure>
+
+before 12, every CTE was materialized, and people used them on purpose as an optimization fence. `MATERIALIZED` keeps that behaviour when you want it: to compute an expensive CTE once when it's referenced twice, or to stop the planner from pushing a condition in.
+
+<Gotcha title="a fence works both ways">
+MATERIALIZED and OFFSET 0 stop the planner from pushing your outer WHERE into the subquery. sometimes that's the point (a misestimated subquery you want computed separately). usually it means scanning everything the CTE produces and filtering afterwards. if you added a fence years ago to dodge a bad plan, re-test without it.
+</Gotcha>
+
+<Interview q="IN or EXISTS, which is faster in postgres?">
+usually neither: both are converted to a semi join before planning, so they get the same plan. NOT IN and NOT EXISTS differ: NOT EXISTS becomes an anti join, NOT IN stays a SubPlan because of NULL semantics, hashed if the subquery result fits in work_mem and a per-row rescan if it doesn't. so prefer NOT EXISTS, which is also correct when the subquery can return NULL. bonus point: a correlated scalar subquery in SELECT runs once per row (a SubPlan); a join with GROUP BY or LATERAL lets the planner choose.
+</Interview>
+
+<Keylines>
+- subqueries in FROM are pulled up into the outer query when that can't change the result.
+- IN and EXISTS become semi joins, so they usually share a plan.
+- NOT EXISTS becomes an anti join. NOT IN stays a SubPlan: hashed if it fits in work_mem, a per-row rescan if not.
+- InitPlan runs once; SubPlan runs once per outer row.
+- CTEs referenced once are inlined since postgres 12. MATERIALIZED or OFFSET 0 make a fence.
+</Keylines>

@@ -1,0 +1,242 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0b5040f367f341c7": {
+      "db": "empty",
+      "sql": "CREATE TABLE t (id int PRIMARY KEY, k int NOT NULL, k_sorted int NOT NULL, pad text NOT NULL);\nINSERT INTO t\nSELECT i, (i * 7919) % 30000, i - 1, repeat('x', 100)\nFROM generate_series(1, 30000) AS i\nORDER BY i;\nCREATE INDEX t_k ON t (k);\nCREATE INDEX t_k_sorted ON t (k_sorted);\nVACUUM ANALYZE t;\nSELECT pg_relation_size('t') / 8192 AS pages, pg_relation_size('t_k') / 8192 AS index_pages;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 30000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 30000,
+          "digest": "f0124b2913aa797c"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bcd692886675ef7c"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pages", "int8", 20],
+            ["index_pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "56e9dc4fb6409a26",
+          "rows": [
+            ["546", "84"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "587fdd290bcca070": {
+      "db": "empty",
+      "sql": "EXPLAIN SELECT * FROM t WHERE k < 300;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c95abc242d947249",
+          "rows": [
+            ["Bitmap Heap Scan on t  (cost=6.61..488.89 rows=300 width=113)"],
+            ["  Recheck Cond: (k < 300)"],
+            ["  ->  Bitmap Index Scan on t_k  (cost=0.00..6.54 rows=300 width=0)"],
+            ["        Index Cond: (k < 300)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "22e7411ff4d20716": {
+      "db": "empty",
+      "sql": "SET enable_bitmapscan = off;\nEXPLAIN SELECT * FROM t WHERE k < 300;\nSET enable_seqscan = off;\nEXPLAIN SELECT * FROM t WHERE k < 300;\nRESET enable_bitmapscan;\nRESET enable_seqscan;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e5df34da07ef7d7e",
+          "rows": [
+            ["Seq Scan on t  (cost=0.00..921.00 rows=300 width=113)"],
+            ["  Filter: (k < 300)"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1e914ba1b0835f7f"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "16cae2a28a3ee36c",
+          "rows": [
+            ["Index Scan using t_k on t  (cost=0.29..953.54 rows=300 width=113)"],
+            ["  Index Cond: (k < 300)"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "eedaf20fa23c648e"
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f3840879cd6459a3"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ba43570aa386d6b7": {
+      "db": "empty",
+      "sql": "SELECT relpages AS pages, reltuples::int AS rows,\n       relpages * current_setting('seq_page_cost')::numeric AS page_cost,\n       reltuples::int * current_setting('cpu_tuple_cost')::numeric AS row_cost,\n       reltuples::int * current_setting('cpu_operator_cost')::numeric AS filter_cost\nFROM pg_class WHERE relname = 't';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pages", "int4", 23],
+            ["rows", "int4", 23],
+            ["page_cost", "numeric", 1700],
+            ["row_cost", "numeric", 1700],
+            ["filter_cost", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "ac0339dddc40e7a6",
+          "rows": [
+            ["546", "30000", "546", "300.00", "75.0000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f59e075f19e046c8": {
+      "db": "empty",
+      "sql": "EXPLAIN SELECT * FROM t WHERE k < 15000;\nSET random_page_cost = 1.1;\nEXPLAIN SELECT * FROM t WHERE k < 15000;\nRESET random_page_cost;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "310ccc0226af9353",
+          "rows": [
+            ["Seq Scan on t  (cost=0.00..921.00 rows=15000 width=113)"],
+            ["  Filter: (k < 15000)"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "f9e28a796561ce53",
+          "rows": [
+            ["Bitmap Heap Scan on t  (cost=162.74..896.24 rows=15000 width=113)"],
+            ["  Recheck Cond: (k < 15000)"],
+            ["  ->  Bitmap Index Scan on t_k  (cost=0.00..158.99 rows=15000 width=0)"],
+            ["        Index Cond: (k < 15000)"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6d7c149690208c19"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a3e983a448a934e9": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT name FROM products WHERE id = 200;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "07a3c402478704f4",
+          "rows": [
+            ["Seq Scan on products  (cost=0.00..7.50 rows=1 width=15)"],
+            ["  Filter: (id = 200)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

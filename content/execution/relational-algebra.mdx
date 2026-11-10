@@ -1,0 +1,115 @@
+import { AlgebraMap } from "@/components/figures/execution/AlgebraMap";
+import { prov } from "@/components/figures/execution/source";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import trace from "./traces/algebra.pgtrace.json";
+
+{/* the operator figure and the algebra tree are textbook material, drawn by hand. the plan next
+    to them is real: traces/algebra.scenario.sql, captured on PGlite with the shop dataset. */}
+
+<InShort>
+**relational algebra** is a handful of operators that each take one or two relations and return a relation: **selection** (σ, keep rows), **projection** (π, keep columns), **product** (×), **join** (⋈), **union** (∪), **difference** (−) and **rename** (ρ). because every answer is a relation again, they snap together into trees.
+
+SQL says *what* you want. postgres turns it into a tree of these operators, and every plan node is one way of running one of them.
+</InShort>
+
+## the picture
+
+you know how you can put a subquery anywhere a table goes, and a join of joins of subqueries just works? that's not a feature somebody bolted on. it falls out of one rule: every operator takes tables and gives back a table.
+
+think of a kitchen where every tool takes a tray and hands back a tray. a sieve keeps some of what's on it (selection). a knife cuts away the parts you don't need (projection). a pairing station puts things from two trays side by side (product, and join, which is a product followed by a sieve). you can chain them in any order, because what comes out of one always fits into the next. Codd wrote the tools down in his papers of the early 1970s, and they've barely changed.
+
+<Figure wide caption={<>pick an operator. each one takes the relations on the left and returns the one on the right, computed as sets the way the algebra defines them. under it: how SQL spells it, and what runs it in a postgres plan.</>}>
+<AlgebraMap />
+</Figure>
+
+seven operators, and the whole of SELECT is built from them (plus grouping and sorting, which the classic algebra leaves out and SQL adds). a few are shorthand for others: a join is σ over ×, and intersection is a difference of a difference. the [joins part](/learn/joins/joins-in-one-picture) is the long version of ⋈.
+
+## sets vs bags
+
+here's the one place SQL and the algebra really disagree. in the algebra a relation is a **set**: a row is either in it or not, never twice. SQL tables and results are **bags** (multisets): duplicates allowed, and kept unless you remove them.
+
+<Predict question="π city (customers) in the algebra, SELECT city FROM customers in SQL. same number of rows?" options={["yes, 2,000 each", "no: 28 vs 2,000", "no: 2,000 vs 28"]} answer={1}>
+```sql
+-- the algebra: π city (customers)
+SELECT city FROM customers;
+```
+<Explain>
+no. the algebra's projection returns a set: each city once, 28 of them. SQL's SELECT keeps a row for every customer, 2,000 of them, duplicates and all. to get the algebra's answer in SQL you ask for it: SELECT DISTINCT city.
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT count(*) AS rows, count(DISTINCT city) AS cities FROM customers;
+```
+
+the same split runs through the set operators: UNION drops duplicates (the algebra's ∪), UNION ALL keeps them (a bag union), and EXCEPT and INTERSECT have ALL versions too ([UNION, INTERSECT and EXCEPT](/learn/joins/set-operations)). SQL chose bags because removing duplicates costs a sort or a hash, and most of the time you don't need it. it's also why `SELECT DISTINCT` shows up in plans as real work:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT city FROM customers WHERE country = 'GB'
+UNION
+SELECT city FROM customers WHERE country = 'FR';
+
+EXPLAIN (COSTS OFF)
+SELECT city FROM customers WHERE country = 'GB'
+EXCEPT
+SELECT city FROM customers WHERE country = 'FR';
+```
+
+∪ is an Append of both inputs plus a HashAggregate to drop the duplicates. − is a HashSetOp Except. both scans carry their σ inside them as a Filter.
+
+## from algebra to a plan
+
+take "the names of paris customers who have ordered something". as algebra, read inside out:
+
+<Figure caption={<>the expression as a tree. leaves are tables; every node takes the relations below it and returns one. a textbook figure.</>}>
+<Tree>{`
+π name // keep one column, as a set
+    ⋈ customers.id = orders.customer_id // pair customers with their orders
+        σ city = 'Paris' // keep the parisians
+            customers
+        orders
+`}</Tree>
+<Provenance drawn="the algebra" />
+</Figure>
+
+and here's what postgres does with the SQL for it:
+
+```sql run db=shop
+SELECT DISTINCT c.name
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+WHERE c.city = 'Paris'
+ORDER BY c.name
+LIMIT 5;
+```
+
+<Figure wide caption={<>the real plan for the same expression, without the ORDER BY and LIMIT. same shape as the algebra tree: π became a HashAggregate (DISTINCT), ⋈ a Hash Join, and σ a Filter inside the scan of customers, below the join.</>}>
+<PlanTree plan={trace.steps[0].explain} show={["actual", "est"]} provenance={<Provenance trace={prov(trace)} />} />
+</Figure>
+
+notice where the σ ended up: inside the scan of customers, so only 66 customers ever reach the join. that isn't luck. the algebra has equivalences, and "selection can move below a join when it only uses one side" is one the planner applies every time. others: joins can be reordered (⋈ is commutative and associative), projections can be pushed down, and a selection on an equality turns a product into a join. the [optimizer part](/learn/optimizer/join-ordering) is mostly the planner using rules like these to generate plans, and costs to choose between them.
+
+the other direction matters too: one operator, many implementations. ⋈ alone is a [nested loop](/learn/execution/nested-loop-join), a [hash join](/learn/execution/hash-join) or a [merge join](/learn/execution/merge-join); σ is a filter in a [seq scan](/learn/execution/scans) or a condition in an index scan; π with DISTINCT is a [HashAggregate or a Unique](/learn/execution/aggregation-algorithms). the algebra says what each step computes. the plan says how.
+
+<Quiz question="which one is not one of Codd's original operators, but a shorthand for others?" options={["selection σ", "join ⋈", "difference −"]} answer={1}>
+<Explain>
+join. R ⋈ S on a condition is σ condition (R × S): a product, then a selection. it's so common that it gets its own symbol, and every database implements it directly instead of building the product first. selection and difference can't be built from the other operators.
+</Explain>
+</Quiz>
+
+<Deep title="the operators SQL added">
+the classic algebra has no grouping, no aggregates, no sorting and no NULLs. SQL needs all of them, so the "extended" algebra adds γ (grouping with aggregates), τ (sort), δ (duplicate elimination, for bag semantics) and outer joins (⟕ ⟖ ⟗), plus semi and anti joins (⋉ ▷) for EXISTS and NOT EXISTS ([semi and anti joins](/learn/joins/exists-semi-anti)). relational division, "customers who bought every product in a category", is the one classic operator SQL has no keyword for at all.
+</Deep>
+
+<Interview q="what is relational algebra, and what does it have to do with SQL?">
+a set of operators over relations, selection, projection, product, join, union, difference and rename, each returning a relation, so they compose into expression trees. SQL is declarative, but a query is parsed into a tree of these operators, the optimizer rewrites it using algebraic equivalences (pushing selections below joins, reordering joins), and each operator gets a physical implementation (a hash join for ⋈, a filter in a scan for σ). bonus point: the algebra works on sets and SQL on bags, which is why DISTINCT and UNION cost a sort or a hash while UNION ALL doesn't.
+</Interview>
+
+<Keylines>
+- every operator takes relations and returns a relation, so they nest freely.
+- σ keeps rows, π keeps columns, × pairs everything, ⋈ is σ over ×.
+- the algebra uses sets; SQL uses bags. DISTINCT and UNION are the set versions.
+- the planner rewrites with algebraic equivalences, like pushing σ below ⋈.
+- one operator, many plan nodes: the algebra says what, the plan says how.
+</Keylines>

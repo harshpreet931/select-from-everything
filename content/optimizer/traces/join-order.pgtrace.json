@@ -1,0 +1,927 @@
+{
+ "v": 1,
+ "scenario": "content/optimizer/traces/join-order.scenario.sql",
+ "title": "one four-table join, planned freely and in the order written, and the genetic optimizer on a 14-table chain",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "t1": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t1_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t1"},
+  "t2": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t2_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t2"},
+  "t3": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t3_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t3"},
+  "t4": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t4_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t4"},
+  "t5": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t5_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t5"},
+  "t6": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t6_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t6"},
+  "t7": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t7_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t7"},
+  "t8": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t8_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t8"},
+  "t9": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t9_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t9"},
+  "t10": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t10_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t10"},
+  "t11": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t11_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t11"},
+  "t12": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t12_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t12"},
+  "t13": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t13_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t13"},
+  "t14": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"next_id","type":"int4"},{"name":"v","type":"int4"}]
+  },
+  "t14_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t14"}
+ },
+ "base": {"xid":801,"lsn":35358312},
+ "setup": "DO $$\nBEGIN\n  FOR i IN 1..14 LOOP\n    EXECUTE format('CREATE TABLE t%s (id int PRIMARY KEY, next_id int, v int)', i);\n    EXECUTE format('INSERT INTO t%s SELECT g, (g * 7) %% %s + 1, g %% (%s + 2) FROM generate_series(1, %s) AS g ORDER BY g', i, 100 * (15 - i), i, 100 * i);\n    EXECUTE format('ANALYZE t%s', i);\n  END LOOP;\nEND $$;\nCREATE FUNCTION chain(n int) RETURNS text LANGUAGE sql AS $$\n  SELECT 'SELECT count(*) FROM t1' || string_agg(format(' JOIN t%s ON t%s.id = t%s.next_id AND t%s.v < %s', i, i, i - 1, i, i % 4 + 1), '' ORDER BY i)\n  FROM generate_series(2, n) AS i\n$$;\nCREATE FUNCTION plan_cost(q text) RETURNS numeric LANGUAGE plpgsql AS $$\nDECLARE j json;\nBEGIN\n  EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;\n  RETURN (j->0->'Plan'->>'Total Cost')::numeric;\nEND $$;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT n, factorial(n) AS orders, (2 ^ n)::bigint - 1 AS subsets\nFROM generate_series(2, 14) AS n\nORDER BY n",
+   "note": "n tables: n! left-deep join orders, and 2^n - 1 sets of tables for the planner's dynamic programming to cost.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 13,
+    "columns": [{"name":"n","type":"int4"},{"name":"orders","type":"numeric"},{"name":"subsets","type":"int8"}],
+    "data": [
+     ["2","2","3"],
+     ["3","6","7"],
+     ["4","24","15"],
+     ["5","120","31"],
+     ["6","720","63"],
+     ["7","5040","127"],
+     ["8","40320","255"],
+     ["9","362880","511"],
+     ["10","3628800","1023"],
+     ["11","39916800","2047"],
+     ["12","479001600","4095"],
+     ["13","6227020800","8191"],
+     ["14","87178291200","16383"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SET join_collapse_limit = 8",
+   "note": "join_collapse_limit = 8.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p\nJOIN order_items AS oi ON oi.product_id = p.id\nJOIN orders AS o ON o.id = oi.order_id\nJOIN customers AS c ON c.id = o.customer_id\nWHERE c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "join_collapse_limit 8, the default: the planner flattens the four JOINs and searches every order. it starts from customer 42.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 18,
+    "columns": [{"name":"name","type":"text"},{"name":"qty","type":"int4"}],
+    "data": [
+     ["bamboo cookbook","1"],
+     ["cast iron pan","4"],
+     ["cat tree","1"],
+     ["chef's knife","1"],
+     ["chef's knife","2"],
+     ["classic cutting board","1"],
+     ["classic shower caddy","1"],
+     ["classic shower caddy","3"],
+     ["family soap dish","5"],
+     ["heavy yo-yo","4"],
+     ["mini bath mat","1"],
+     ["mini loofah","1"],
+     ["small turntable","4"],
+     ["spare monitor stand","4"],
+     ["steel speaker","2"],
+     ["the art of sql","1"],
+     ["the art of sql","4"],
+     ["wooden train","3"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p\nJOIN order_items AS oi ON oi.product_id = p.id\nJOIN orders AS o ON o.id = oi.order_id\nJOIN customers AS c ON c.id = o.customer_id\nWHERE c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "8, JOIN.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Sort",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 273.87,
+     "Total Cost": 273.9,
+     "Plan Rows": 12,
+     "Plan Width": 19,
+     "Disabled": false,
+     "Sort Key": ["p.name","oi.qty"],
+     "Plans": [
+      {
+       "Node Type": "Nested Loop",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Join Type": "Inner",
+       "Startup Cost": 0.71,
+       "Total Cost": 273.66,
+       "Plan Rows": 12,
+       "Plan Width": 19,
+       "Disabled": false,
+       "Inner Unique": true,
+       "Plans": [
+        {
+         "Node Type": "Nested Loop",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Join Type": "Inner",
+         "Startup Cost": 0.56,
+         "Total Cost": 271.69,
+         "Plan Rows": 12,
+         "Plan Width": 8,
+         "Disabled": false,
+         "Inner Unique": false,
+         "Plans": [
+          {
+           "Node Type": "Nested Loop",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Join Type": "Inner",
+           "Startup Cost": 0.28,
+           "Total Cost": 212.35,
+           "Plan Rows": 5,
+           "Plan Width": 4,
+           "Disabled": false,
+           "Inner Unique": false,
+           "Plans": [
+            {
+             "Node Type": "Index Only Scan",
+             "Parent Relationship": "Outer",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Scan Direction": "Forward",
+             "Index Name": "customers_pkey",
+             "Relation Name": "customers",
+             "Alias": "c",
+             "Startup Cost": 0.28,
+             "Total Cost": 4.29,
+             "Plan Rows": 1,
+             "Plan Width": 4,
+             "Disabled": false,
+             "Index Cond": "(id = 42)"
+            },
+            {
+             "Node Type": "Seq Scan",
+             "Parent Relationship": "Inner",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Relation Name": "orders",
+             "Alias": "o",
+             "Startup Cost": 0,
+             "Total Cost": 208,
+             "Plan Rows": 5,
+             "Plan Width": 8,
+             "Disabled": false,
+             "Filter": "(customer_id = 42)"
+            }
+           ]
+          },
+          {
+           "Node Type": "Index Scan",
+           "Parent Relationship": "Inner",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Scan Direction": "Forward",
+           "Index Name": "order_items_pkey",
+           "Relation Name": "order_items",
+           "Alias": "oi",
+           "Startup Cost": 0.29,
+           "Total Cost": 11.84,
+           "Plan Rows": 3,
+           "Plan Width": 12,
+           "Disabled": false,
+           "Index Cond": "(order_id = o.id)"
+          }
+         ]
+        },
+        {
+         "Node Type": "Index Scan",
+         "Parent Relationship": "Inner",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Scan Direction": "Forward",
+         "Index Name": "products_pkey",
+         "Relation Name": "products",
+         "Alias": "p",
+         "Startup Cost": 0.14,
+         "Total Cost": 0.16,
+         "Plan Rows": 1,
+         "Plan Width": 19,
+         "Disabled": false,
+         "Index Cond": "(id = oi.product_id)"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SET join_collapse_limit = 8",
+   "note": "join_collapse_limit = 8.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p, order_items AS oi, orders AS o, customers AS c\nWHERE oi.product_id = p.id AND o.id = oi.order_id AND c.id = o.customer_id\n  AND c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "a comma-separated FROM list is governed by from_collapse_limit, not join_collapse_limit. the same plan as the default.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 18,
+    "columns": [{"name":"name","type":"text"},{"name":"qty","type":"int4"}],
+    "data": [
+     ["bamboo cookbook","1"],
+     ["cast iron pan","4"],
+     ["cat tree","1"],
+     ["chef's knife","1"],
+     ["chef's knife","2"],
+     ["classic cutting board","1"],
+     ["classic shower caddy","1"],
+     ["classic shower caddy","3"],
+     ["family soap dish","5"],
+     ["heavy yo-yo","4"],
+     ["mini bath mat","1"],
+     ["mini loofah","1"],
+     ["small turntable","4"],
+     ["spare monitor stand","4"],
+     ["steel speaker","2"],
+     ["the art of sql","1"],
+     ["the art of sql","4"],
+     ["wooden train","3"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p, order_items AS oi, orders AS o, customers AS c\nWHERE oi.product_id = p.id AND o.id = oi.order_id AND c.id = o.customer_id\n  AND c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "8, commas.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Sort",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 273.87,
+     "Total Cost": 273.9,
+     "Plan Rows": 12,
+     "Plan Width": 19,
+     "Disabled": false,
+     "Sort Key": ["p.name","oi.qty"],
+     "Plans": [
+      {
+       "Node Type": "Nested Loop",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Join Type": "Inner",
+       "Startup Cost": 0.71,
+       "Total Cost": 273.66,
+       "Plan Rows": 12,
+       "Plan Width": 19,
+       "Disabled": false,
+       "Inner Unique": true,
+       "Plans": [
+        {
+         "Node Type": "Nested Loop",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Join Type": "Inner",
+         "Startup Cost": 0.56,
+         "Total Cost": 271.69,
+         "Plan Rows": 12,
+         "Plan Width": 8,
+         "Disabled": false,
+         "Inner Unique": false,
+         "Plans": [
+          {
+           "Node Type": "Nested Loop",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Join Type": "Inner",
+           "Startup Cost": 0.28,
+           "Total Cost": 212.35,
+           "Plan Rows": 5,
+           "Plan Width": 4,
+           "Disabled": false,
+           "Inner Unique": false,
+           "Plans": [
+            {
+             "Node Type": "Index Only Scan",
+             "Parent Relationship": "Outer",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Scan Direction": "Forward",
+             "Index Name": "customers_pkey",
+             "Relation Name": "customers",
+             "Alias": "c",
+             "Startup Cost": 0.28,
+             "Total Cost": 4.29,
+             "Plan Rows": 1,
+             "Plan Width": 4,
+             "Disabled": false,
+             "Index Cond": "(id = 42)"
+            },
+            {
+             "Node Type": "Seq Scan",
+             "Parent Relationship": "Inner",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Relation Name": "orders",
+             "Alias": "o",
+             "Startup Cost": 0,
+             "Total Cost": 208,
+             "Plan Rows": 5,
+             "Plan Width": 8,
+             "Disabled": false,
+             "Filter": "(customer_id = 42)"
+            }
+           ]
+          },
+          {
+           "Node Type": "Index Scan",
+           "Parent Relationship": "Inner",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Scan Direction": "Forward",
+           "Index Name": "order_items_pkey",
+           "Relation Name": "order_items",
+           "Alias": "oi",
+           "Startup Cost": 0.29,
+           "Total Cost": 11.84,
+           "Plan Rows": 3,
+           "Plan Width": 12,
+           "Disabled": false,
+           "Index Cond": "(order_id = o.id)"
+          }
+         ]
+        },
+        {
+         "Node Type": "Index Scan",
+         "Parent Relationship": "Inner",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Scan Direction": "Forward",
+         "Index Name": "products_pkey",
+         "Relation Name": "products",
+         "Alias": "p",
+         "Startup Cost": 0.14,
+         "Total Cost": 0.16,
+         "Plan Rows": 1,
+         "Plan Width": 19,
+         "Disabled": false,
+         "Index Cond": "(id = oi.product_id)"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SET join_collapse_limit = 1",
+   "note": "join_collapse_limit = 1.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p\nJOIN order_items AS oi ON oi.product_id = p.id\nJOIN orders AS o ON o.id = oi.order_id\nJOIN customers AS c ON c.id = o.customer_id\nWHERE c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "join_collapse_limit 1: the JOINs are joined in the order written. products with all 24,942 order items first, then orders, then the customer.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 18,
+    "columns": [{"name":"name","type":"text"},{"name":"qty","type":"int4"}],
+    "data": [
+     ["bamboo cookbook","1"],
+     ["cast iron pan","4"],
+     ["cat tree","1"],
+     ["chef's knife","1"],
+     ["chef's knife","2"],
+     ["classic cutting board","1"],
+     ["classic shower caddy","1"],
+     ["classic shower caddy","3"],
+     ["family soap dish","5"],
+     ["heavy yo-yo","4"],
+     ["mini bath mat","1"],
+     ["mini loofah","1"],
+     ["small turntable","4"],
+     ["spare monitor stand","4"],
+     ["steel speaker","2"],
+     ["the art of sql","1"],
+     ["the art of sql","4"],
+     ["wooden train","3"]
+    ]
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p\nJOIN order_items AS oi ON oi.product_id = p.id\nJOIN orders AS o ON o.id = oi.order_id\nJOIN customers AS c ON c.id = o.customer_id\nWHERE c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "1, JOIN.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Sort",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 762.97,
+     "Total Cost": 763,
+     "Plan Rows": 12,
+     "Plan Width": 19,
+     "Disabled": false,
+     "Sort Key": ["p.name","oi.qty"],
+     "Plans": [
+      {
+       "Node Type": "Nested Loop",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Join Type": "Inner",
+       "Startup Cost": 217.84,
+       "Total Cost": 762.76,
+       "Plan Rows": 12,
+       "Plan Width": 19,
+       "Disabled": false,
+       "Inner Unique": false,
+       "Plans": [
+        {
+         "Node Type": "Index Only Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Scan Direction": "Forward",
+         "Index Name": "customers_pkey",
+         "Relation Name": "customers",
+         "Alias": "c",
+         "Startup Cost": 0.28,
+         "Total Cost": 4.29,
+         "Plan Rows": 1,
+         "Plan Width": 4,
+         "Disabled": false,
+         "Index Cond": "(id = 42)"
+        },
+        {
+         "Node Type": "Hash Join",
+         "Parent Relationship": "Inner",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Join Type": "Inner",
+         "Startup Cost": 217.56,
+         "Total Cost": 758.34,
+         "Plan Rows": 12,
+         "Plan Width": 23,
+         "Disabled": false,
+         "Inner Unique": true,
+         "Hash Cond": "(oi.order_id = o.id)",
+         "Plans": [
+          {
+           "Node Type": "Hash Join",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Join Type": "Inner",
+           "Startup Cost": 9.5,
+           "Total Cost": 484.78,
+           "Plan Rows": 24942,
+           "Plan Width": 23,
+           "Disabled": false,
+           "Inner Unique": true,
+           "Hash Cond": "(oi.product_id = p.id)",
+           "Plans": [
+            {
+             "Node Type": "Seq Scan",
+             "Parent Relationship": "Outer",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Relation Name": "order_items",
+             "Alias": "oi",
+             "Startup Cost": 0,
+             "Total Cost": 408.42,
+             "Plan Rows": 24942,
+             "Plan Width": 12,
+             "Disabled": false
+            },
+            {
+             "Node Type": "Hash",
+             "Parent Relationship": "Inner",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Startup Cost": 7,
+             "Total Cost": 7,
+             "Plan Rows": 200,
+             "Plan Width": 19,
+             "Disabled": false,
+             "Plans": [
+              {
+               "Node Type": "Seq Scan",
+               "Parent Relationship": "Outer",
+               "Parallel Aware": false,
+               "Async Capable": false,
+               "Relation Name": "products",
+               "Alias": "p",
+               "Startup Cost": 0,
+               "Total Cost": 7,
+               "Plan Rows": 200,
+               "Plan Width": 19,
+               "Disabled": false
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "Node Type": "Hash",
+           "Parent Relationship": "Inner",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Startup Cost": 208,
+           "Total Cost": 208,
+           "Plan Rows": 5,
+           "Plan Width": 8,
+           "Disabled": false,
+           "Plans": [
+            {
+             "Node Type": "Seq Scan",
+             "Parent Relationship": "Outer",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Relation Name": "orders",
+             "Alias": "o",
+             "Startup Cost": 0,
+             "Total Cost": 208,
+             "Plan Rows": 5,
+             "Plan Width": 8,
+             "Disabled": false,
+             "Filter": "(customer_id = 42)"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SET join_collapse_limit = 1",
+   "note": "join_collapse_limit = 1.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p, order_items AS oi, orders AS o, customers AS c\nWHERE oi.product_id = p.id AND o.id = oi.order_id AND c.id = o.customer_id\n  AND c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "join_collapse_limit 1 doesn't touch a comma list: still the cheap plan.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 18,
+    "columns": [{"name":"name","type":"text"},{"name":"qty","type":"int4"}],
+    "data": [
+     ["bamboo cookbook","1"],
+     ["cast iron pan","4"],
+     ["cat tree","1"],
+     ["chef's knife","1"],
+     ["chef's knife","2"],
+     ["classic cutting board","1"],
+     ["classic shower caddy","1"],
+     ["classic shower caddy","3"],
+     ["family soap dish","5"],
+     ["heavy yo-yo","4"],
+     ["mini bath mat","1"],
+     ["mini loofah","1"],
+     ["small turntable","4"],
+     ["spare monitor stand","4"],
+     ["steel speaker","2"],
+     ["the art of sql","1"],
+     ["the art of sql","4"],
+     ["wooden train","3"]
+    ]
+   }
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "SELECT p.name, oi.qty\nFROM products AS p, order_items AS oi, orders AS o, customers AS c\nWHERE oi.product_id = p.id AND o.id = oi.order_id AND c.id = o.customer_id\n  AND c.id = 42\nORDER BY p.name, oi.qty",
+   "note": "1, commas.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Sort",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 273.87,
+     "Total Cost": 273.9,
+     "Plan Rows": 12,
+     "Plan Width": 19,
+     "Disabled": false,
+     "Sort Key": ["p.name","oi.qty"],
+     "Plans": [
+      {
+       "Node Type": "Nested Loop",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Join Type": "Inner",
+       "Startup Cost": 0.71,
+       "Total Cost": 273.66,
+       "Plan Rows": 12,
+       "Plan Width": 19,
+       "Disabled": false,
+       "Inner Unique": true,
+       "Plans": [
+        {
+         "Node Type": "Nested Loop",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Join Type": "Inner",
+         "Startup Cost": 0.56,
+         "Total Cost": 271.69,
+         "Plan Rows": 12,
+         "Plan Width": 8,
+         "Disabled": false,
+         "Inner Unique": false,
+         "Plans": [
+          {
+           "Node Type": "Nested Loop",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Join Type": "Inner",
+           "Startup Cost": 0.28,
+           "Total Cost": 212.35,
+           "Plan Rows": 5,
+           "Plan Width": 4,
+           "Disabled": false,
+           "Inner Unique": false,
+           "Plans": [
+            {
+             "Node Type": "Index Only Scan",
+             "Parent Relationship": "Outer",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Scan Direction": "Forward",
+             "Index Name": "customers_pkey",
+             "Relation Name": "customers",
+             "Alias": "c",
+             "Startup Cost": 0.28,
+             "Total Cost": 4.29,
+             "Plan Rows": 1,
+             "Plan Width": 4,
+             "Disabled": false,
+             "Index Cond": "(id = 42)"
+            },
+            {
+             "Node Type": "Seq Scan",
+             "Parent Relationship": "Inner",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Relation Name": "orders",
+             "Alias": "o",
+             "Startup Cost": 0,
+             "Total Cost": 208,
+             "Plan Rows": 5,
+             "Plan Width": 8,
+             "Disabled": false,
+             "Filter": "(customer_id = 42)"
+            }
+           ]
+          },
+          {
+           "Node Type": "Index Scan",
+           "Parent Relationship": "Inner",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Scan Direction": "Forward",
+           "Index Name": "order_items_pkey",
+           "Relation Name": "order_items",
+           "Alias": "oi",
+           "Startup Cost": 0.29,
+           "Total Cost": 11.84,
+           "Plan Rows": 3,
+           "Plan Width": 12,
+           "Disabled": false,
+           "Index Cond": "(order_id = o.id)"
+          }
+         ]
+        },
+        {
+         "Node Type": "Index Scan",
+         "Parent Relationship": "Inner",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Scan Direction": "Forward",
+         "Index Name": "products_pkey",
+         "Relation Name": "products",
+         "Alias": "p",
+         "Startup Cost": 0.14,
+         "Total Cost": 0.16,
+         "Plan Rows": 1,
+         "Plan Width": 19,
+         "Disabled": false,
+         "Index Cond": "(id = oi.product_id)"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "RESET join_collapse_limit",
+   "note": "back to the default.",
+   "status": "ok",
+   "result": {"command":"RESET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "SET join_collapse_limit = 20;\nSELECT n, plan_cost(chain(n)) AS cost FROM generate_series(10, 14) AS n ORDER BY n",
+   "note": "chains of 10 to 14 tables, with join_collapse_limit raised so nothing is split: the cheapest plan the genetic optimizer found (geqo_threshold is 12).",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"n","type":"int4"},{"name":"cost","type":"numeric"}],
+    "data": [["10","34.68"],["11","35.16"],["12","39.76"],["13","44.68"],["14","80.00"]]
+   }
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "SET geqo = off;\nSELECT n, plan_cost(chain(n)) AS cost FROM generate_series(10, 14) AS n ORDER BY n",
+   "note": "the same chains with geqo off: the exhaustive search's cheapest plan.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"n","type":"int4"},{"name":"cost","type":"numeric"}],
+    "data": [["10","34.68"],["11","35.16"],["12","35.61"],["13","36.58"],["14","37.20"]]
+   }
+  }
+ ],
+ "db": "shop"
+}

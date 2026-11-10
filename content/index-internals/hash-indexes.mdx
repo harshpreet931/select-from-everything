@@ -1,0 +1,129 @@
+import { HashPages } from "@/components/figures/index-internals/HashPages";
+import trace from "./traces/hash-split.pgtrace.json";
+
+{/* the lab is the HashIndex model (src/lib/db/sim/hash.ts: hashint4, the bucket formula and
+    the split rule ported exactly, tested against postgres 18.6). the real index is
+    traces/hash-split.scenario.sql on PGlite, drawn server side. the rest is the run blocks. */}
+
+<InShort>
+a hash index stores the **32-bit hash** of each key, not the key, in **buckets**. the low bits of the hash pick the bucket. when the index holds more than **ffactor** tuples per bucket on average, **one bucket splits**: a new bucket is added and only that one old bucket's tuples are rehashed. a bucket that outgrows its page chains **overflow pages**. it's WAL-logged and crash-safe since postgres 10, it's good at exactly one thing (`=`), and a b-tree is usually just as fast.
+</InShort>
+
+## the picture
+
+you know [what a hash index serves](/learn/indexes/index-types): equality, and nothing else. the inside is a hash table that lives in 8 KB pages and has to grow without ever stopping to rebuild itself.
+
+think of a coat check with numbered hooks (the buckets). your ticket number is the hash, and the last digit picks the hook. when the room gets crowded, a naive coat check would renumber every hook and move every coat. postgres adds **one** hook, and moves only the coats from the one old hook whose ticket numbers now point at the new one. everyone else's coat stays put.
+
+fill one and watch. the model below is postgres's own arithmetic (the same hash function, the same bucket and split rules, tested against postgres 18.6), with a tiny ffactor of 4 so it splits often:
+
+<Figure wide caption={<>press <em>fill until it splits</em>, or type keys. each key's bucket is its hash's low bits under <C k="meta">highmask</C>, or under lowmask if that bucket doesn't exist yet. when the index passes 4 tuples per bucket, <C k="hot">one bucket</C> splits into itself and a new one. a full bucket page chains a dashed overflow page.</>}>
+<HashIndex perBucket={4} />
+</Figure>
+
+## the bucket formula
+
+two numbers on the metapage decide where a key goes. `maxbucket` is the highest bucket that exists. `highmask` is that rounded up to a power of two, minus one, and `lowmask` is the previous power of two minus one. postgres takes `hash & highmask`, and if that names a bucket past `maxbucket` (one that doesn't exist yet in this doubling), it takes `hash & lowmask` instead. so with buckets 0 to 2 (highmask `11`, lowmask `01`), a hash ending in binary `11` goes to bucket 1 for now.
+
+the split rule is just as small: after an insert, if `ntuples > ffactor × (maxbucket + 1)`, bucket `maxbucket + 1` is created, and its tuples come from bucket `(maxbucket + 1) & lowmask`, its "parent". that's **linear hashing** (Litwin, 1980), the textbook scheme for a hash table that grows one bucket at a time; postgres's README credits Seltzer and Yigit's 1991 hashing package, which is built on it.
+
+<Predict question="a real hash index with 2 buckets holds 80 tuples (its ffactor is 40). the 81st insert triggers a split. how many buckets get rehashed?" options={["both of them", "one", "none: new keys go to the new bucket"]} answer={1}>
+```sql
+INSERT INTO h VALUES (81);  -- ntuples 81 > 40 × 2 buckets
+```
+<Explain>
+one. bucket 2 is created, and only bucket 0's tuples are looked at again: each either stays (its hash ends in binary 00) or moves to bucket 2 (ends in 10). bucket 1 isn't touched. a split costs one bucket's worth of work, so no insert ever pays for rehashing the whole index.
+</Explain>
+</Predict>
+
+## a real one
+
+the same thing on a real index, captured on the browser's engine. `fillfactor = 10` makes ffactor 40 instead of the usual few hundred, so the first split comes at the 81st key. postgres stores only the hash of each key, so each page shows how many tuples it holds (407 fit on a page):
+
+<Figure wide caption={<>a real hash index, three moments. 80 keys in 2 buckets; the 81st splits <C k="hot">bucket 0</C> into buckets 0 and 2; then 600 copies of one key, whose bucket chains an <em>overflow</em> page (dashed), because no split can separate equal hashes.</>}>
+<HashPages trace={trace} index="h_id" steps={[1, 2, 3]} hot={{ 2: [0, 2], 3: [8] }} />
+</Figure>
+
+at the split, bucket 0's 35 tuples plus the new key ended up 21 in bucket 0 and 15 in bucket 2. bucket 1 kept its 45 and wasn't read. then the skewed batch: 600 inserts kept the split counter going, up to 18 buckets, but they all share one hash, so they all landed in bucket 8. its page took 407 and an overflow page took the rest. a hash index with many duplicates degrades into long overflow chains that every lookup has to read.
+
+## the metapage and the pages
+
+a hash index on shop's orders, by customer:
+
+```sql run db=shop ext=pageinspect session=hx
+CREATE INDEX orders_cust_hash ON orders USING hash (customer_id);
+SELECT ntuples, ffactor, maxbucket, highmask, lowmask, ovflpoint, firstfree, nmaps
+FROM hash_metapage_info(get_raw_page('orders_cust_hash', 0));
+SELECT hash_page_type(get_raw_page('orders_cust_hash', b)) AS type, count(*) AS pages
+FROM generate_series(0, pg_relation_size('orders_cust_hash') / 8192 - 1) AS b
+GROUP BY 1 ORDER BY 1;
+```
+
+10,000 tuples, ffactor 307 (that many tuples, 20 bytes each with their line pointer, fill 75% of an 8 KB page, the default fillfactor for hash), 33 buckets (0 to 32), so highmask `111111` and lowmask `11111`. the page types: one metapage, one **bitmap** page that tracks which overflow pages are free for reuse, the 33 bucket pages, one overflow page, and 31 `unused` ones. those were allocated ahead of time: buckets are added one by one, but their pages are reserved in batches, so a split never has to extend the file mid-insert.
+
+```sql run session=hx
+SELECT live_items, free_size, hasho_prevblkno, hasho_nextblkno, hasho_bucket, hasho_flag
+FROM hash_page_stats(get_raw_page('orders_cust_hash', 1));
+SELECT itemoffset, ctid, data FROM hash_page_items(get_raw_page('orders_cust_hash', 1)) ORDER BY itemoffset LIMIT 4;
+SELECT customer_id, hashint4(customer_id), hashint4(customer_id) & 63 AS low_bits
+FROM orders WHERE ctid = '(51,31)';
+```
+
+bucket 0's page holds 157 tuples. each item is a heap address and a hash, nothing else: 574373440 is `hashint4(1631)`, and its low six bits are 0, so it's in bucket 0. (four orders by customer 1631, four equal hashes.) storing the hash and not the key means a lookup has to recheck the key in the heap, and it means a 64-character key costs the same as an int.
+
+## why btree usually wins
+
+```sql run db=shop
+CREATE TABLE t AS SELECT g AS id, md5(g::text) || md5((g * 7)::text) AS token FROM generate_series(1, 100000) AS g;
+CREATE INDEX t_id_btree ON t (id);
+CREATE INDEX t_id_hash ON t USING hash (id);
+CREATE INDEX t_token_btree ON t (token);
+CREATE INDEX t_token_hash ON t USING hash (token);
+SELECT relname AS index, pg_relation_size(oid) / 8192 AS pages
+FROM pg_class WHERE relname LIKE 't\_%' AND relkind = 'i'
+ORDER BY relname;
+```
+
+<Figure caption={<>index size in pages for 100,000 keys, from the run block above. the hash index is the same size for an int and a 64-character string, because it only stores the hash.</>}>
+<Bars data={[
+  { label: "btree on int", value: 276, tone: "live" },
+  { label: "hash on int", value: 514, tone: "ref" },
+  { label: "hash on 64-char text", value: 514, tone: "ref" },
+  { label: "btree on 64-char text", value: 1169, tone: "hot" },
+]} unit="pages" />
+</Figure>
+
+on an int, the hash index is almost twice the size of the btree: buckets are kept at 75% and allocated in batches. on a long string it's less than half, because the btree stores every string and the hash index stores 4 bytes for each. that's the one honest case for hash: equality lookups on long values (urls, tokens, hashes of documents). (the exact hash sizes depend on the engine: a native 64-bit server starts these indexes with more buckets and ends up with bigger files, while the b-trees come out identical. the comparison goes the same way on both.)
+
+and here's what it gives up:
+
+```sql run db=shop expect=error
+CREATE UNIQUE INDEX ON customers USING hash (email);
+```
+
+```sql run db=shop
+CREATE TABLE ev AS SELECT g AS id FROM generate_series(1, 100000) AS g;
+CREATE INDEX ev_hash ON ev USING hash (id);
+ANALYZE ev;
+EXPLAIN (COSTS OFF) SELECT * FROM ev WHERE id = 42;
+EXPLAIN (COSTS OFF) SELECT * FROM ev WHERE id BETWEEN 42 AND 44;
+EXPLAIN (COSTS OFF) SELECT * FROM ev ORDER BY id LIMIT 3;
+```
+
+`=` uses it. a range can't, because the hash of 43 is nowhere near the hash of 42. ORDER BY can't, because hash order isn't key order. add no unique indexes, no multicolumn indexes, no index-only scans (the key isn't stored), and the list of reasons to pick a b-tree is long. a btree lookup is a few pages deep, and those top pages are cached anyway, so the hash index's one-page lookups rarely win by much.
+
+<Gotcha title="hash indexes before postgres 10">
+older guides say never to use hash indexes, and for postgres 9.6 and earlier that was right: they weren't WAL-logged, so a crash could leave one corrupt and a replica never got them at all. postgres 10 added WAL logging, made them crash-safe and replicated, and the warning went away. pg_upgrade from 9.6 required rebuilding them. if your advice predates 2017, it's about a different index.
+</Gotcha>
+
+<Deep title="the cached metapage">
+every lookup needs `maxbucket`, `highmask` and `lowmask`, which live on the metapage. reading it each time would make page 0 the hottest page in the index. instead each backend caches a copy, and every primary bucket page remembers the `maxbucket` from when it last split (in `hasho_prevblkno`: 32 above, the current maxbucket). a lookup computes the bucket from its cached copy, reads that page, and checks the stored number. if the bucket has split since, the cache is stale: reread the metapage and try again.
+</Deep>
+
+<Keylines>
+- a hash index stores each key's 32-bit hash and heap address in buckets; the hash's low bits pick the bucket.
+- past ffactor tuples per bucket, one bucket splits and only its tuples are rehashed (linear hashing).
+- a bucket that outgrows its page chains overflow pages; many duplicates make long chains.
+- it's crash-safe and replicated since postgres 10.
+- it serves = only: no ranges, ordering, uniqueness or index-only scans. btree usually wins, except for long keys.
+</Keylines>

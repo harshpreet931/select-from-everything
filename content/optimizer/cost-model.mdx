@@ -1,0 +1,211 @@
+import { CostDials } from "@/components/figures/optimizer/CostDials";
+import { CostReceipt } from "@/components/figures/optimizer/CostReceipt";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/cost-dials.pgtrace.json";
+
+{/* every number in the figures comes from traces/cost-dials.scenario.sql, captured on PGlite with
+    the shop dataset (`pnpm pgtrace <file> --engine=pglite --twice`), so it matches the run
+    buttons: step 0 is the catalog, step 1 the cost settings, step 2 the primary key lookup,
+    step 4 the forced index scan, step 6 the sweep behind the dials. */}
+
+export const cat = Object.fromEntries(trace.steps[0].result.data.map((r) => [r[0], { pages: Number(r[1]), tuples: Number(r[2]), height: Number(r[3]) }]));
+export const set = Object.fromEntries(trace.steps[1].result.data.map((r) => [r[0], Number(r[1])]));
+export const node = (i) => trace.steps[i].explain.Plan;
+export const line = (n) => `${n["Node Type"]} using ${n["Index Name"]} on ${n["Relation Name"]}  (cost=${n["Startup Cost"].toFixed(2)}..${n["Total Cost"].toFixed(2)} rows=${n["Plan Rows"]} width=${n["Plan Width"]})`;
+export const one = node(2);
+export const many = node(4);
+export const rows = many["Plan Rows"];
+export const leaf = Math.ceil(rows * cat.orders_customer_id.pages / cat.orders_customer_id.tuples);
+export const descent = (idx) => [
+  { what: `comparisons to find the first key: log₂ of ${cat[idx].tuples.toLocaleString("en-US")} entries, rounded up`, n: Math.ceil(Math.log2(cat[idx].tuples)), setting: "cpu_operator_cost", per: set.cpu_operator_cost },
+  { what: `operator costs for walking ${cat[idx].height + 1} levels, 50 per level`, n: (cat[idx].height + 1) * 50, setting: "cpu_operator_cost", per: set.cpu_operator_cost },
+];
+
+<InShort>
+the planner prices every plan it considers in **cost units**, where reading one page in order costs 1.0, and keeps the cheapest. the price list is a handful of settings: **seq_page_cost**, **random_page_cost**, **cpu_tuple_cost** and two more. the counts come from `pg_class`.
+
+there's nothing hidden in it. with the catalog open you can price a scan by hand and land on the planner's number to the cent.
+</InShort>
+
+## the picture
+
+you know how EXPLAIN says `cost=58.97..191.45` and nobody can tell you what a 191 is? it's not milliseconds. it's a price, in a currency postgres made up.
+
+think of a delivery app quoting three routes. the highway is long but you never stop (a seq scan: read every page in order). the back streets are short but every turn costs you (an index scan: jump to exactly the pages you need, out of order). the app doesn't drive any of them. it multiplies distance by a price per kilometre and a price per turn, and shows you the cheapest. change the prices (it's raining, turns are slow now) and a different route wins, even though the roads didn't change.
+
+here's that, for real. one query on `orders`, three ways to run it, and the three prices that matter most:
+
+<Figure wide caption={<>pick a value for each setting (the starred ones are the defaults) and watch the three totals move. the <C k="hot">hot</C> bar is the one the planner picks. random_page_cost at 1 hands the win to the index scan; cpu_tuple_cost at 0.005 hands it to the seq scan. the formulas underneath are each scan's price, worked out below.</>}>
+<CostDials trace={trace} />
+</Figure>
+
+same table, same statistics, same 3,959 estimated rows in every combination. only the prices change, and the winner changes with them. the rest of this chapter takes those three formulas apart.
+
+## the price list
+
+```sql run db=shop
+SELECT name, setting, short_desc
+FROM pg_settings
+WHERE name IN ('seq_page_cost', 'random_page_cost', 'cpu_tuple_cost',
+               'cpu_index_tuple_cost', 'cpu_operator_cost', 'effective_cache_size')
+ORDER BY name;
+```
+
+five prices and one hint:
+
+- **seq_page_cost** (1.0) is a page read as part of a run, the unit everything else is measured in.
+- **random_page_cost** (4.0) is a page read out of order: an index pointing into the heap, a b-tree descending.
+- **cpu_tuple_cost** (0.01) is handling one row: forming it, passing it up.
+- **cpu_index_tuple_cost** (0.005) is handling one index entry.
+- **cpu_operator_cost** (0.0025) is one call of an operator or function: one `customer_id <= 500` test, one comparison during a descent.
+- **effective_cache_size** (524288 pages of 8 KB, so 4 GB) isn't a price. it's how much of the database the planner may assume is cached, and it feeds the cache model you'll meet in a minute.
+
+the counts the prices multiply come from the catalog: `relpages` and `reltuples` in `pg_class`, written by VACUUM and ANALYZE, and the row estimate from [pg_stats](/learn/optimizer/statistics). the planner never touches the table to plan a query.
+
+## a seq scan, by hand
+
+[reading EXPLAIN](/learn/execution/reading-explain) already priced one: every page at seq_page_cost, every row at cpu_tuple_cost, and every row through the filter at cpu_operator_cost. for `orders` that's
+
+```sql run db=shop session=cost ext=pageinspect
+CREATE INDEX orders_customer_id ON orders (customer_id);
+ANALYZE orders;
+SELECT relname, relpages, reltuples
+FROM pg_class
+WHERE relname IN ('orders', 'orders_pkey', 'orders_customer_id')
+ORDER BY relname;
+```
+
+83 × 1.0 + 10,000 × 0.01 + 10,000 × 0.0025 = 208.00, whatever the WHERE says. that's the top line of the dials figure. (the dataset has no secondary indexes, so the block makes one on `customer_id`.)
+
+## an index scan, by hand
+
+now the other end: one order by its primary key.
+
+```sql run session=cost
+EXPLAIN SELECT * FROM orders WHERE id = 42;
+SELECT level AS height FROM bt_metap('orders_pkey');
+```
+
+{line(one)}. an index scan pays for two trips: down the b-tree to the right leaf, then over to the heap page the entry points at. both are out-of-order reads. here's the 8.30, piece by piece:
+
+<Figure caption={<>an index scan of one row, from the catalog and the settings. the two descent lines are paid before the first row comes out, and they are the startup cost. then one leaf page and one heap page, each at random_page_cost 4: those two reads are almost all of it.</>}>
+<CostReceipt
+  startup={2}
+  terms={[
+    ...descent("orders_pkey"),
+    { what: "leaf page of the index", n: 1, setting: "random_page_cost", per: set.random_page_cost },
+    { what: "index entry looked at", n: 1, setting: "cpu_index_tuple_cost + cpu_operator_cost", per: set.cpu_index_tuple_cost + set.cpu_operator_cost },
+    { what: "heap page, fetched out of order", n: 1, setting: "random_page_cost", per: set.random_page_cost },
+    { what: "row handed up", n: 1, setting: "cpu_tuple_cost", per: set.cpu_tuple_cost },
+  ]}
+  line={line(one)}
+  want={{ startup: one["Startup Cost"], total: one["Total Cost"] }}
+  source={prov(trace)}
+/>
+</Figure>
+
+the descent doesn't charge a page read for the root or the inner pages. the planner assumes they're cached, because every lookup goes through them, and charges only a CPU fee per level. the "50 operator costs per level" is a constant in postgres's b-tree cost function, not a setting.
+
+## many rows through an index
+
+one row is easy. the interesting case is when the index finds thousands. turn the other two scans off to see what a plain index scan would cost for the dials query:
+
+```sql run session=cost
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN SELECT * FROM orders WHERE customer_id <= 500;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+```
+
+3,959 estimated rows (that number is [estimating rows](/learn/optimizer/estimating-rows)' job; here we take it as given). the index part scales with the fraction of the index it reads: 3,959 of 10,000 entries is 7 of its 17 leaf pages. the heap part is where it gets clever:
+
+<Figure caption={<>the same scan for {rows.toLocaleString("en-US")} rows. {leaf} leaf pages because the entries sit in key order. the heap line is <C k="hot">83 pages, not 3,959</C>: the cache model says that after the first visit to each of the table's 83 pages, the rest are hits. the startup cost is the same descent as before.</>}>
+<CostReceipt
+  startup={2}
+  terms={[
+    ...descent("orders_customer_id"),
+    { what: `leaf pages: ${rows.toLocaleString("en-US")} of ${cat.orders_customer_id.tuples.toLocaleString("en-US")} entries, of ${cat.orders_customer_id.pages} pages`, n: leaf, setting: "random_page_cost", per: set.random_page_cost },
+    { what: "index entries looked at", n: rows, setting: "cpu_index_tuple_cost + cpu_operator_cost", per: set.cpu_index_tuple_cost + set.cpu_operator_cost },
+    { what: "heap pages fetched, after the cache model", n: cat.orders.pages, setting: "random_page_cost", per: set.random_page_cost },
+    { what: "rows handed up", n: rows, setting: "cpu_tuple_cost", per: set.cpu_tuple_cost },
+  ]}
+  line={line(many)}
+  want={{ startup: many["Startup Cost"], total: many["Total Cost"] }}
+  source={prov(trace)}
+/>
+</Figure>
+
+two things decide that heap line.
+
+**the cache model.** 3,959 index entries point into a table of 83 pages, so most fetches land on a page already fetched. postgres estimates distinct page fetches with a formula from a 1989 paper (Mackert and Lohman): with T pages in the table, N fetches, and a cache bigger than the table (effective_cache_size is 4 GB, the table is 664 KB), it's 2TN / (2T + N), capped at T. here that's 159, capped at 83. so the planner charges the whole table, at random prices.
+
+**correlation.** if the column were stored in table order, consecutive entries would point into the same page, and those reads would be sequential. postgres interpolates between the random price and the sequential one by correlation squared, from [pg_stats](/learn/optimizer/statistics). `customer_id` has a correlation of 0.0009, so it gets the full random price. a timestamp column on an append-only table has a correlation near 1 and gets the cheap one, which is why [index-or-scan](/learn/indexes/index-or-scan)'s sorted column wins everywhere.
+
+<Deep title="the bitmap scan, in between">
+the bitmap scan's 191.45 uses the same pieces in a different order. it walks the index first (the descent, 7 leaf pages, 3,959 entries, plus 0.1 operator costs per entry for building the bitmap: that's all startup, 58.97, because the bitmap has to be complete before the first heap page is read). then it reads the heap pages in page order, and prices each one between the two page costs:
+
+cost per page = random_page_cost − (random_page_cost − seq_page_cost) × √(pages fetched / pages in table)
+
+the cache model says all 83 pages get fetched, so the square root is 1 and every page costs seq_page_cost. add 3,959 rows at cpu_tuple_cost plus one recheck each at cpu_operator_cost (49.49) and it's 58.97 + 83 + 49.49 = 191.45. that's why the bitmap formula in the figure has a seq_page_cost term and the index formula doesn't.
+</Deep>
+
+## turning the dials
+
+go back to the figure with those formulas in mind, and each dial does what its formula says:
+
+- **random_page_cost** only moves the index and bitmap scans. the index scan pays it 90 times (7 + 83 pages), the bitmap scan 7 times. at 1 the index scan wins; at 8 the seq scan does.
+- **seq_page_cost** moves the seq scan and the bitmap scan, both by 83 pages, so on this query it rarely changes the winner. it's the unit, after all: halve it and everything that reads in order gets cheaper together.
+- **cpu_tuple_cost** charges the seq scan for 10,000 rows and the other two for 3,959. raise it and filtering a whole table gets expensive; lower it and reading everything looks free.
+
+<Predict question="random_page_cost = 1, the rest at defaults. which scan wins?" options={["seq scan", "bitmap scan", "index scan"]} answer={2}>
+```sql
+SET random_page_cost = 1;
+EXPLAIN SELECT * FROM orders WHERE customer_id <= 500;
+```
+<Explain>
+the index scan, at 159.57 against 170.45 for the bitmap scan and 208.00 for the seq scan. with a random read priced like a sequential one, the index scan's 90 page reads cost 90, and it skips the 6,041 rows the other two still handle (the seq scan reads them all, the bitmap scan rechecks).
+</Explain>
+</Predict>
+
+```sql run session=cost
+SET random_page_cost = 1;
+EXPLAIN SELECT * FROM orders WHERE customer_id <= 500;
+RESET random_page_cost;
+```
+
+these settings describe hardware, not queries. the defaults date from spinning disks: the manual explains random_page_cost = 4 as a random read being far slower than 4 sequential ones, with most of them expected to hit the cache. on SSDs, or a database that fits in memory, 1.1 is a common setting. set it per server or [per tablespace](/learn/optimizer/steering-the-planner) after measuring, never per query to win one plan.
+
+<Docs href="https://www.postgresql.org/docs/18/runtime-config-query.html#RUNTIME-CONFIG-QUERY-CONSTANTS" title="planner cost constants">the manual lists every cost setting, warns that there's no well-defined method for picking their values, and suggests they're best treated as averages over the whole mix of queries.</Docs>
+
+## the cheapest path wins
+
+the planner doesn't build three plans and race them. for each table it generates **paths** (a seq scan, a scan of each usable index, bitmap combinations), prices each with formulas like these, and throws away any path that's beaten on every count:
+
+<Figure wide caption={<>how a plan gets picked, per table and then per join. a path survives only if nothing else is cheaper on total cost, on startup cost and on sort order at once.</>}>
+<Flow stages={[
+  { label: "paths", sub: "seq, index, bitmap", note: "every way to read one table: a seq scan, a scan of each index that matches a condition, bitmap scans that combine them." },
+  { label: "price each", sub: "counts × settings", note: "the formulas on this page: pages from pg_class, rows from pg_stats, each times its cost setting." },
+  { label: "prune", sub: "keep the useful ones", note: "keep the cheapest total, the cheapest startup (a LIMIT might want it), and the cheapest for each useful sort order (an ORDER BY or a merge join might want that)." },
+  { label: "join", sub: "same rule, bigger sets", note: "build joins of two tables from the survivors, then three, and so on, pricing and pruning at every level. that search is join ordering." },
+  { label: "the plan", sub: "cheapest at the top", note: "the cheapest path for the whole query, with its Sort, Limit and aggregates on top, becomes the plan EXPLAIN prints." },
+]} />
+</Figure>
+
+that's why `enable_seqscan = off` above didn't remove the seq scan, it just made it lose: postgres 18 counts the disabled nodes in every path and compares that count before the cost, and prints `Disabled: true` when it had no other choice ([steering the planner](/learn/optimizer/steering-the-planner)). and it's why joins are priced the same way, one level at a time ([join order search](/learn/optimizer/join-ordering)).
+
+<Gotcha title="the arithmetic is exact, the inputs aren't">
+every formula here is deterministic: same counts, same settings, same cost. what goes wrong in real life is the counts. a stale `reltuples`, a row estimate off by 100x, a correlation that changed since the last ANALYZE: the planner prices the wrong query perfectly. when a plan looks dumb, check estimated against actual rows before touching a cost setting ([when estimates go wrong](/learn/optimizer/misestimates)).
+</Gotcha>
+
+<Interview q="why would postgres choose a seq scan when there's an index on the column?">
+because its cost estimate for the seq scan was lower. a seq scan costs pages × seq_page_cost plus rows × (cpu_tuple_cost + filter cost), no matter how many rows match. an index scan pays random_page_cost per heap page it expects to fetch, which grows with the matching rows (capped by a cache model) and shrinks with the column's correlation. past a few percent of a scattered table, the index loses. bonus point: the costs are only as good as the row estimate and the settings, so check estimated vs actual rows first, then whether random_page_cost = 4 still describes your storage.
+</Interview>
+
+<Keylines>
+- cost units: one sequential page read = 1.0. everything else is priced against it.
+- seq scan = pages × seq_page_cost + rows × (cpu_tuple_cost + cpu_operator_cost per condition).
+- index scan = a descent (CPU only) + leaf pages and heap pages at random_page_cost + per-row CPU.
+- heap pages are estimated with a cache model and discounted by correlation squared.
+- the settings describe hardware. change them per server after measuring, not per query.
+</Keylines>

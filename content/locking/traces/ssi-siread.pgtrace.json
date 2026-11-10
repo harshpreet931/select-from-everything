@@ -1,0 +1,161 @@
+{
+ "v": 1,
+ "scenario": "content/locking/traces/ssi-siread.scenario.sql",
+ "title": "SIRead locks: two serializable doctors, write skew, and what pg_locks shows",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "doctors": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"on_call","type":"bool"}]
+  },
+  "doctors_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"doctors"}
+ },
+ "base": {"xid":760,"lsn":23244144},
+ "setup": "CREATE TABLE doctors (\n  id      int PRIMARY KEY,\n  name    text NOT NULL,\n  on_call boolean NOT NULL\n);\nINSERT INTO doctors VALUES (1, 'asha', true), (2, 'ben', true);\nVACUUM ANALYZE doctors;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE",
+   "note": "T1 (asha) opens a serializable transaction.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "locks": [{"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM doctors WHERE on_call",
+   "note": "T1 counts who's on call. the scan reads the whole table, so postgres notes it as an SIReadLock on the relation. a note, not a lock: it blocks nobody.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["2"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT count(*) FROM doctors WHERE on_call",
+   "note": "T2 (ben) does the same, and gets the same note.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["2"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "UPDATE doctors SET on_call = false WHERE id = 1",
+   "note": "T1 takes asha off call. T2's SIRead covers that row, so postgres records an rw-antidependency: T2 read something T1 then wrote. T2 → T1.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "UPDATE doctors SET on_call = false WHERE id = 2",
+   "note": "T2 takes ben off call. T1's SIRead covers ben's row: T1 → T2. now each points at the other. nothing has failed yet.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits first. its SIRead lock outlives it: T2 is still running and overlapped with it, so the note has to stay.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 6,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 tries to commit. the structure is complete and one side has committed, so T2 is the one that fails.",
+   "status": "error",
+   "error": {
+    "sqlstate": "40001",
+    "message": "could not serialize access due to read/write dependencies among transactions",
+    "detail": "Reason code: Canceled on identification as a pivot, during commit attempt."
+   },
+   "locks": []
+  }
+ ]
+}

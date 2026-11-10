@@ -1,0 +1,142 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { StateStrip } from "@/components/figures/transactions/StateStrip";
+import { resultOf } from "@/lib/db/captured";
+import states from "./traces/session-states.pgtrace.json";
+import idle from "./traces/idle-in-transaction.pgtrace.json";
+
+{/* the session states and the idle-in-transaction run are captured on a real postgres 18.6
+    server (traces/session-states, traces/idle-in-transaction): pg_stat_activity read by an
+    observer after each statement. T1's session there has idle_in_transaction_session_timeout = 2s. */}
+
+export const before = resultOf(idle, 1);
+export const during = resultOf(idle, 3);
+export const killLog = idle.steps.find((s) => s.log?.length).log.join("\n");
+
+<InShort>
+every statement runs inside a transaction. without **BEGIN**, each statement is its own (**autocommit**). BEGIN groups statements until **COMMIT** keeps them or **ROLLBACK** drops them, and a **SAVEPOINT** lets you drop just the last part. after an error the transaction is **aborted**: it refuses everything until it ends. and a transaction left open doing nothing is **idle in transaction**, still holding every lock it took.
+</InShort>
+
+## the picture
+
+you know how a single `UPDATE` in psql is just done, no COMMIT needed? that's not because it skipped the transaction. it got one of its own, started and committed around it. BEGIN only makes the transaction longer.
+
+think of a shopping cart (a transaction). autocommit is paying for every item at the till as you pick it up. BEGIN is taking a cart: you fill it, then pay for everything (COMMIT) or put everything back (ROLLBACK). a savepoint is a divider on the belt. and an aborted transaction is a cart the till has refused: you can keep handing it items, it won't scan any of them until you take the cart away.
+
+the server keeps track of which of these states every session is in. here's one session going through all of them on a real server, with `pg_stat_activity` read after each statement:
+
+<Figure caption={<>one session, captured. between statements it's <C k="mute">idle in transaction</C> as soon as BEGIN runs, and <C k="dead">idle in transaction (aborted)</C> after the error, until the transaction ends. note what COMMIT says back.</>}>
+<StateStrip trace={states} />
+</Figure>
+
+## autocommit
+
+each statement outside BEGIN gets its own transaction, and its own transaction id if it writes. `pg_current_xact_id()` asks for the current one (and assigns it):
+
+```sql run
+SELECT pg_current_xact_id();
+SELECT pg_current_xact_id();
+BEGIN;
+SELECT pg_current_xact_id();
+SELECT pg_current_xact_id();
+COMMIT;
+```
+
+two statements, two ids. inside BEGIN, two statements, one id. ([transaction ids](/learn/mvcc/transaction-ids) has where those numbers come from, and why a read-only transaction doesn't use one up.)
+
+autocommit is a client thing as much as a server thing. psql sends what you type, so you're in autocommit until you type BEGIN. many drivers start a transaction for you before the first statement: python's psycopg does by default, JDBC doesn't. find out which one yours is, because the next section's problem starts there.
+
+## ROLLBACK and savepoints
+
+ROLLBACK undoes the whole transaction. a savepoint marks a point inside it you can go back to without giving up the rest:
+
+```sql run db=bank
+BEGIN;
+UPDATE accounts SET balance = balance - 10.00 WHERE id = 1;
+SAVEPOINT before_fee;
+UPDATE accounts SET balance = balance - 25.00 WHERE id = 1;
+ROLLBACK TO SAVEPOINT before_fee;
+UPDATE accounts SET balance = balance + 10.00 WHERE id = 2;
+COMMIT;
+SELECT id, owner, balance FROM accounts WHERE id IN (1, 2) ORDER BY id;
+```
+
+the 25.00 fee is gone, the 10.00 transfer is in. rolling back to a savepoint keeps the savepoint, so you can go back to it again; `RELEASE SAVEPOINT` forgets it. (underneath, each savepoint is a subtransaction with its own xid once it writes. a few are cheap. thousands of them in one transaction are not.)
+
+## the aborted transaction
+
+this is the one that confuses everyone the first time. carol has 0.00, and bank's CHECK says a balance can't go below zero:
+
+<Predict question="the second UPDATE fails. the app ignores the error and sends a SELECT, then COMMIT. what does COMMIT do?" options={["commits alice's +50.00", "rolls everything back", "fails with an error"]} answer={1}>
+```sql
+BEGIN;
+UPDATE accounts SET balance = balance + 50.00 WHERE id = 1;  -- UPDATE 1
+UPDATE accounts SET balance = balance - 50.00 WHERE id = 3;  -- ERROR 23514
+SELECT balance FROM accounts WHERE id = 1;                   -- ?
+COMMIT;                                                      -- ?
+```
+<Explain>
+it rolls everything back, and says so: the command tag that comes back is ROLLBACK, not COMMIT. the SELECT before it gets 25P02, "current transaction is aborted, commands ignored until end of transaction block". once any statement fails, the transaction can't do anything but end, and ending it means losing alice's +50.00 too. an app that only checks for exceptions (and COMMIT doesn't raise one) can think it saved something it didn't.
+</Explain>
+</Predict>
+
+here it is, run for real. `errors=continue` makes the page keep sending statements after the error, the way a careless app would:
+
+```sql run db=bank errors=continue
+BEGIN;
+UPDATE accounts SET balance = balance + 50.00 WHERE id = 1;
+UPDATE accounts SET balance = balance - 50.00 WHERE id = 3;
+SELECT balance FROM accounts WHERE id = 1;
+COMMIT;
+SELECT id, owner, balance FROM accounts WHERE id IN (1, 3) ORDER BY id;
+```
+
+why so strict? because postgres can't know which of your later statements depended on the one that failed. it won't guess. the only ways out are ROLLBACK (or a COMMIT that turns into one), or going back to a savepoint taken before the error:
+
+```sql run db=bank errors=continue
+BEGIN;
+UPDATE accounts SET balance = balance + 50.00 WHERE id = 1;
+SAVEPOINT try_carol;
+UPDATE accounts SET balance = balance - 50.00 WHERE id = 3;
+ROLLBACK TO SAVEPOINT try_carol;
+UPDATE accounts SET balance = balance - 50.00 WHERE id = 4;
+COMMIT;
+SELECT id, owner, balance FROM accounts WHERE id IN (1, 3, 4) ORDER BY id;
+```
+
+carol couldn't pay, so dave did. the transaction survived the error because it never got past the savepoint. that's exactly what psql's `\set ON_ERROR_ROLLBACK on` does for you: a hidden savepoint before every statement in a transaction block.
+
+## idle in transaction
+
+a transaction that has sent its last statement and is waiting for the app is *idle in transaction*. it isn't doing anything, and it still holds everything: row locks, its snapshot, its xid. the classic way to get one is an app that BEGINs, updates a row, then calls a slow payment API before it commits.
+
+<Figure wide caption={<>T1 updates alice and goes quiet. T2 wants alice's row and <C k="mute">waits</C> behind a session that's doing nothing. T1's session has a 2 s idle limit; the server ends it, its transaction rolls back, and T2 goes through. the list on the right is pg_locks: who holds what, who waits.</>}>
+<TxLanes trace={idle} side="locks" locks={["transactionid", "tuple"]} />
+</Figure>
+
+<Figure caption={<>what the server showed while it happened: pg_stat_activity before T2 arrived, and while T2 waited. a <C k="mute">Lock</C> wait behind an <C k="mute">idle in transaction</C> session is the pattern to look for.</>}>
+<div className="grid gap-4 grid-cols-[minmax(0,1fr)]">
+<div className="text-11 text-faint">pg_stat_activity, before T2 arrives</div>
+<ResultTable columns={before.columns} rows={before.rows} dense />
+<div className="text-11 text-faint">pg_stat_activity, while T2 waits</div>
+<ResultTable columns={during.columns} rows={during.rows} dense />
+<SqlPanel code={killLog} lang="text" nolines file="server log, a few seconds later" />
+</div>
+</Figure>
+
+the fix is to never hold a transaction open across anything slow (network calls, user input, sleeps), and then to make the server enforce it. `idle_in_transaction_session_timeout` ends a session that sits idle inside a transaction for too long, as above. `transaction_timeout` <Since v={17} /> caps the whole transaction, busy or idle. the snapshot an idle transaction holds also stops VACUUM from cleaning up after everyone else: [the xmin horizon](/learn/mvcc/xmin-horizon) is that half of the story.
+
+<Gotcha title="the driver opened a transaction you didn't">
+with a driver that starts transactions implicitly, a plain SELECT opens one, and it stays open until your code commits or rolls back. a request handler that reads and returns without either leaves its pooled connection idle in transaction, sometimes for hours. turn on autocommit for read-only paths, or always end what you started (a `with conn.transaction():` block, a framework's per-request transaction), and alert on `state = 'idle in transaction'` older than a few seconds.
+</Gotcha>
+
+<Interview q="what does 'current transaction is aborted, commands ignored until end of transaction block' mean?">
+an earlier statement in the same transaction failed, so postgres marked the transaction aborted (SQLSTATE 25P02 for everything after). it will refuse every statement until the transaction ends. ROLLBACK ends it; so does COMMIT, which quietly rolls back and returns the ROLLBACK tag. the fix in code is to catch the first error and roll back (or retry the transaction), and if you want to survive an expected error mid-transaction, take a SAVEPOINT before the risky statement and ROLLBACK TO it. bonus point: psql's ON_ERROR_ROLLBACK does exactly that, with an automatic savepoint before each statement.
+</Interview>
+
+<Keylines>
+- every statement is in a transaction. without BEGIN, it's a transaction of one.
+- ROLLBACK drops everything. ROLLBACK TO SAVEPOINT drops only what came after it.
+- after an error, the transaction refuses everything (25P02). COMMIT turns into ROLLBACK.
+- a savepoint taken before the risky statement is the only way to keep going after it fails.
+- idle in transaction holds its locks and its snapshot. never wait on anything slow inside BEGIN.
+</Keylines>

@@ -1,0 +1,348 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b7e2dc03aaf830b6": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'UTC';\nCREATE TABLE readings (id int, at timestamptz, temp int);\nINSERT INTO readings\nSELECT g, timestamptz '2026-01-01 00:00+00' + g * interval '1 minute', abs(hashint4(g)) % 40\nFROM generate_series(1, 200000) AS g;\nCREATE INDEX readings_brin ON readings USING brin (at);\nCREATE INDEX readings_btree ON readings (at);\nANALYZE readings;\nSELECT pg_relation_size('readings') / 8192 AS table_pages,\n       pg_relation_size('readings_brin') / 8192 AS brin_pages,\n       pg_relation_size('readings_btree') / 8192 AS btree_pages;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 200000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 200000,
+          "digest": "22b849ed4851006e"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9f84e5a720f8ae6b"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "0158666dab518b98"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["table_pages", "int8", 20],
+            ["brin_pages", "int8", 20],
+            ["btree_pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "372f6ba1e4a1b972",
+          "rows": [
+            ["1274", "3", "551"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "17a1fa6d1ca96146": {
+      "db": "empty",
+      "sql": "SELECT pagesperrange, lastrevmappage FROM brin_metapage_info(get_raw_page('readings_brin', 0));\nSELECT itemoffset, blknum, value\nFROM brin_page_items(get_raw_page('readings_brin', 2), 'readings_brin')\nORDER BY blknum;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pagesperrange", "int4", 23],
+            ["lastrevmappage", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "19fe098aeb5fabf9",
+          "rows": [
+            ["128", "1"]
+          ]
+        },
+        {
+          "tag": "SELECT 10",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int4", 23],
+            ["blknum", "int8", 20],
+            ["value", "text", 25]
+          ],
+          "rowCount": 10,
+          "digest": "2e3647b08a30b412",
+          "rows": [
+            ["1", "0", "{2026-01-01 00:01:00+00 .. 2026-01-14 22:56:00+00}"],
+            ["2", "128", "{2026-01-14 22:57:00+00 .. 2026-01-28 21:52:00+00}"],
+            ["3", "256", "{2026-01-28 21:53:00+00 .. 2026-02-11 20:48:00+00}"],
+            ["4", "384", "{2026-02-11 20:49:00+00 .. 2026-02-25 19:44:00+00}"],
+            ["5", "512", "{2026-02-25 19:45:00+00 .. 2026-03-11 18:40:00+00}"],
+            ["6", "640", "{2026-03-11 18:41:00+00 .. 2026-03-25 17:36:00+00}"],
+            ["7", "768", "{2026-03-25 17:37:00+00 .. 2026-04-08 16:32:00+00}"],
+            ["8", "896", "{2026-04-08 16:33:00+00 .. 2026-04-22 15:28:00+00}"],
+            ["9", "1024", "{2026-04-22 15:29:00+00 .. 2026-05-06 14:24:00+00}"],
+            ["10", "1152", "{2026-05-06 14:25:00+00 .. 2026-05-19 21:20:00+00}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3e88c1f88c173db2": {
+      "db": "empty",
+      "sql": "DROP INDEX readings_btree;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM readings WHERE at >= '2026-03-01' AND at < '2026-03-02';",
+      "statements": [
+        {
+          "tag": "DROP INDEX",
+          "command": "DROP INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "63775631647b862a"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5d352bccdcbf8848",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=133"],
+            ["  ->  Bitmap Heap Scan on readings (actual rows=1440.00 loops=1)"],
+            ["        Recheck Cond: ((at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (at < '2026-03-02 00:00:00+00'::timestamp with time zone))"],
+            ["        Rows Removed by Index Recheck: 18656"],
+            ["        Heap Blocks: lossy=128"],
+            ["        Buffers: shared hit=133"],
+            ["        ->  Bitmap Index Scan on readings_brin (actual rows=1280.00 loops=1)"],
+            ["              Index Cond: ((at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (at < '2026-03-02 00:00:00+00'::timestamp with time zone))"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared hit=5"],
+            ["Planning:"],
+            ["  Buffers: shared hit=18"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b25a5597fcd811e4": {
+      "db": "empty",
+      "sql": "CREATE TABLE shuffled AS SELECT * FROM readings ORDER BY hashint4(id);\nCREATE INDEX shuffled_brin ON shuffled USING brin (at);\nALTER TABLE shuffled ALTER COLUMN at SET STATISTICS 10000;\nALTER TABLE readings ALTER COLUMN at SET STATISTICS 10000;\nANALYZE shuffled, readings;\nSELECT tablename, round(correlation::numeric, 2) AS correlation\nFROM pg_stats WHERE attname = 'at' AND tablename IN ('readings', 'shuffled')\nORDER BY tablename;\nSELECT itemoffset, blknum, value\nFROM brin_page_items(get_raw_page('shuffled_brin', 2), 'shuffled_brin')\nORDER BY blknum;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM shuffled WHERE at >= '2026-03-01' AND at < '2026-03-02';\nSET enable_seqscan = off;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM shuffled WHERE at >= '2026-03-01' AND at < '2026-03-02';\nRESET enable_seqscan;",
+      "statements": [
+        {
+          "tag": "SELECT 200000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 200000,
+          "digest": "d5c063393baaf0ab"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "473cf6d7179df0b7"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c9df9cfa72a1225e"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e9ea2cf09baac279"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["tablename", "name", 19],
+            ["correlation", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "78544c8b4d4ba8f3",
+          "rows": [
+            ["readings", "1.00"],
+            ["shuffled", "0.00"]
+          ]
+        },
+        {
+          "tag": "SELECT 10",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int4", 23],
+            ["blknum", "int8", 20],
+            ["value", "text", 25]
+          ],
+          "rowCount": 10,
+          "digest": "77b90be98c0e4bff",
+          "rows": [
+            ["1", "0", "{2026-01-01 00:01:00+00 .. 2026-05-19 21:17:00+00}"],
+            ["2", "128", "{2026-01-01 00:05:00+00 .. 2026-05-19 21:18:00+00}"],
+            ["3", "256", "{2026-01-01 00:04:00+00 .. 2026-05-19 21:19:00+00}"],
+            ["4", "384", "{2026-01-01 00:16:00+00 .. 2026-05-19 21:04:00+00}"],
+            ["5", "512", "{2026-01-01 00:03:00+00 .. 2026-05-19 20:38:00+00}"],
+            ["6", "640", "{2026-01-01 00:52:00+00 .. 2026-05-19 21:16:00+00}"],
+            ["7", "768", "{2026-01-01 00:06:00+00 .. 2026-05-19 21:20:00+00}"],
+            ["8", "896", "{2026-01-01 00:02:00+00 .. 2026-05-19 21:15:00+00}"],
+            ["9", "1024", "{2026-01-01 00:09:00+00 .. 2026-05-19 21:11:00+00}"],
+            ["10", "1152", "{2026-01-01 00:11:00+00 .. 2026-05-19 21:08:00+00}"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e7911da6ad1ee858",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=1280"],
+            ["  ->  Seq Scan on shuffled (actual rows=1440.00 loops=1)"],
+            ["        Filter: ((at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (at < '2026-03-02 00:00:00+00'::timestamp with time zone))"],
+            ["        Rows Removed by Filter: 198560"],
+            ["        Buffers: shared hit=1280"],
+            ["Planning:"],
+            ["  Buffers: shared hit=15"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7adb874a8214cec1"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c44182abaf9c16a5",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=1282"],
+            ["  ->  Bitmap Heap Scan on shuffled (actual rows=1440.00 loops=1)"],
+            ["        Recheck Cond: ((at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (at < '2026-03-02 00:00:00+00'::timestamp with time zone))"],
+            ["        Rows Removed by Index Recheck: 198560"],
+            ["        Heap Blocks: lossy=1280"],
+            ["        Buffers: shared hit=1282"],
+            ["        ->  Bitmap Index Scan on shuffled_brin (actual rows=12800.00 loops=1)"],
+            ["              Index Cond: ((at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (at < '2026-03-02 00:00:00+00'::timestamp with time zone))"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared hit=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=1"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "33cc2267b58646b7"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2872cf14f42df240": {
+      "db": "empty",
+      "sql": "CREATE INDEX readings_brin16 ON readings USING brin (at) WITH (pages_per_range = 16);\nDROP INDEX readings_brin;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM readings WHERE at >= '2026-03-01' AND at < '2026-03-02';\nSELECT pg_relation_size('readings_brin16') / 8192 AS brin16_pages;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "DROP INDEX",
+          "command": "DROP INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "893fee6e8345a51d"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ebb4dfad956cfedd",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=34"],
+            ["  ->  Bitmap Heap Scan on readings (actual rows=1440.00 loops=1)"],
+            ["        Recheck Cond: ((at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (at < '2026-03-02 00:00:00+00'::timestamp with time zone))"],
+            ["        Rows Removed by Index Recheck: 3584"],
+            ["        Heap Blocks: lossy=32"],
+            ["        Buffers: shared hit=34"],
+            ["        ->  Bitmap Index Scan on readings_brin16 (actual rows=320.00 loops=1)"],
+            ["              Index Cond: ((at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (at < '2026-03-02 00:00:00+00'::timestamp with time zone))"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared hit=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=30"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["brin16_pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "577f58211a7953a9",
+          "rows": [
+            ["3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

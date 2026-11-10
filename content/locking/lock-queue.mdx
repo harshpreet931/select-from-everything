@@ -1,0 +1,147 @@
+import { LockQueue } from "@/components/figures/locking/LockQueue";
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import { errorText } from "@/components/figures/locking/lanes";
+import queue from "./traces/lock-queue.pgtrace.json";
+import upgrade from "./traces/lock-upgrade.pgtrace.json";
+
+{/* every multi-session figure here is captured on a real postgres 18.6 server
+    (traces/lock-queue.scenario.sql, four sessions; traces/lock-upgrade.scenario.sql).
+    the queue beside the lanes is pg_locks after each step, waiters in the order they blocked. */}
+
+export const who = resultOf(queue, 4);
+export const timeout = queue.steps[11].woke.find((w) => w.error).error;
+
+<InShort>
+a lock request doesn't just check the locks that are **held**. it also checks the ones that are **queued**. so an `ALTER TABLE` waiting behind one slow read makes every query after it wait too, even plain SELECTs that don't conflict with the read at all. one migration, a whole table frozen. the fix: run DDL with **lock_timeout**, so it gives up after a moment, and retry.
+</InShort>
+
+## the picture
+
+you know the migration that "only adds a column"? it runs in a few milliseconds on staging. in production, the site goes down for a minute, and the ALTER wasn't slow at all. it was waiting.
+
+think of a one-lane bridge with a single rule: first come, first served. a cyclist (a long report) is on the bridge. a truck (the ALTER, which needs the whole bridge) pulls up and waits. a second cyclist arrives. there's plenty of room beside the first cyclist, but the truck is ahead in line, so the second cyclist waits behind the truck. so does everyone after.
+
+here it is on a real postgres 18.6 server with four sessions: a report holding a read lock, a migration, and two ordinary reads.
+
+<Figure wide caption={<>step through. the panel is the lock queue on accounts after each step: <C k="meta">held</C> is solid, waiting is dashed, in arrival order. T3 and T4 only want ACCESS SHARE, which T1 already holds happily, but they queue behind T2's ACCESS EXCLUSIVE. switch to lock_timeout and T2 leaves the queue after two seconds with <C k="dead">55P03</C>, which lets T3 through.</>}>
+<LockQueue trace={queue} rel="accounts" byRound={["no lock_timeout", "lock_timeout = 2s"]} obs={{ 4: "who blocks whom? (the query below)" }} />
+</Figure>
+
+that's the whole outage. T2's ALTER needs ACCESS EXCLUSIVE, the one [table lock mode](/learn/locking/table-lock-modes) that conflicts with everything, including the ACCESS SHARE every SELECT takes. it can't have it while T1's report is open, so it waits. that part is fine. the problem is T3: its ACCESS SHARE is compatible with T1's, and it waits anyway.
+
+## why the reader waits
+
+postgres's lock manager keeps one queue per locked object. a new request is granted only if it conflicts with nothing **held** and with nothing **already waiting** ahead of it. T3's ACCESS SHARE conflicts with T2's queued ACCESS EXCLUSIVE, so T3 goes to the back of the line.
+
+that rule is on purpose. without it, a steady stream of readers would keep the table permanently share-locked, and the ALTER would starve: wait forever while reader after reader slipped past. first come, first served means the ALTER does get its turn. the price is that while it waits, it blocks like it already had the lock.
+
+you can watch the chain form. `pg_blocking_pids(pid)` lists the sessions blocking a given one, both kinds: those holding a lock it needs, and those queued ahead of it for a lock it conflicts with. here's that query at step 5, with each pid swapped for its session name:
+
+```sql
+SELECT a.application_name AS session, l.mode, l.granted,
+       ARRAY(SELECT b.application_name FROM pg_stat_activity b
+             WHERE b.pid = ANY (pg_blocking_pids(a.pid))
+             ORDER BY b.application_name) AS blocked_by
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.locktype = 'relation' AND l.relation = 'accounts'::regclass
+ORDER BY l.granted DESC, l.waitstart NULLS FIRST, a.application_name;
+```
+
+<Figure caption={<>pg_locks on accounts, and pg_blocking_pids for each session. T2 is blocked by T1 (a lock T1 <C k="meta">holds</C>). T3 and T4 are blocked by T2, which holds nothing on accounts yet: it's only queued.</>}>
+<ResultTable columns={who.columns} rows={who.rows} />
+<Provenance trace={prov(queue)} />
+</Figure>
+
+`waitstart` (when each wait began) gives the queue order. the manual calls T2's block on T3 a "soft" block, and [watching locks with pg_locks](/learn/locking/pg-locks) turns this query into one you can keep in your pocket.
+
+<Predict question="T1 holds ACCESS SHARE on accounts. T2's ALTER TABLE is waiting for ACCESS EXCLUSIVE. T3 runs a plain SELECT on accounts. what happens?" options={["it runs right away", "it waits behind T2", "it fails with 55P03"]} answer={1}>
+```sql
+/* T1 */ BEGIN; SELECT sum(balance) FROM accounts;      -- holds ACCESS SHARE
+/* T2 */ ALTER TABLE accounts ADD COLUMN note text;     -- waiting
+/* T3 */ SELECT balance FROM accounts WHERE id = 1;     -- ?
+```
+<Explain>
+it waits behind T2. ACCESS SHARE doesn't conflict with T1's ACCESS SHARE, but it does conflict with T2's queued ACCESS EXCLUSIVE, and a request has to get past the waiters ahead of it too. no error, either: lock_timeout is off by default, so T3 waits as long as it takes. in the capture, T3 and T4 got their rows only after T1 committed and T2's ALTER had run.
+</Explain>
+</Predict>
+
+## lock_timeout saves the day
+
+the dangerous part isn't the ALTER. adding a nullable column is a catalog change that takes milliseconds once the lock is granted. the dangerous part is the waiting. so cap it:
+
+```sql run
+SHOW lock_timeout;
+SET lock_timeout = '2s';
+SHOW lock_timeout;
+```
+
+0 means no limit, which is the default. with a limit, a statement that waits longer than that for any one lock gives up. that's round two in the figure: T2 queued for two seconds, gave up, and the moment it left the queue, T3 got its ACCESS SHARE. T1's report never noticed a thing. this is what T2 got:
+
+<Figure caption={<>T2's error after two seconds in the queue, SQLSTATE 55P03 (lock_not_available). the statement is cancelled, the transaction is aborted, and nothing changed.</>}>
+<SqlPanel code={errorText(timeout)} lang="text" nolines file="T2: ALTER TABLE accounts ADD COLUMN memo text" />
+</Figure>
+
+two seconds of blocked reads instead of an outage that lasts as long as the slowest report. pick the number by asking how long your app can tolerate every query on that table stalling: often well under a second.
+
+<Quiz question="which setting can cancel a statement that's running a slow seq scan, not waiting for anything?" options={["lock_timeout", "statement_timeout", "deadlock_timeout"]} answer={1}>
+<Explain>
+statement_timeout. lock_timeout only counts time spent waiting for a lock, per lock, and deadlock_timeout isn't a timeout at all: it's how long a waiting backend sleeps before it [checks for a deadlock](/learn/locking/deadlock-detection). for migrations you want lock_timeout: the ALTER itself is quick, the wait is what hurts.
+</Explain>
+</Quiz>
+
+## the safe migration
+
+a migration that can time out needs to be retried. the pattern: short lock_timeout, try, and on 55P03 wait a bit and try again, a bounded number of times. most migration tools can do this; in plain SQL it's a loop:
+
+```sql run title="migrate.sql"
+CREATE TABLE accounts (id int PRIMARY KEY, balance numeric(12,2) NOT NULL);
+DO $$
+BEGIN
+  FOR attempt IN 1..5 LOOP
+    BEGIN
+      SET LOCAL lock_timeout = '500ms';
+      ALTER TABLE accounts ADD COLUMN note text;
+      RETURN;                                   -- got the lock, done
+    EXCEPTION WHEN lock_not_available THEN
+      PERFORM pg_sleep(attempt);                -- back off, then try again
+    END;
+  END LOOP;
+  RAISE EXCEPTION 'could not get the lock after 5 tries';
+END $$;
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'accounts' ORDER BY ordinal_position;
+```
+
+in the browser nothing else holds the table, so it gets the lock on the first try. on a busy server, each failed attempt costs at most half a second of queued reads, and the sleeps in between let the queue drain. (`SET LOCAL` keeps the timeout to this transaction. a `DO` block is one transaction, so on a retry the earlier attempt's work is already rolled back to the savepoint the `BEGIN ... EXCEPTION` block makes.)
+
+the rest of the checklist:
+
+- **one lock-heavy statement per transaction.** a migration that runs `ALTER TABLE` and then spends ten seconds backfilling inside the same transaction holds ACCESS EXCLUSIVE for ten seconds. commit the DDL, backfill in batches afterwards.
+- **look before you leap.** a session that's been `idle in transaction` for an hour holds its locks for an hour, and the ALTER will queue behind it. `pg_stat_activity` and `pg_locks` show you who's there ([pg_locks](/learn/locking/pg-locks)), and `idle_in_transaction_session_timeout` stops them piling up ([idle in transaction](/learn/transactions/begin-commit-rollback)).
+- **pick the weaker lock when there is one.** `CREATE INDEX CONCURRENTLY` instead of `CREATE INDEX`, `ADD CONSTRAINT ... NOT VALID` then `VALIDATE CONSTRAINT` (SHARE UPDATE EXCLUSIVE, which lets reads and writes go on). [table lock modes](/learn/locking/table-lock-modes) shows which statement takes which.
+
+<Gotcha title="lock upgrades deadlock">
+a transaction that reads a table and then ALTERs it holds ACCESS SHARE while asking for ACCESS EXCLUSIVE. if two transactions do that at once, each waits for the other's ACCESS SHARE: a deadlock, and one of them gets 40P01.
+
+<LockLanes trace={upgrade} locks={{ types: ["relation"], objs: ["accounts"] }} sideTitle="table locks on accounts" />
+
+take the strongest lock you'll need first (`LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE` at the start), or keep reads out of migration transactions.
+</Gotcha>
+
+<Deep title="what about autovacuum?">
+autovacuum holds SHARE UPDATE EXCLUSIVE while it works on a table, and an ALTER conflicts with that. the manual says a conflicting lock request interrupts autovacuum, so the ALTER only waits a moment. the exception is an autovacuum running to prevent transaction id wraparound (its query in pg_stat_activity ends with "(to prevent wraparound)"): that one isn't interrupted, and a migration queued behind it freezes the table like a long report would. one more reason for lock_timeout. [freezing and wraparound](/learn/mvcc/freezing-and-wraparound) has the rest.
+</Deep>
+
+<Interview q="a migration that adds a nullable column takes the site down for a minute. the ALTER itself takes 5 ms. what happened?">
+the ALTER needed ACCESS EXCLUSIVE, and something (a long query, or a transaction left idle) held a weaker lock on the table. the ALTER queued. postgres grants a lock only if it conflicts with nothing held and nothing queued ahead, so every query that arrived after the ALTER, even plain SELECTs, queued behind it. the table was effectively locked for as long as the old query ran. the fix: run DDL with a short lock_timeout (and retry on 55P03), keep lock-heavy DDL in its own short transaction, and check pg_stat_activity for long transactions before migrating. bonus point: pg_blocking_pids shows the chain, including "soft" blocks where a session is blocked by a waiter rather than a holder.
+</Interview>
+
+<Keylines>
+- a lock request has to get past the holders and the queue. a waiting ACCESS EXCLUSIVE blocks every reader behind it.
+- the queue is first come, first served so the ALTER can't starve. the cost: while it waits, it blocks like a holder.
+- the ALTER is fast. the wait is the outage.
+- SET lock_timeout before DDL. 55P03 means nothing happened: wait, retry.
+- one lock-heavy statement per transaction, and look for idle transactions first.
+</Keylines>

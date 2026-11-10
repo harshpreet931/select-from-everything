@@ -1,0 +1,109 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "3bdb22f296a5343e": {
+      "db": "empty",
+      "sql": "CREATE TABLE few (a int NOT NULL, b int NOT NULL, pad text NOT NULL);\nINSERT INTO few SELECT i % 4, i / 4, repeat('x', 40) FROM generate_series(0, 29999) AS i ORDER BY i;\nCREATE INDEX few_a_b ON few (a, b);\nCREATE TABLE many (a int NOT NULL, b int NOT NULL, pad text NOT NULL);\nINSERT INTO many SELECT i % 3000, i / 3000, repeat('x', 40) FROM generate_series(0, 29999) AS i ORDER BY i;\nCREATE INDEX many_a_b ON many (a, b);\nVACUUM ANALYZE few, many;\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM few WHERE b = 5;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 30000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 30000,
+          "digest": "f0124b2913aa797c"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "INSERT 0 30000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 30000,
+          "digest": "9d9bb5b81ff30a73"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a3a51d1e75e9ec8c"
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e4ebfe74ca94654a"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "936acb7fabcae598",
+          "rows": [
+            ["Bitmap Heap Scan on few (actual rows=4.00 loops=1)"],
+            ["  Recheck Cond: (b = 5)"],
+            ["  Heap Blocks: exact=1"],
+            ["  Buffers: shared hit=8 read=6"],
+            ["  ->  Bitmap Index Scan on few_a_b (actual rows=4.00 loops=1)"],
+            ["        Index Cond: (b = 5)"],
+            ["        Index Searches: 5"],
+            ["        Buffers: shared hit=7 read=6"],
+            ["Planning:"],
+            ["  Buffers: shared hit=12"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "15e63eb7ed3bf1a5": {
+      "db": "empty",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM many WHERE b = 5;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "fb0ac998b2e518ee",
+          "rows": [
+            ["Seq Scan on many (actual rows=3000.00 loops=1)"],
+            ["  Filter: (b = 5)"],
+            ["  Rows Removed by Filter: 27000"],
+            ["  Buffers: shared hit=310"],
+            ["Planning:"],
+            ["  Buffers: shared hit=12"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

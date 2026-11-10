@@ -1,0 +1,122 @@
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { prov, runsOf } from "@/components/figures/basics/captured";
+import school from "./traces/distinct-rows.pgtrace.json";
+import shop from "./traces/distinct-rows-shop.pgtrace.json";
+
+{/* traces/distinct-rows.scenario.sql (school, PGlite): the DISTINCT and DISTINCT ON stages.
+    traces/distinct-rows-shop.scenario.sql (shop, PGlite): four DISTINCT lists on the first twelve
+    customers. */}
+
+export const dupes = runsOf(shop, ["name", "name, city", "email", "lower(email)"], 0);
+
+<InShort>
+**DISTINCT** throws away duplicate rows of the result. it compares **whole output rows**, after SELECT has computed them, and it treats two NULLs as duplicates of each other.
+
+**DISTINCT ON (key)** is postgres's own: keep the **first row of each key**, where "first" is whatever your ORDER BY says.
+</InShort>
+
+## the picture
+
+you know how adding `DISTINCT` sometimes changes nothing, and sometimes eats rows you wanted to keep? both come from the same rule: DISTINCT doesn't look at a column, it looks at the whole row you asked for. two rows are duplicates only if every column you selected matches.
+
+think of a cloakroom that keeps one ticket per *outfit*: same coat, same hat, same scarf, one ticket. change the scarf and it's a different outfit. DISTINCT works on the outfit SELECT handed it, not on the person wearing it.
+
+<Figure wide caption={<>step through it. SELECT keeps two columns, and suddenly rows repeat. DISTINCT keeps one of each pair and strikes the copies. the table shows code at FROM, so you can see which courses become which pair.</>}>
+<ClauseStepper trace={school} maxRows={12} />
+</Figure>
+
+six pairs from twelve courses: exactly the buckets [GROUP BY dept, credits](/learn/basics/group-by) would make. that's not a coincidence. DISTINCT is a GROUP BY on every selected column with no aggregates, and postgres often runs them the same way:
+
+```sql run db=school
+EXPLAIN (COSTS OFF) SELECT DISTINCT dept FROM courses;
+EXPLAIN (COSTS OFF) SELECT dept FROM courses GROUP BY dept;
+```
+
+the same HashAggregate both times. and like GROUP BY, a hash table has no order, so if you want the result sorted, ORDER BY still has to say so.
+
+## what counts as a duplicate
+
+the shop's first twelve customers are a good test, because they're full of near-misses on purpose:
+
+<Figure caption={<>switch what SELECT asks for. two Sam Lees merge by name and split again by name and city. two NULL emails count as one. and DISTINCT compares what SELECT computed, so <code>lower(email)</code> merges the two Zoe Martin addresses.</>}>
+<RunSwitch options={[{ key: "SELECT DISTINCT", values: ["name", "name, city", "email", "lower(email)"] }]} runs={dupes} hot={["DISTINCT"]} trace={prov(shop)} />
+</Figure>
+
+three rules fall out of it:
+
+- **it's the whole row.** add a column and two rows that used to match may not anymore. that's why "just add DISTINCT" to a query that returns too many rows usually doesn't help: the duplicates differ in some column you're selecting.
+- **it's after SELECT.** expressions are computed first, then compared. `lower(email)` merges what `email` keeps apart.
+- **NULLs are duplicates.** for DISTINCT, two NULLs are the same, even though `NULL = NULL` isn't true. that's NULL's [split personality](/learn/basics/null-and-three-valued-logic) again.
+
+<Predict options={["3 rows", "2 rows", "1 row"]} answer={1}>
+```sql
+SELECT DISTINCT email
+FROM customers
+WHERE id IN (2, 11, 42);   -- Grace, Ana, Ada
+```
+<Explain>
+Grace and Ana both have no email, and DISTINCT treats their two NULLs as one value, so they collapse into a single NULL row. Ada's address is the other row. compare `count(DISTINCT email)`, which skips NULLs altogether and says 1.
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT DISTINCT email FROM customers WHERE id IN (2, 11, 42) ORDER BY email;
+SELECT count(DISTINCT email) FROM customers WHERE id IN (2, 11, 42);
+```
+
+two rows, but a count of one. SELECT DISTINCT keeps the NULL as a row, and [count(DISTINCT)](/learn/basics/aggregates) doesn't count it.
+
+## DISTINCT ON
+
+plain DISTINCT keeps one row per *whole row*. very often you want one row per *something*: one per department, one per customer, and you want to pick which one. postgres has a clause for exactly that. `DISTINCT ON (dept)` keeps the first row for each dept and throws the rest away, and the ORDER BY decides what "first" means:
+
+<Figure wide caption={<>step through it. ORDER BY lines the courses up so the one with the most credits comes first in its department (code breaks ties). DISTINCT ON keeps that first row of each department, and strikes the rest.</>}>
+<ClauseStepper trace={school} step={1} maxRows={12} />
+</Figure>
+
+the classic use is "the latest one of each": each customer's most recent order, each sensor's last reading. here are the newest orders of Toronto's Sam, Seoul's Sam and Ada:
+
+```sql run db=shop
+SELECT DISTINCT ON (customer_id) customer_id, id, status, ordered_at
+FROM orders
+WHERE customer_id IN (3, 9, 42)
+ORDER BY customer_id, ordered_at DESC;
+```
+
+one row each, and every column of it comes from the same order. that's the part a GROUP BY can't do on its own: `max(ordered_at)` gives you the date, but not the status that went with it.
+
+two rules keep it honest. the DISTINCT ON keys have to come first in the ORDER BY, because that's how postgres finds where one group ends and the next begins:
+
+```sql run db=school expect=error
+SELECT DISTINCT ON (dept) dept, code
+FROM courses
+ORDER BY credits DESC;
+```
+
+and without an ORDER BY after the keys, "the first row" of a group is whichever one the plan happens to meet first, which is the [coin toss](/learn/basics/limit-and-offset) again. DISTINCT ON is postgres only <Since only />. elsewhere you'd write it with `row_number()`, and [top n per group](/learn/analytics/top-n-per-group) compares the two.
+
+<Gotcha title="DISTINCT can't sort by what it threw away">
+after DISTINCT, a row stands for several input rows, just like a bucket after GROUP BY. so ORDER BY can only use what's in the output:
+
+```sql run db=school expect=error
+SELECT DISTINCT dept FROM courses ORDER BY credits;
+```
+
+CS has five courses, all 4 credits, but MATH has 3 and 4: which credits would its one row sort by? put the column in the select list, or sort by an aggregate after a GROUP BY instead.
+</Gotcha>
+
+<Deep title="DISTINCT as a bandage">
+when a join returns every customer three times, adding DISTINCT makes the copies go away, and that feels like a fix. usually it's hiding one: the join matched more rows than you thought ([join fan-out](/learn/joins/fan-out)), and any sum or count you add later will still be counted three times, because aggregates run before DISTINCT does. and DISTINCT isn't free: on a big result it hashes or sorts everything to find the copies. find out why the rows repeat, then fix the join, or use [EXISTS](/learn/joins/exists-semi-anti), which never duplicates in the first place.
+</Deep>
+
+<Interview q="what's the difference between DISTINCT and DISTINCT ON?">
+DISTINCT removes rows that are duplicates in every selected column, so you get one row per distinct whole row. DISTINCT ON (keys) keeps one row per distinct value of the keys, the first one according to the ORDER BY, and the other columns come from that same row. it's postgres only, and the ORDER BY has to start with the DISTINCT ON keys. bonus point: it's the shortest way to get the latest row per group in postgres, `DISTINCT ON (customer_id) ... ORDER BY customer_id, ordered_at DESC`, and the portable version is row_number() OVER (PARTITION BY customer_id ORDER BY ordered_at DESC) = 1.
+</Interview>
+
+<Keylines>
+- DISTINCT compares whole output rows, after SELECT computed them.
+- add a column and duplicates can stop being duplicates.
+- for DISTINCT, NULLs are duplicates. count(DISTINCT) skips them instead.
+- DISTINCT ON (key) keeps the first row per key, first by the ORDER BY, which must start with the key.
+- DISTINCT that fixes a join usually hides fan-out. fix the join.
+</Keylines>

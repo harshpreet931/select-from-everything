@@ -1,0 +1,10 @@
+{
+  "name": "bank",
+  "title": "bank",
+  "blurb": "1,000 accounts and 20,000 transfers between them. alice and bob hold 200.00 between them, always.",
+  "files": ["schema.sql", "data.sql"],
+  "analyze": true,
+  "extensions": [],
+  "setups": [],
+  "maxRowsPerTable": 30000
+}

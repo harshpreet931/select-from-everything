@@ -1,0 +1,175 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/join-order.pgtrace.json";
+
+{/* the figures read traces/join-order.scenario.sql, captured on PGlite with the shop dataset
+    (`pnpm pgtrace <file> --engine=pglite --twice`): step 0 the counts, steps 1-12 the shop join
+    under two settings and two spellings (a SET, the query, its plan), steps 14-15 the geqo
+    comparison. */}
+
+export const growth = trace.steps[0].result.data;
+export const at = { "8 | JOIN": 2, "8 | commas": 5, "1 | JOIN": 8, "1 | commas": 11 };
+export const runs = Object.fromEntries(Object.entries(at).map(([k, i]) => [k, { ...resultOf(trace, i), sql: `SET join_collapse_limit = ${k.split(" | ")[0]};\n\n` + resultOf(trace, i).sql, plan: planOf(trace, i + 1) }]));
+export const cost = (i) => trace.steps[i + 1].explain.Plan["Total Cost"].toFixed(2);
+export const geqo = trace.steps[14].result.data;
+export const full = trace.steps[15].result.data;
+
+<InShort>
+a join of n tables can be done in a huge number of orders: n! just for the left-deep ones. postgres finds the cheapest with **dynamic programming**: cheapest way to join every pair, then every set of three built from those, up to all n. that's exhaustive and exact, and it grows like 2ⁿ.
+
+two settings keep it in check. **join_collapse_limit** and **from_collapse_limit** (8) stop the planner from reordering more than 8 items at once, and past **geqo_threshold** (12) items it switches to a **genetic** search that's fast and usually close.
+</InShort>
+
+## the picture
+
+you know how the order you write JOINs in doesn't matter, except sometimes it does? the planner is free to reorder them, up to a point, and past that point it stops.
+
+think of planning a road trip through four cities. you could try every order and price each, and with four that's 24 tours. with 12 it's 479 million. the smart way is to note the cheapest route between every pair of cities once, then build the cheapest three-city routes out of those, and so on. you never price a bad route twice. that's what postgres does with tables.
+
+here's one query, written in a bad order (products first), with the planner free to reorder and with it told not to:
+
+<Figure wide caption={<>switch join_collapse_limit between 8 (the default) and 1, and the FROM between explicit JOINs and a comma list. with 1 and JOINs, the planner joins in the order written: all of products with all <C k="dead">24,942</C> order items first. the commas aren't affected by join_collapse_limit at all. toggle <em>cost</em> to see each node's share.</>}>
+<RunPick options={[{ key: "join_collapse_limit", values: ["8", "1"] }, { key: "FROM", values: ["JOIN", "commas"] }]} runs={runs} show={["est", "cost"]} trace={prov(trace)} hot={["join_collapse_limit = 1", "JOIN order_items", "order_items AS oi,"]} maxRows={6} />
+</Figure>
+
+{cost(2)} for the free plan, {cost(8)} for the written order: the planner's best guess at how much worse it is. same result either way.
+
+## n tables, n! orders
+
+how many ways to join n tables? counting only left-deep trees (each join adds one table to what's built so far), it's n!: every order of the tables. bushy trees (two joins joined to each other) add more. postgres's dynamic programming instead works over **sets of tables**, and there are only 2ⁿ − 1 of them:
+
+<Figure caption={<>left-deep join orders (n!) against the sets of tables dynamic programming prices (2ⁿ − 1), on a log scale. at 12 tables, the default <C k="hot">geqo_threshold</C>, it's 479 million orders against 4,095 sets. the sets still grow exponentially, and each set can be split many ways, which is why there's a threshold at all.</>}>
+<Bars data={growth.filter((r) => [4, 6, 8, 10, 12, 14].includes(Number(r[0]))).flatMap((r) => [
+  { label: `${r[0]} tables: orders`, value: Number(r[1]), tone: r[0] === "12" ? "hot" : undefined },
+  { label: `${r[0]} tables: sets`, value: Number(r[2]) },
+])} log />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+```sql run
+SELECT n, factorial(n) AS orders, (2 ^ n)::bigint - 1 AS subsets
+FROM generate_series(2, 14) AS n
+ORDER BY n;
+```
+
+## dynamic programming, level by level
+
+for the shop query, the four tables are linked in a chain: customers → orders → order_items → products. the planner builds up:
+
+<Figure wide caption={<>the planner's search for four tables, drawn by hand: the sets it prices at each level. it only joins sets that share a join condition, so customers and products never meet on their own (that would be a cross join). at every level it keeps the cheapest paths for each set, the way <a href="/learn/optimizer/cost-model">the cost model</a> keeps the cheapest scan.</>}>
+<Slides label="level">
+<Slide note="level 1: one table each. the cheapest scans of each, priced with the cost model: an index scan of customers for id = 42, a seq scan of orders, and so on.">
+<Tree>{`
+sets of 1
+    customers #hot       // index scan, id = 42: 1 row
+    orders          // seq scan, 10,000 rows
+    order_items     // seq scan, or its primary key per order
+    products        // seq scan, 200 rows
+`}</Tree>
+</Slide>
+<Slide note="level 2: every pair joined by a condition. for each pair, every join method (nested loop, hash, merge) in both directions, and the cheapest survive.">
+<Tree>{`
+sets of 2
+    customers ⋈ orders #hot         // 5 rows, cheapest start
+    orders ⋈ order_items       // every order with its items
+    order_items ⋈ products     // all 24,942 items with their products
+`}</Tree>
+</Slide>
+<Slide note="level 3: each set of three is built from a set of two plus one table (or, for bushier plans, two smaller sets). its cheapest path is the cheapest of those combinations.">
+<Tree>{`
+sets of 3
+    customers ⋈ orders ⋈ order_items #hot    // built on customers ⋈ orders
+    orders ⋈ order_items ⋈ products     // built on either pair below it
+`}</Tree>
+</Slide>
+<Slide note="level 4: the whole query. the cheapest path here, with the ORDER BY's sort on top, is the plan EXPLAIN prints: start from customer 42, which is one row.">
+<Tree>{`
+all 4
+    customers ⋈ orders ⋈ order_items ⋈ products #live    // the cheapest: 273.66
+`}</Tree>
+</Slide>
+</Slides>
+<Provenance drawn="the textbook dynamic programming search, as postgres's join search does it" />
+</Figure>
+
+the important bit: a set's cheapest path is computed once and reused by every bigger set that contains it. that's what turns n! into something closer to 2ⁿ. it's also why the planner considers plans that start from customer 42 even though you wrote products first.
+
+## the limits
+
+```sql run
+SELECT name, setting FROM pg_settings
+WHERE name IN ('join_collapse_limit', 'from_collapse_limit', 'geqo', 'geqo_threshold')
+ORDER BY name;
+```
+
+- **join_collapse_limit** (8): explicit `JOIN`s are flattened into one list to reorder only while the list stays at 8 items or fewer. past that, the joins are planned in groups, in the order written. at 1, every explicit JOIN is planned where you wrote it, which is how you'd force an order without hints ([steering the planner](/learn/optimizer/steering-the-planner)).
+- **from_collapse_limit** (8): the same for subqueries in FROM being pulled up into their parent's list, and for comma-separated FROM lists.
+- **geqo_threshold** (12): when a list to reorder has 12 or more items, dynamic programming is replaced by the genetic query optimizer.
+
+`OUTER JOIN`s are reordered only where that's provably the same result ([outer joins](/learn/joins/outer-joins) has why), so a chain of LEFT JOINs often stays close to the written order anyway.
+
+<Predict question="join_collapse_limit = 1. which FROM still gets reordered?" options={["a JOIN b JOIN c", "a, b, c with conditions in WHERE", "neither"]} answer={1}>
+```sql
+SET join_collapse_limit = 1;
+```
+<Explain>
+the comma list. join_collapse_limit only governs explicit JOIN syntax; a comma-separated FROM is reordered up to from_collapse_limit. in the figure, the commas under limit 1 still get the cheap plan.
+</Explain>
+</Predict>
+
+## the genetic optimizer
+
+past 12 tables, postgres treats join orders like a population: random orders, scored by cost, the cheaper ones recombined for a number of generations. it's a heuristic: fast, and not guaranteed to find the best plan. it's deterministic for a given `geqo_seed` (0 by default), so the same query gets the same plan.
+
+here's a chain of 10 to 14 small tables, joined with `join_collapse_limit` raised so nothing gets split, planned with the genetic optimizer and with the exhaustive search:
+
+```sql run session=geqo
+DO $$
+BEGIN
+  FOR i IN 1..14 LOOP
+    EXECUTE format('CREATE TABLE t%s (id int PRIMARY KEY, next_id int, v int)', i);
+    EXECUTE format('INSERT INTO t%s SELECT g, (g * 7) %% %s + 1, g %% (%s + 2) FROM generate_series(1, %s) AS g ORDER BY g', i, 100 * (15 - i), i, 100 * i);
+    EXECUTE format('ANALYZE t%s', i);
+  END LOOP;
+END $$;
+CREATE FUNCTION chain(n int) RETURNS text LANGUAGE sql AS $$
+  SELECT 'SELECT count(*) FROM t1' || string_agg(format(' JOIN t%s ON t%s.id = t%s.next_id AND t%s.v < %s', i, i, i - 1, i, i % 4 + 1), '' ORDER BY i)
+  FROM generate_series(2, n) AS i
+$$;
+CREATE FUNCTION plan_cost(q text) RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE j json;
+BEGIN
+  EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+  RETURN (j->0->'Plan'->>'Total Cost')::numeric;
+END $$;
+SET join_collapse_limit = 20;
+SELECT n, plan_cost(chain(n)) AS cost FROM generate_series(10, 14) AS n ORDER BY n;
+SET geqo = off;
+SELECT n, plan_cost(chain(n)) AS cost FROM generate_series(10, 14) AS n ORDER BY n;
+```
+
+<Figure caption={<>the cheapest plan each search found for a chain of n tables, in cost units. below 12 the genetic optimizer isn't used and the two are identical. from 12 on, it settles for <C k="dead">worse plans</C>: at 14 tables, more than twice the cost of the best one.</>}>
+<Bars data={geqo.flatMap((r, i) => [
+  { label: `${r[0]} tables: geqo`, value: Number(r[1]), tone: Number(r[0]) >= 12 ? "dead" : undefined },
+  { label: `${r[0]} tables: exhaustive`, value: Number(full[i][1]), tone: "live" },
+])} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+worse plans in exchange for planning time: the exhaustive search over 14 tables can take long enough to matter on every execution. if a big join gets a bad plan, raising geqo_threshold (and the collapse limits) can help, and so can splitting the query so the planner sees smaller problems. measure planning time with EXPLAIN (ANALYZE, SUMMARY ON) when you try.
+
+<Gotcha title="views count too">
+a query that joins three views of five tables each is a 15-table join once the views are expanded and pulled up. join_collapse_limit and from_collapse_limit apply to the flattened list, so a query that looks small can be split into groups planned in written order, or handed to the genetic optimizer.
+</Gotcha>
+
+<Interview q="how does postgres pick a join order?">
+by cost, with dynamic programming over sets of tables: the cheapest path for every single table, then for every pair connected by a join condition, then every set of three, up to the whole query, reusing each set's cheapest paths. it's exhaustive, so it finds the cheapest plan under its estimates, but grows exponentially. explicit JOINs are only reordered within join_collapse_limit items (8), FROM lists and pulled-up subqueries within from_collapse_limit (8), and at geqo_threshold (12) items it switches to a genetic algorithm. bonus point: join_collapse_limit = 1 makes postgres follow the written JOIN order, the closest thing to a join-order hint in core postgres.
+</Interview>
+
+<Keylines>
+- n tables have n! left-deep join orders. postgres doesn't try them all.
+- dynamic programming prices sets of tables level by level and reuses each set's cheapest path.
+- explicit JOINs are reordered within join_collapse_limit (8), FROM lists within from_collapse_limit (8).
+- at geqo_threshold (12) items, a genetic search takes over: faster, not always the best plan.
+- join_collapse_limit = 1 follows the written JOIN order.
+</Keylines>

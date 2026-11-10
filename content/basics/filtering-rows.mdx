@@ -1,0 +1,164 @@
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { DayEdge } from "@/components/figures/basics/DayEdge";
+import { prov, resultOf, runsOf } from "@/components/figures/basics/captured";
+import school from "./traces/filtering-rows.pgtrace.json";
+import shop from "./traces/filtering-rows-shop.pgtrace.json";
+
+{/* traces/filtering-rows.scenario.sql (school, PGlite): the WHERE stages, and the OR with and
+    without parentheses. traces/filtering-rows-shop.scenario.sql (shop, PGlite): order times around
+    the end of january and the two january counts. */}
+
+export const parens = runsOf(school, ["none", "around the OR"], 1);
+export const ticks = resultOf(shop, 0).rows.map((r) => r[0]);
+export const between = resultOf(shop, 1).rows[0][0];
+export const halfOpen = resultOf(shop, 2).rows[0][0];
+
+<InShort>
+WHERE asks every row the same question, **one row at a time**, and keeps the rows where the answer is **true**. comparisons, `AND`, `OR`, `NOT`, `BETWEEN` and `IN` are how you write the question.
+
+**AND binds tighter than OR**, so `a OR b AND c` means `a OR (b AND c)`. put parentheses around every OR you mix with an AND.
+</InShort>
+
+## the picture
+
+you know how WHERE feels like searching? it isn't, really. postgres doesn't go looking for the matching rows. it takes every row FROM hands over, asks it your question, and keeps the ones that say yes.
+
+think of a bouncer with a checklist. one person at a time walks up, the bouncer ticks through the list for that person alone, and it's in or out. the bouncer never compares two people, never remembers the last one, and never lets in a "maybe".
+
+<Figure wide caption={<>step through it. WHERE asks each of the 12 courses whether it has 4 credits and isn't CS, on its own, and strikes the 9 that say no. dept and credits are dropped at SELECT: a column can filter without being shown.</>}>
+<ClauseStepper trace={school} maxRows={12} />
+</Figure>
+
+the plan says the same thing in its own words: a scan that reads every row and a filter that throws most of them away.
+
+```sql run db=school
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT code, title FROM courses WHERE credits = 4 AND dept <> 'CS';
+```
+
+`Rows Removed by Filter: 9`, the same 9 the stepper struck. on a big table, an [index](/learn/indexes/what-an-index-is) lets postgres skip the rows that can't match instead of asking them all, but the answer has to come out the same: WHERE's meaning is "every row, asked one by one", however it's carried out.
+
+## comparisons
+
+the six comparison operators work on anything that can be ordered: numbers, text, dates, timestamps.
+
+| operator | means |
+| --- | --- |
+| `=` | equal |
+| `<>` or `!=` | not equal (the same operator, two spellings) |
+| `<` `<=` `>` `>=` | less, at most, greater, at least |
+
+each one gives back a boolean, and WHERE wants exactly that. mysql and sqlite let `WHERE 1` mean "every row", because to them a number can be true. postgres won't guess:
+
+```sql run db=school expect=error
+SELECT name FROM students WHERE 1;
+```
+
+`WHERE true` is the postgres spelling, if you ever need it. and comparing text compares it exactly, capitals included, in the byte order of the C collation this page runs: `'Zoe' < 'a'` is true here. [LIKE, ILIKE and regular expressions](/learn/basics/pattern-matching) is the chapter about matching text more loosely.
+
+## AND, OR and NOT
+
+`AND` needs both sides true, `OR` needs one, `NOT` flips. when you mix them, they don't apply left to right: NOT goes first, then AND, then OR, just like `*` before `+` in arithmetic.
+
+<Predict options={["CS or MATH, 3 credits only", "all CS, plus MATH with 3", "an error"]} answer={1}>
+```sql
+SELECT code, dept, credits
+FROM courses
+WHERE dept = 'CS' OR dept = 'MATH' AND credits = 3;
+```
+<Explain>
+AND binds tighter than OR, so postgres reads it as `dept = 'CS' OR (dept = 'MATH' AND credits = 3)`. every CS course passes the left side, whatever its credits. the credits test only ever applies to MATH.
+</Explain>
+</Predict>
+
+here's how postgres reads it, and how you probably meant it:
+
+<Figure caption={<>the same three comparisons, grouped two ways. without parentheses, AND takes <code>dept = 'MATH'</code> and <code>credits = 3</code> together first, and the OR is on top.</>}>
+<div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+<div>
+<div className="mb-1 text-11 text-faint">as written: a OR b AND c</div>
+<Tree>{`
+OR
+    dept = 'CS'
+    AND
+        dept = 'MATH'
+        credits = 3
+`}</Tree>
+</div>
+<div>
+<div className="mb-1 text-11 text-faint">as meant: (a OR b) AND c</div>
+<Tree>{`
+AND
+    OR
+        dept = 'CS'
+        dept = 'MATH'
+    credits = 3
+`}</Tree>
+</div>
+</div>
+</Figure>
+
+and what each one returns:
+
+<Figure caption={<>switch the parentheses on. seven rows become two: with the OR grouped first, the credits test applies to CS too, and no CS course has 3 credits.</>}>
+<RunSwitch options={[{ key: "parentheses", values: ["none", "around the OR"] }]} runs={parens} hot={["(dept = 'CS' OR dept = 'MATH')"]} trace={prov(school)} />
+</Figure>
+
+no error, no warning, and the wrong query returns plausible rows. that's what makes it dangerous. the habit that saves you: every time an OR sits next to an AND, put parentheses around the OR, even when you're sure.
+
+## BETWEEN and IN
+
+`x BETWEEN a AND b` is shorthand for `x >= a AND x <= b`. both ends are included:
+
+```sql run db=shop
+SELECT name, price
+FROM products
+WHERE price BETWEEN 19.99 AND 24.00
+ORDER BY price, id;
+```
+
+the teapot at exactly 19.99 and the wooden train at exactly 24.00 both make it. `NOT BETWEEN` is everything outside, ends excluded.
+
+`x IN (a, b, c)` is shorthand for `x = a OR x = b OR x = c`, and reads a lot better:
+
+```sql run db=school
+SELECT code, dept, credits
+FROM courses
+WHERE dept IN ('MATH', 'PHYS')
+ORDER BY code;
+```
+
+its opposite, `NOT IN`, has one nasty edge: a NULL in the list makes it return no rows at all. [NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) shows why, and [the NOT IN trap](/learn/joins/not-in-trap) shows the version that bites in real code.
+
+### BETWEEN and the last day of the month
+
+BETWEEN's inclusive end is a trap with timestamps. `'2026-01-31'` compared with a timestamp means midnight at the *start* of the 31st, so "BETWEEN january 1st and january 31st" stops before the 31st has begun:
+
+<Figure wide caption={<>every order around the end of january, one tick each. pick the range. BETWEEN stops at 00:00 on the 31st, so the <C k="dead">whole last day</C> is left out. the half-open range runs up to, not including, 00:00 on february 1st.</>}>
+<DayEdge
+  ticks={ticks}
+  from="2026-01-30 12:00:00+00"
+  to="2026-02-01 12:00:00+00"
+  monthEnd="2026-02-01 00:00:00+00"
+  days={[["2026-01-31 00:00:00+00", "jan 31"], ["2026-02-01 00:00:00+00", "feb 1"]]}
+  cases={[
+    { label: "BETWEEN", sql: "SELECT count(*) AS orders\nFROM orders\nWHERE ordered_at BETWEEN '2026-01-01' AND '2026-01-31';", until: "2026-01-31 00:00:00+00", inclusive: true, count: between, note: "BETWEEN '2026-01-01' AND '2026-01-31' means up to and including 2026-01-31 00:00:00. every order placed later that day is out, and nothing tells you." },
+    { label: ">= AND <", sql: "SELECT count(*) AS orders\nFROM orders\nWHERE ordered_at >= '2026-01-01' AND ordered_at < '2026-02-01';", until: "2026-02-01 00:00:00+00", inclusive: false, count: halfOpen, note: "from the first moment of january up to, but not including, the first moment of february. no gap, no overlap with february, and it works the same for dates, timestamps and any precision." },
+  ]}
+  trace={prov(shop)}
+/>
+</Figure>
+
+831 orders one way, 859 the other: a whole day of orders gone from a monthly report, with nothing to tell you. write time ranges half-open, `>=` the start and `<` the next start, and the boundaries take care of themselves. the time zone matters too: these midnights are UTC, the zone this page runs in ([timestamptz](/learn/types/timestamptz)).
+
+<Interview q="what does WHERE a OR b AND c mean?">
+a OR (b AND c), because AND binds tighter than OR, the way multiplication binds tighter than addition, and NOT binds tighter than both. so a filter like "CS or MATH courses with 3 credits" written without parentheses returns every CS course whatever its credits. bonus point: the safe habit is parentheses around any OR that sits next to an AND, and with timestamps, a half-open range (>= start AND < next start) instead of BETWEEN, whose inclusive upper end silently drops the last day.
+</Interview>
+
+<Keylines>
+- WHERE asks each row the same question on its own, and keeps only the rows that say true.
+- comparisons give booleans. postgres won't treat 1 as true.
+- NOT, then AND, then OR. put parentheses around an OR that sits next to an AND.
+- BETWEEN includes both ends. IN is a row of ORs; NOT IN breaks on a NULL.
+- for time ranges, use >= start AND < next start, never BETWEEN.
+</Keylines>

@@ -1,0 +1,124 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { QueueLanes } from "@/components/figures/transactions/QueueLanes";
+import { RowLockMatrix } from "@/components/figures/transactions/RowLockMatrix";
+import qWait from "./traces/queue-wait.pgtrace.json";
+import qNowait from "./traces/queue-nowait.pgtrace.json";
+import qSkip from "./traces/queue-skip.pgtrace.json";
+import jobQueue from "./traces/job-queue.pgtrace.json";
+import matrix from "./traces/row-lock-matrix.pgtrace.json";
+
+{/* every multi-session figure here is captured on a real postgres 18.6 server
+    (traces/queue-*.scenario.sql, job-queue, row-lock-matrix). the queue table beside the
+    three workers is read off the heap page after each step: a job's row lock holder is the
+    worker whose transaction is in that row's xmax, still running. */}
+
+<InShort>
+`SELECT ... FOR UPDATE` locks the rows it returns until your transaction ends, so nobody else can change or lock them first. there are four strengths, from **FOR UPDATE** down to **FOR KEY SHARE**. add **NOWAIT** to fail at once (55P03) instead of waiting, or **SKIP LOCKED** to step over rows someone else holds. that last one turns a table into a job queue many workers can drain without ever taking the same job.
+</InShort>
+
+## the picture
+
+you know how a plain SELECT promises nothing about the next statement? you read a row, and by the time you write it, it may have changed. `FOR UPDATE` is the promise: these rows are mine until I commit.
+
+think of a table of parcels and a few couriers. `FOR UPDATE` is putting your hand on a parcel. the next courier who reaches for the same one can wait for you to let go (plain FOR UPDATE), give up on the spot (NOWAIT), or take the next parcel along (SKIP LOCKED).
+
+two workers, a queue of four jobs, and the same query with each of the three endings:
+
+<Figure wide caption={<>switch the clause and step through. W1 holds job 1 in every run. with plain FOR UPDATE, W2 <C k="mute">waits</C>; with NOWAIT it gets <C k="dead">55P03</C> at once; with SKIP LOCKED it takes job 2 and never waits.</>}>
+<TxLanes
+  option="W2's query ends with"
+  runs={[
+    { label: "FOR UPDATE", trace: qWait },
+    { label: "NOWAIT", trace: qNowait },
+    { label: "SKIP LOCKED", trace: qSkip },
+  ]}
+/>
+</Figure>
+
+look at what the waiting worker got when it woke up: job 2, not job 1. while it waited, W1 finished job 1, so `done_by IS NULL` was no longer true. a locking read at READ COMMITTED re-checks its WHERE on the newest version of a row it had to wait for ([the re-check](/learn/transactions/read-committed)), job 1 dropped out, and LIMIT 1 took the next one. it waited a whole job's length for a row it was never going to get.
+
+<Predict question="W1 holds job 1 (FOR UPDATE). W2 runs the same query, LIMIT 1 FOR UPDATE SKIP LOCKED, but jobs 1 to 4 are all held by other workers. what does W2 get?" options={["it waits for job 1", "an error", "no rows"]} answer={2}>
+```sql
+SELECT id FROM jobs
+WHERE done_by IS NULL
+ORDER BY id
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+```
+<Explain>
+no rows, right away. SKIP LOCKED never waits and never errors: a row it can't lock right now simply isn't in the result. with every open job taken, the result is empty, which is the queue's way of saying "nothing for you, try later". the three-worker capture below ends exactly like that.
+</Explain>
+</Predict>
+
+## four strengths
+
+`FOR UPDATE` is the strongest. the weaker ones exist so that ordinary writes and foreign key checks don't block each other more than they have to. here's who blocks whom, captured: T1 holds a different strength on each of four rows, and T2 asks for every strength on every row with NOWAIT.
+
+<Figure caption={<>a cell is what T2 got asking for the column's strength on a row T1 holds at the row's strength: ok, or a <C k="meta">conflict</C> (NOWAIT turns the wait into 55P03). each strength blocks everything the weaker ones block, and more.</>}>
+<RowLockMatrix trace={matrix} />
+</Figure>
+
+you rarely type the middle two, but postgres takes them for you all the time:
+
+- an UPDATE that doesn't change a key column takes **FOR NO KEY UPDATE** on each row. the same capture shows it: T2's plain `UPDATE t SET note = ...` on row 1 went straight through T1's FOR KEY SHARE, and on row 2 it waited for T1's FOR SHARE.
+- an UPDATE that changes a key column, and every DELETE, takes **FOR UPDATE**.
+- a foreign key check takes **FOR KEY SHARE** on the parent row. that's the point of the split: inserting a transfer that references alice doesn't stop someone from updating alice's balance, only from deleting her or changing her id.
+
+<Docs href="https://www.postgresql.org/docs/18/explicit-locking.html#LOCKING-ROWS" title="row-level locks">the manual's explicit locking chapter has the same four-by-four table, and lists which statements take which strength: DELETE and key-changing UPDATEs take FOR UPDATE, other UPDATEs take FOR NO KEY UPDATE.</Docs>
+
+how a lock that lives in the row itself works (no lock table, just the row's xmax, and a MultiXact when several transactions share one) is in [how row locks are stored](/learn/locking/row-lock-internals).
+
+## a job queue
+
+that's the pattern: a jobs table, and every worker runs the same claim query in its own transaction.
+
+```sql
+BEGIN;
+SELECT id FROM jobs WHERE done_by IS NULL ORDER BY id LIMIT 2 FOR UPDATE SKIP LOCKED;
+-- do the work, then:
+UPDATE jobs SET done_by = 'W1' WHERE id IN (1, 2);
+COMMIT;
+```
+
+three workers, seven jobs, on a real server:
+
+<Figure wide caption={<>step through. the queue on the right is read off the heap page after every step: <C k="meta">locked by</C> is the worker whose open transaction holds the row, <C k="live">done_by</C> is committed. every job goes to exactly one worker, and nobody ever waits.</>}>
+<QueueLanes trace={jobQueue} />
+</Figure>
+
+W1 got 1 and 2, W2 got 3 and 4, W3 got 5 and 6, all with the same query, none of them waiting. W1 finished first and came back for more: 1 and 2 were done, 3 to 6 were locked, so it got 7. by the end W2's query comes back empty. that's the whole design. no "claimed" column, no polling a status, no two workers on one email.
+
+the order of operations is what makes it work: the LockRows node sits *below* Limit, so rows are locked (or skipped) first and counted second. it keeps pulling rows until two of them lock.
+
+```sql run
+CREATE TABLE jobs (id int PRIMARY KEY, task text NOT NULL, done_by text);
+INSERT INTO jobs SELECT g, 'email #' || g, NULL FROM generate_series(1, 7) AS g;
+EXPLAIN (COSTS OFF)
+SELECT id FROM jobs WHERE done_by IS NULL ORDER BY id LIMIT 2 FOR UPDATE SKIP LOCKED;
+```
+
+<Gotcha title="the lock is the claim, so the transaction is the job">
+the row stays claimed exactly as long as the transaction stays open. if the worker crashes, its connection drops, the transaction rolls back, and the job is free for the next worker: that's a feature. but a job that takes ten minutes is a transaction open for ten minutes, holding its locks and its snapshot (which [holds back vacuum](/learn/mvcc/xmin-horizon)). for long jobs, claim and commit quickly (set a status and a lease time in the claiming transaction), then do the work outside it.
+</Gotcha>
+
+## where FOR UPDATE can't go
+
+it locks rows it returns, so it has to know which table row each output row came from. aggregates, GROUP BY, DISTINCT and set operations break that link:
+
+```sql run db=bank expect=error
+SELECT count(*) FROM accounts WHERE balance > 1000 FOR UPDATE;
+```
+
+in a join it locks the matching rows of every table in FROM. `FOR UPDATE OF accounts` narrows it to one. and SKIP LOCKED gives you a deliberately incomplete view of the table: perfect for a queue, wrong for anything that has to count or sum.
+
+<Interview q="how would you build a job queue in postgres so that workers never process the same job twice?">
+a jobs table, and each worker claims with `SELECT ... ORDER BY id LIMIT n FOR UPDATE SKIP LOCKED` inside a transaction, does the work, marks the jobs done and commits. SKIP LOCKED makes each worker step over rows another worker holds instead of waiting on them, so they never block each other and never get the same row. if a worker dies, its transaction rolls back and the jobs become claimable again. bonus points: for long jobs, claim (set status and a lease) and commit right away instead of holding the transaction open; and a plain FOR UPDATE would serialize the workers, while NOWAIT would make them fail with 55P03.
+</Interview>
+
+<Keylines>
+- FOR UPDATE locks the returned rows until COMMIT or ROLLBACK.
+- NOWAIT fails with 55P03 instead of waiting. SKIP LOCKED leaves locked rows out.
+- four strengths. UPDATE takes FOR NO KEY UPDATE, foreign keys take FOR KEY SHARE, so they don't collide.
+- a waiting locking read re-checks its WHERE on the newest row, and may skip it.
+- FOR UPDATE SKIP LOCKED + LIMIT is a job queue, and the open transaction is the claim.
+</Keylines>

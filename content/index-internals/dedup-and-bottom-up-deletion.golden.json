@@ -1,0 +1,927 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "17d0b9e8937f9a2d": {
+      "db": "empty",
+      "sql": "CREATE TABLE d AS SELECT g AS id, g % 10 AS k FROM generate_series(1, 100000) AS g;\nCREATE INDEX d_dedup ON d (k);\nCREATE INDEX d_plain ON d (k) WITH (deduplicate_items = off);\nSELECT i AS index, pg_relation_size(i) / 8192 AS pages\nFROM unnest(ARRAY['d_dedup', 'd_plain']) AS i\nORDER BY pages;",
+      "statements": [
+        {
+          "tag": "SELECT 100000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "d6755cfae38fabe0"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["index", "text", 25],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "c3515c7f1c5b9103",
+          "rows": [
+            ["d_dedup", "87"],
+            ["d_plain", "278"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "20c5bc3b475a61fa": {
+      "db": "empty",
+      "sql": "SELECT itemoffset, itemlen, cardinality(tids) AS rows, htid, data\nFROM bt_page_items('d_dedup', 1)\nWHERE itemoffset <= 4\nORDER BY itemoffset;\nSELECT itemoffset, itemlen, htid, data\nFROM bt_page_items('d_plain', 1)\nWHERE itemoffset <= 4\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["itemlen", "int2", 21],
+            ["rows", "int4", 23],
+            ["htid", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "3431c76e9f06c83e",
+          "rows": [
+            ["1", "24", null, "(52,128)", "00 00 00 00 00 00 00 00"],
+            ["2", "808", "132", "(0,10)", "00 00 00 00 00 00 00 00"],
+            ["3", "808", "132", "(5,200)", "00 00 00 00 00 00 00 00"],
+            ["4", "808", "132", "(11,164)", "00 00 00 00 00 00 00 00"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["itemlen", "int2", 21],
+            ["htid", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "94ddd38ec6bf72b4",
+          "rows": [
+            ["1", "24", "(16,44)", "00 00 00 00 00 00 00 00"],
+            ["2", "16", "(0,10)", "00 00 00 00 00 00 00 00"],
+            ["3", "16", "(0,20)", "00 00 00 00 00 00 00 00"],
+            ["4", "16", "(0,30)", "00 00 00 00 00 00 00 00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6de4db5d2e26aabb": {
+      "db": "empty",
+      "sql": "CREATE TABLE u AS SELECT g AS id FROM generate_series(1, 100000) AS g;\nCREATE INDEX u_dedup ON u (id);\nCREATE INDEX u_plain ON u (id) WITH (deduplicate_items = off);\nSELECT i AS index, pg_relation_size(i) / 8192 AS pages\nFROM unnest(ARRAY['u_dedup', 'u_plain']) AS i\nORDER BY i;",
+      "statements": [
+        {
+          "tag": "SELECT 100000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "d6755cfae38fabe0"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["index", "text", 25],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "b0ffa910b37094cf",
+          "rows": [
+            ["u_dedup", "276"],
+            ["u_plain", "276"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b6cf629af4c5a0c7": {
+      "db": "empty",
+      "sql": "CREATE TABLE n AS SELECT g AS id, (g % 10)::numeric AS k FROM generate_series(1, 100000) AS g;\nCREATE INDEX n_k ON n (k);\nSELECT 'd_dedup' AS index, allequalimage, pg_relation_size('d_dedup') / 8192 AS pages FROM bt_metap('d_dedup')\nUNION ALL\nSELECT 'n_k', allequalimage, pg_relation_size('n_k') / 8192 FROM bt_metap('n_k')\nORDER BY index;",
+      "statements": [
+        {
+          "tag": "SELECT 100000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "d6755cfae38fabe0"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["index", "text", 25],
+            ["allequalimage", "bool", 16],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "0493d88d3914e78b",
+          "rows": [
+            ["d_dedup", "t", "87"],
+            ["n_k", "f", "278"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1dae05f7a9b8143b": {
+      "db": "empty",
+      "sql": "CREATE TABLE ch (id int PRIMARY KEY, a int, b int);\nCREATE INDEX ch_a ON ch (a);\nCREATE INDEX ch_b ON ch (b);\nINSERT INTO ch SELECT g, g, 0 FROM generate_series(1, 10000) AS g;\nCREATE TABLE sizes (pass int, pkey bigint, a bigint, b bigint);\nINSERT INTO sizes SELECT 0, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;\n-- one pass: every row updated once, a tenth at a time\nUPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 1, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "INSERT 0 10000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "6b9e77a60a600fa4"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "90488e4141c2d7df"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e50818625cce39de"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "58192782d6a7514a"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "318c00b1554698b7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "5b81fceb7723b648"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9a12a5608ae2271d"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9f89089d9f97e756"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "a910f88a238b04d3"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "6f0b32c4d49523ec"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9fe5b3b7a088332a": {
+      "db": "empty",
+      "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 2, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9c1d4228bad403bf"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f86a42523eb73772"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f56273f405da9869"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "2db04e9a53c4a7cc"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "ffc1e81053a7babb"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "c6f30f85448444be"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ca31b032a26f8b8a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a455af14327144d0": {
+      "db": "empty",
+      "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 3, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9c1d4228bad403bf"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f86a42523eb73772"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f56273f405da9869"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "2db04e9a53c4a7cc"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "ffc1e81053a7babb"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "c6f30f85448444be"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ca31b032a26f8b8a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "da5b3b37fb592907": {
+      "db": "empty",
+      "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 4, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9c1d4228bad403bf"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f86a42523eb73772"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f56273f405da9869"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "2db04e9a53c4a7cc"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "ffc1e81053a7babb"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "c6f30f85448444be"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ca31b032a26f8b8a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "72f498364435f07d": {
+      "db": "empty",
+      "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 5, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9c1d4228bad403bf"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f86a42523eb73772"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f56273f405da9869"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "2db04e9a53c4a7cc"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "ffc1e81053a7babb"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "c6f30f85448444be"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ca31b032a26f8b8a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aeaa790c6ab2ee0a": {
+      "db": "empty",
+      "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 6, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9c1d4228bad403bf"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f86a42523eb73772"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f56273f405da9869"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "2db04e9a53c4a7cc"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "ffc1e81053a7babb"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "c6f30f85448444be"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ca31b032a26f8b8a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5c6fc970438dcb5a": {
+      "db": "empty",
+      "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 7, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9c1d4228bad403bf"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f86a42523eb73772"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f56273f405da9869"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "2db04e9a53c4a7cc"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "ffc1e81053a7babb"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "c6f30f85448444be"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ca31b032a26f8b8a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9429c4b469d33ab2": {
+      "db": "empty",
+      "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nINSERT INTO sizes SELECT 8, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;",
+      "statements": [
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "9c1d4228bad403bf"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f86a42523eb73772"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "f56273f405da9869"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "2db04e9a53c4a7cc"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "ffc1e81053a7babb"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "c6f30f85448444be"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "6cd000e0659d30a5"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "24d93660dcaea2e8"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "776c68f60adf78d7"
+        },
+        {
+          "tag": "UPDATE 1000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "475382104daf5c81"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ca31b032a26f8b8a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "47c90fdeb6356cdf": {
+      "db": "empty",
+      "sql": "SELECT * FROM sizes ORDER BY pass;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["pass", "int4", 23],
+            ["pkey", "int8", 20],
+            ["a", "int8", 20],
+            ["b", "int8", 20]
+          ],
+          "rowCount": 9,
+          "digest": "575a02fe123e7e2b",
+          "rows": [
+            ["0", "30", "30", "10"],
+            ["1", "37", "37", "20"],
+            ["2", "57", "57", "29"],
+            ["3", "57", "57", "38"],
+            ["4", "57", "57", "47"],
+            ["5", "57", "57", "56"],
+            ["6", "57", "57", "66"],
+            ["7", "57", "63", "76"],
+            ["8", "57", "76", "85"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

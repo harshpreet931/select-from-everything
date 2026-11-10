@@ -1,0 +1,88 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/advisory-xact.scenario.sql",
+ "title": "a transaction-level advisory lock is released when the transaction ends",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {},
+ "base": {"xid":757,"lsn":23121704},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "T1 opens a transaction.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "locks": [{"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT pg_advisory_xact_lock(7)",
+   "note": "T1 takes transaction-level advisory lock 7.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_xact_lock","type":"void"}],"data":[[""]]},
+   "locks": [
+    {"session":"T1","type":"advisory","target":"0:7:1","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "SELECT pg_try_advisory_lock(7)",
+   "note": "T2 tries for lock 7: false, T1's transaction has it.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_try_advisory_lock","type":"bool"}],"data":[["f"]]},
+   "locks": [
+    {"session":"T1","type":"advisory","target":"0:7:1","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "T1 rolls back. a transaction-level lock goes with the transaction, commit or rollback.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]},
+   "locks": []
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "SELECT pg_try_advisory_lock(7)",
+   "note": "T2 tries again: true.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_try_advisory_lock","type":"bool"}],"data":[["t"]]},
+   "locks": [{"session":"T2","type":"advisory","target":"0:7:1","mode":"ExclusiveLock","granted":true}]
+  }
+ ]
+}

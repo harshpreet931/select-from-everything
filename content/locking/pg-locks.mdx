@@ -1,0 +1,143 @@
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/pg-locks.pgtrace.json";
+
+{/* captured on a real postgres 18.6 server with three sessions (traces/pg-locks.scenario.sql),
+    run with log_lock_waits = on and log_error_verbosity = terse. pids in the results are mapped
+    to session names through pg_stat_activity.application_name, which pgtrace sets to T1, T2, T3. */}
+
+export const dump = resultOf(trace, 4);
+export const chain = resultOf(trace, 5);
+export const logText = trace.steps[6].log.join("\n");
+
+<InShort>
+**pg_locks** is the lock manager's table, one row per lock held or wanted: what kind of thing (**locktype**), which one, the **mode**, and **granted** true or false. a false is a wait. **pg_blocking_pids(pid)** says who that waiter is stuck behind. join them with pg_stat_activity and you have the one query you want during an incident: who is blocking whom, and what are they doing.
+</InShort>
+
+## the picture
+
+you know the moment: requests time out, the app logs say nothing useful, and somewhere a transaction is holding a lock. pg_locks is where you find it.
+
+think of it as the lock manager's ledger. each line: who (a pid), what (a table, a transaction, a row, a number), how (the mode), and whether they have it or are standing in line. here's a small pile-up on a real server: T1 updates alice and doesn't commit, T2 takes an advisory lock and then wants alice too, T3 wants alice after T2.
+
+<Figure wide caption={<>step through. the list is pg_locks for the three sessions after each step. <C k="meta">held</C> locks are solid, waits are dashed. T2 waits on T1's transaction id, T3 waits on the row's tuple lock, which T2 holds as the first in line.</>}>
+<LockLanes trace={trace} only={[0, 1, 2, 3, 7, 8]} locks={{}} sideTitle="pg_locks" />
+</Figure>
+
+## the columns
+
+```sql run
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'pg_catalog' AND table_name = 'pg_locks'
+ORDER BY ordinal_position;
+```
+
+sixteen columns, but you read them in three groups:
+
+- **what**: `locktype`, then whichever columns identify that kind of object: `database` and `relation` for a table, plus `page` and `tuple` for a row, `transactionid` or `virtualxid` for a transaction, `classid`/`objid`/`objsubid` for advisory locks and other objects.
+- **who**: `pid` (the backend), `virtualtransaction` (the transaction asking), `fastpath` (true if it was taken through the per-backend fast path instead of the shared table).
+- **how**: `mode`, `granted`, and `waitstart` (when a wait began, null if granted).
+
+the browser has one session, so the only locks you'll see are your own. that's still enough to meet three locktypes:
+
+```sql run
+CREATE TABLE accounts (id int PRIMARY KEY, balance numeric(12,2) NOT NULL);
+INSERT INTO accounts VALUES (1, 100.00);
+BEGIN;
+UPDATE accounts SET balance = balance - 10 WHERE id = 1;
+SELECT locktype, relation::regclass, transactionid, virtualxid, mode, granted, fastpath
+FROM pg_locks
+WHERE pid = pg_backend_pid() AND relation IS DISTINCT FROM 'pg_locks'::regclass
+ORDER BY locktype, relation::regclass::text;
+COMMIT;
+```
+
+`relation`, a ROW EXCLUSIVE on the table and its index (taken through the fast path). `transactionid`, an exclusive lock on the xid the UPDATE was given: every transaction holds one on itself, so others can wait for it to end. `virtualxid`, the same idea for the [virtual xid](/learn/mvcc/transaction-ids) every transaction has from its first statement.
+
+## the five locktypes you'll meet
+
+here's the full dump from the three-session capture, at the moment T2 and T3 are both waiting:
+
+<Figure caption={<>pg_locks for T1, T2 and T3, pids swapped for session names. two rows have granted = <C k="dead">f</C>: T2's ShareLock on T1's transaction 759, and T3's tuple lock on (0,1).</>}>
+<ResultTable columns={dump.columns} rows={dump.rows} dense />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+<Defs>
+<dt>relation</dt><dd>a table or index lock, in one of the [eight modes](/learn/locking/table-lock-modes).</dd>
+<dt>transactionid</dt><dd>held ExclusiveLock by its own transaction until it ends. a ShareLock request on someone else's means "wake me when they're done": that's how every row lock wait works.</dd>
+<dt>virtualxid</dt><dd>the same, for the virtual xid. CREATE INDEX CONCURRENTLY waits on these.</dd>
+<dt>tuple</dt><dd>a row, but only while someone is queued for it. the first waiter holds it, the rest wait on it. [how row locks are stored](/learn/locking/row-lock-internals) explains why.</dd>
+<dt>advisory</dt><dd>a lock on a number your application picked ([advisory locks](/learn/transactions/advisory-locks)). the number is in objid.</dd>
+</Defs>
+
+notice what's not in the dump: alice's row lock itself. T1 holds it, but it lives in the row's xmax, not here. and notice the modes on tuple and transactionid rows: ExclusiveLock and ShareLock there aren't the table modes, they're the same names reused for a different kind of object.
+
+<Predict question="T1 holds a lock T2 wants. T2 is first in line, T3 is behind it. what does pg_blocking_pids return for T3?" options={["T1", "T2", "T1 and T2"]} answer={1}>
+```sql
+SELECT pg_blocking_pids(<T3's pid>);
+```
+<Explain>
+T2. T3 is waiting for the tuple lock, and T2 holds it. T1 holds the row (in xmax) and T2 waits on T1's transaction id, but T3 never asked for that. pg_blocking_pids answers "who would have to go away for this lock to be granted", one hop only. to see the whole chain, call it for every waiter, which is what the query below does.
+</Explain>
+</Predict>
+
+## who blocks whom
+
+this is the query worth keeping in a file:
+
+```sql title="blockers.sql"
+SELECT w.pid AS waiting_pid, w.wait_event_type, w.wait_event,
+       b.pid AS blocked_by, b.state AS blocker_state,
+       now() - b.xact_start AS blocker_xact_age,
+       left(w.query, 60) AS waiting_query, left(b.query, 60) AS blocker_query
+FROM pg_stat_activity w
+JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS bp(pid) ON true
+JOIN pg_stat_activity b ON b.pid = bp.pid
+ORDER BY blocker_xact_age DESC;
+```
+
+one row per (waiter, blocker) pair. on the capture, with names instead of pids and the time columns left out so it repeats:
+
+<Figure caption={<>T2 is blocked by T1, which is <C k="hot">idle in transaction</C>: it did its UPDATE and is sitting there. T3 is blocked by T2. wait_event_type Lock with wait_event transactionid or tuple is a heavyweight lock wait.</>}>
+<ResultTable columns={chain.columns} rows={chain.rows} dense />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+the blocker at the root of the chain is the one to look at. "idle in transaction" with a big xact age is the classic: an app that opened a transaction and forgot it. `pg_terminate_backend(pid)` ends it (and rolls it back); `idle_in_transaction_session_timeout` stops it from happening again. a root that's "active" is a slow query; if the queue behind it is an ALTER TABLE, that's [the lock queue](/learn/locking/lock-queue).
+
+## log_lock_waits
+
+pg_locks is a snapshot. to find waits after the fact, turn on `log_lock_waits`: any wait longer than `deadlock_timeout` writes a line to the server log. in postgres 18 it's off by default:
+
+```sql run
+SHOW log_lock_waits;
+SHOW deadlock_timeout;
+```
+
+the capture ran with it on and a 100 ms deadlock_timeout. here's what the log got while T2 and T3 waited:
+
+<Figure caption={<>the server log, with pids swapped for session names and the wait time masked (it changes every run). the full message also has a DETAIL line naming the holder's pid and the wait queue; this server ran with terse errors so the capture repeats exactly.</>}>
+<SqlPanel code={logText} lang="text" nolines file="server log" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+the tuple wait names the relation by oid and the database by oid, so you'll want `SELECT 16466::regclass` to read it. postgres 18 also adds `log_lock_failures`, which logs the lock that made a `NOWAIT` fail.
+
+<Gotcha title="pg_locks takes locks to show you locks">
+reading pg_locks briefly locks the lock manager's partitions so the picture is consistent, and pg_blocking_pids does the same. on a server with thousands of connections, running it in a tight loop costs something. for dashboards, sample it every few seconds, not every few milliseconds, and prefer `wait_event_type = 'Lock'` in pg_stat_activity for a cheap "is anyone waiting".
+</Gotcha>
+
+<Interview q="users report the app hangs on one endpoint. how do you find out if it's a lock?">
+look at pg_stat_activity: sessions with wait_event_type = 'Lock' are waiting on heavyweight locks, and wait_event says on what (relation, transactionid, tuple, advisory). for each of those, pg_blocking_pids(pid) gives the blockers; join back to pg_stat_activity to see each blocker's state, query and xact_start. follow the chain to the root. if the root is idle in transaction, the app leaked a transaction: terminate it and set idle_in_transaction_session_timeout. if it's an active query, decide whether to cancel it. pg_locks itself shows the raw locks (granted false = waiting). bonus point: turn on log_lock_waits so the next incident leaves a trace in the log, and remember row locks only appear in pg_locks while someone waits.
+</Interview>
+
+<Keylines>
+- pg_locks: one row per lock held (granted) or wanted (not granted).
+- locktype says what kind of thing: relation, transactionid, virtualxid, tuple, advisory.
+- a row lock wait is a ShareLock on the holder's transaction id. the row itself isn't in pg_locks.
+- pg_blocking_pids gives one hop. join it to pg_stat_activity and walk to the root.
+- log_lock_waits (off by default in 18) logs every wait longer than deadlock_timeout.
+</Keylines>

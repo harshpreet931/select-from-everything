@@ -1,0 +1,101 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { rounds } from "@/components/figures/transactions/lanes";
+import nonrep from "./traces/anomaly-non-repeatable-read.pgtrace.json";
+import recheck from "./traces/rc-recheck.pgtrace.json";
+import recheckRR from "./traces/rc-recheck-rr.pgtrace.json";
+import del from "./traces/rc-delete.pgtrace.json";
+
+{/* all captured on a real postgres 18.6 server with two sessions. the first figure is the
+    read committed round of traces/anomaly-non-repeatable-read; the snapshot under each
+    session's name is pg_current_snapshot() in that session after each step. */}
+
+export const rcRound = rounds(nonrep)[1];
+
+<InShort>
+READ COMMITTED, postgres's default, gives every **statement** a fresh **snapshot**: each one sees everything committed before it started, and nothing after. writes add one twist: an UPDATE or DELETE that finds its row locked **waits**, then **re-checks its WHERE** on the row's newest version and acts on that version, or skips the row.
+</InShort>
+
+## the picture
+
+you know how two SELECTs in one transaction can disagree at the default level? that's not a bug in your transaction. it's the definition of this level: the transaction doesn't have a snapshot, each statement does.
+
+think of a newspaper (a snapshot): every statement buys today's edition on its way in, reads only that, and throws it away when it's done. the next statement buys a newer edition. inside one statement the news never changes; between two statements it can.
+
+<Figure wide caption={<>step through. the <C k="meta">snapshot</C> under T2's name (xmin:xmax:in-progress) is the one a statement in T2 would get at that moment. it moves forward as soon as T1 commits, so T2's second read sees 150.00.</>}>
+<TxLanes trace={nonrep} only={rcRound} />
+</Figure>
+
+your own uncommitted writes are always in your snapshot, whatever the level. that part never surprises anyone, but it's in the definition, so here it is:
+
+```sql run db=bank
+BEGIN;
+UPDATE accounts SET balance = balance - 50.00 WHERE id = 1;
+SELECT owner, balance FROM accounts WHERE id IN (1, 2) ORDER BY id;
+ROLLBACK;
+SELECT owner, balance FROM accounts WHERE id IN (1, 2) ORDER BY id;
+```
+
+what a snapshot holds and how a version gets judged visible against it is [snapshots](/learn/mvcc/snapshots) and [the visibility rules](/learn/mvcc/visibility-rules). this chapter is about what the default level does with them.
+
+## the UPDATE that re-checks
+
+reads never wait. writes can't avoid it: two transactions can't both change one row. so what does an UPDATE do when the row it wants is locked by a transaction that hasn't finished? at READ COMMITTED it waits for that transaction to end. if it committed, the UPDATE takes the row's *newest* version (one its snapshot doesn't even include), runs its WHERE again on it, and if the row still matches, applies the change to that version. inside postgres this is called EvalPlanQual.
+
+here's a case where the re-check changes the answer. T1 is halfway through taking 50.00 from alice. T2 pays a 10.00 bonus to every account with at least 100.00.
+
+<Predict question="T2's UPDATE waits for alice's row, then T1 commits (alice is now 50.00). how many rows does T2's UPDATE change?" options={["2: both matched its snapshot", "1: just bob", "0, with a 40001"]} answer={1}>
+```sql
+/* T1 */ BEGIN;
+/* T1 */ UPDATE accounts SET balance = balance - 50.00 WHERE id = 1;
+/* T2 */ UPDATE accounts SET balance = balance + 10.00
+         WHERE balance >= 100.00;              -- waits for alice's row
+/* T1 */ COMMIT;
+/* T2 */ -- UPDATE ?
+```
+<Explain>
+`UPDATE 1`. T2's snapshot said alice had 100.00, so she matched, but her row was locked. after the wait, T2 re-read her row as T1 left it (50.00), ran `balance >= 100.00` again, and it was false, so she was skipped. bob was never locked and got his bonus. at REPEATABLE READ the same wait ends in 40001 instead: that level won't act on a version newer than its snapshot. switch the figure below to see both.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>switch the level and step. at read committed T2 wakes up, re-checks alice's new version, skips her and pays bob: <C k="live">UPDATE 1</C>. at repeatable read the same wait ends in <C k="dead">40001</C>. the table is what a new transaction would see after each step.</>}>
+<TxLanes
+  option="T2 runs at"
+  side="db"
+  runs={[
+    { label: "read committed", trace: recheck },
+    { label: "repeatable read", trace: recheckRR },
+  ]}
+/>
+</Figure>
+
+that re-check is why most single-row updates are safe at the default level without anyone thinking about it. `SET balance = balance - 50 WHERE id = 1 AND balance >= 50` computes from the newest version after any wait, so two withdrawals can't both spend the same money. it's also why `balance = balance + 20` doesn't [lose updates](/learn/transactions/lost-updates) and `balance = 120.00` does.
+
+## the DELETE that deleted nothing
+
+the re-check only looks at rows the statement found in its own snapshot and had to wait for. everything else it judges by its snapshot. mix the two and you can get an answer no single moment would give. this is the example from the postgres manual, run for real: two counters at 9 and 10, T1 adds one to both, T2 deletes the counter at 10.
+
+<Figure wide caption={<>step through. T2's snapshot has 9 and 10, so only row 2 matches, and it's locked. after T1 commits, row 2 is 11 (no match), and row 1, now 10, was judged at 9. <C k="dead">DELETE 0</C>, with a counter at 10 both before and after.</>}>
+<TxLanes trace={del} side="db" />
+</Figure>
+
+no single moment in time has this result. before T1, row 2 was 10; after T1, row 1 is 10. T2 saw each row at a different time, because one of them it had to wait for and the other it didn't. the manual says it straight out: READ COMMITTED gives each command a consistent snapshot, except for rows it updates, and that makes it a bad fit for commands with complex search conditions.
+
+<Gotcha title="one UPDATE, two points in time">
+a single UPDATE with a subquery (`... WHERE balance > (SELECT avg(balance) FROM accounts)`) at READ COMMITTED computes the subquery from its snapshot and re-checks only the rows it waited for. if those rows' changes would have moved the average, it never knows. when a statement's decision depends on many rows, run it at REPEATABLE READ (and retry 40001) or lock what it reads first.
+</Gotcha>
+
+## why it's still the default
+
+because for the common case it's exactly right and costs nothing. a transfer touches two known rows. it wants the newest balance, not the one from when the transaction started, and it doesn't want to fail because someone else touched the account a moment ago. READ COMMITTED gives it that: no 40001 to handle, waits only on real write conflicts, and readers never wait at all. it stops being enough when a transaction makes a decision from several reads ([read skew, write skew](/learn/transactions/anomalies)), and then you go up a level: [isolation levels](/learn/transactions/isolation-levels).
+
+<Interview q="in postgres's READ COMMITTED, what happens when an UPDATE hits a row another transaction is updating?">
+it waits for the other transaction to finish. if that one rolls back, the UPDATE carries on with the row it originally found. if it commits, the UPDATE fetches the row's newest version, re-evaluates its WHERE on it (EvalPlanQual), and either updates that new version or skips the row if it no longer matches; a deleted row is skipped. so the UPDATE can act on data newer than its own snapshot. at REPEATABLE READ and SERIALIZABLE it fails with 40001 instead. bonus point: because other rows are still judged by the statement's snapshot, one command can see a mix of two moments, like the manual's DELETE that removes nothing.
+</Interview>
+
+<Keylines>
+- READ COMMITTED: a new snapshot for every statement, not every transaction.
+- two reads in one transaction can disagree. that's the level working as designed.
+- an UPDATE that waited for a row re-checks its WHERE on the newest version, and acts on that.
+- the re-check is why `SET x = x + 1` and conditional withdrawals are safe at the default level.
+- rows not waited for are judged by the old snapshot, so one statement can mix two moments.
+</Keylines>

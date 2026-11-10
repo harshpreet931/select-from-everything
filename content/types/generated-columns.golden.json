@@ -1,0 +1,154 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "177f302e006c1c5a": {
+      "db": "empty",
+      "sql": "CREATE TABLE items (\n  qty        int NOT NULL,\n  unit_price numeric(10,2) NOT NULL,\n  total      numeric GENERATED ALWAYS AS (qty * unit_price)\n);\nSELECT attname, attgenerated FROM pg_attribute WHERE attrelid = 'items'::regclass AND attnum > 0 ORDER BY attnum;\nINSERT INTO items (qty, unit_price) VALUES (3, 2.50) RETURNING total;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["attname", "name", 19],
+            ["attgenerated", "char", 18]
+          ],
+          "rowCount": 3,
+          "digest": "924568349df2d3b3",
+          "rows": [
+            ["qty", ""],
+            ["unit_price", ""],
+            ["total", "v"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["total", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "7356cb60fdfede7b",
+          "rows": [
+            ["7.50"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2795a9d3d3553eb8": {
+      "db": "empty",
+      "sql": "CREATE TABLE items (qty int, unit_price numeric(10,2), total numeric GENERATED ALWAYS AS (qty * unit_price));\nINSERT INTO items (qty, unit_price, total) VALUES (3, 2.50, 99);",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "428C9",
+            "message": "cannot insert a non-DEFAULT value into column \"total\"",
+            "detail": "Column \"total\" is a generated column."
+          },
+          "digest": "802242745db86433"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "428C9",
+        "message": "cannot insert a non-DEFAULT value into column \"total\"",
+        "detail": "Column \"total\" is a generated column.",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "265be5be2fee154b": {
+      "db": "empty",
+      "sql": "CREATE TABLE signups (\n  at  timestamptz,\n  day date GENERATED ALWAYS AS ((at AT TIME ZONE 'UTC')::date) STORED\n);\nINSERT INTO signups (at) VALUES ('2026-03-29 01:30+00') RETURNING day;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["day", "date", 1082]
+          ],
+          "rowCount": 1,
+          "digest": "491c5b14d29efea5",
+          "rows": [
+            ["2026-03-29"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0bc6b0bd93aa57fa": {
+      "db": "events",
+      "sql": "ALTER TABLE events ADD COLUMN page text GENERATED ALWAYS AS (props ->> 'page');\nCREATE INDEX events_page ON events ((props ->> 'page'));\nANALYZE events;\nEXPLAIN (COSTS OFF) SELECT count(*) FROM events WHERE page = '/p/17';",
+      "statements": [
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "629b316cd6a106b5"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7bb9f0830db30700",
+          "rows": [
+            ["Aggregate"],
+            ["  ->  Bitmap Heap Scan on events"],
+            ["        Recheck Cond: ((props ->> 'page'::text) = '/p/17'::text)"],
+            ["        ->  Bitmap Index Scan on events_page"],
+            ["              Index Cond: ((props ->> 'page'::text) = '/p/17'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

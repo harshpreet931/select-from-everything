@@ -1,0 +1,99 @@
+{
+ "v": 1,
+ "scenario": "content/locking/traces/vacuum-modes.scenario.sql",
+ "title": "VACUUM next to a reader, then VACUUM FULL next to the same reader",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23210088},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nSELECT sum(balance) FROM accounts",
+   "note": "T1 reads accounts in an open transaction: ACCESS SHARE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"sum","type":"numeric"}],"data":[["200.00"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "VACUUM accounts",
+   "note": "plain VACUUM takes SHARE UPDATE EXCLUSIVE. no conflict with a reader: it runs right away.",
+   "status": "ok",
+   "result": {"command":"VACUUM","rows":null,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "VACUUM FULL accounts",
+   "note": "VACUUM FULL rewrites the table, so it wants ACCESS EXCLUSIVE, and waits for the reader.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/9","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 ends, and VACUUM FULL gets its lock.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [{"session":"T2","step":2,"result":{"command":"VACUUM","rows":null,"columns":[],"data":[]}}],
+   "locks": []
+  }
+ ]
+}

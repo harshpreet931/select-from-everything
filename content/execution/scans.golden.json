@@ -1,0 +1,191 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "7f9b939ed41fcfa8": {
+      "db": "events",
+      "sql": "CREATE INDEX ON events (user_id);\nCREATE INDEX ON events (kind);\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, kind FROM events WHERE user_id BETWEEN 7 AND 9;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "bdc096331d3f4651",
+          "rows": [
+            ["Bitmap Heap Scan on events (actual rows=599.00 loops=1)"],
+            ["  Recheck Cond: ((user_id >= 7) AND (user_id <= 9))"],
+            ["  Heap Blocks: exact=281"],
+            ["  Buffers: shared hit=282 read=1"],
+            ["  ->  Bitmap Index Scan on events_user_id_idx (actual rows=599.00 loops=1)"],
+            ["        Index Cond: ((user_id >= 7) AND (user_id <= 9))"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=1 read=1"],
+            ["Planning:"],
+            ["  Buffers: shared hit=69 read=6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c62b404b84edf711": {
+      "db": "events",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM events WHERE user_id BETWEEN 7 AND 9;\n\nUPDATE events SET amount = amount WHERE user_id = 8;\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM events WHERE user_id BETWEEN 7 AND 9;\n\nVACUUM events;\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM events WHERE user_id BETWEEN 7 AND 9;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5e8a328252e37235",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=3"],
+            ["  ->  Index Only Scan using events_user_id_idx on events (actual rows=599.00 loops=1)"],
+            ["        Index Cond: ((user_id >= 7) AND (user_id <= 9))"],
+            ["        Heap Fetches: 0"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=7 read=2"]
+          ]
+        },
+        {
+          "tag": "UPDATE 170",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 170,
+          "digest": "f1e1b8b8faca8e29"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "aa34a969e7b501ea",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=258"],
+            ["  ->  Index Only Scan using events_user_id_idx on events (actual rows=599.00 loops=1)"],
+            ["        Index Cond: ((user_id >= 7) AND (user_id <= 9))"],
+            ["        Heap Fetches: 500"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=258"],
+            ["Planning:"],
+            ["  Buffers: shared hit=8"]
+          ]
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b44fd9ee573101c9"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d388dff214c41a8f",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=4"],
+            ["  ->  Index Only Scan using events_user_id_idx on events (actual rows=599.00 loops=1)"],
+            ["        Index Cond: ((user_id >= 7) AND (user_id <= 9))"],
+            ["        Heap Fetches: 0"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=4"],
+            ["Planning:"],
+            ["  Buffers: shared hit=19"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7ad0ffae0f01218c": {
+      "db": "empty",
+      "sql": "CREATE TABLE readings AS\nSELECT g AS id, g % 20 AS sensor, (g * 7919) % 1000 AS value, repeat('x', 400) AS note\nFROM generate_series(1, 30000) AS g\nORDER BY g;\nCREATE INDEX ON readings (sensor);\nVACUUM ANALYZE readings;\n\nSET work_mem = '64kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT sum(value) FROM readings WHERE sensor = 7;",
+      "statements": [
+        {
+          "tag": "SELECT 30000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 30000,
+          "digest": "6ae0e2ea0edcc816"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c974f9299f9460f6"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8c303177f03a58ae"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a427e50fbc42ed2b",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=1500 read=3"],
+            ["  ->  Bitmap Heap Scan on readings (actual rows=1500.00 loops=1)"],
+            ["        Recheck Cond: (sensor = 7)"],
+            ["        Rows Removed by Index Recheck: 10064"],
+            ["        Heap Blocks: exact=908 lossy=592"],
+            ["        Buffers: shared hit=1500 read=3"],
+            ["        ->  Bitmap Index Scan on readings_sensor_idx (actual rows=1500.00 loops=1)"],
+            ["              Index Cond: (sensor = 7)"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=11 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

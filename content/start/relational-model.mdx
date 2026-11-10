@@ -1,0 +1,169 @@
+import { RelationAnatomy } from "@/components/figures/start/RelationAnatomy";
+import { RelationLab } from "@/components/figures/start/RelationLab";
+import { Timeline } from "@/components/figures/start/Timeline";
+
+<InShort>
+in the **relational model**, all data lives in **relations** (tables): a heading of named, typed columns and a body of rows. every operation takes tables and gives back a table, so **even the answer is a table**, and you can ask the next question of it.
+
+that's E. F. Codd's idea from 1970. no pointers between records, no paths to follow: just values, and questions about them.
+</InShort>
+
+## the picture
+
+you know how a query's result looks exactly like a table? same columns-and-rows shape, and you can even `SELECT` from it? that's not a coincidence. it's the whole design.
+
+think of lego. every brick has the same studs on top, so anything you build can be the base for the next thing. a table is the brick. a query takes bricks and hands you back a brick, never a bag of loose pieces, so the answer always clicks into the next question.
+
+first, the parts of one brick. Codd gave them formal names; SQL gave them friendlier ones. this book uses the SQL words, but you'll meet both.
+
+<Figure caption={<>pick a word and the part of the table it names lights up <C k="hot">here</C>. four real customers: two different people both called Sam Lee, someone literally named Null, and Ada.</>}>
+<RelationAnatomy />
+</Figure>
+
+notice the key. two rows say `Sam Lee`, and they're different people (Toronto and Seoul). a row has no address, so the only way to point at one is by a value that's different for every row. that's what a primary key is for, and [keys](/learn/design/keys) is how to pick one.
+
+## before codd: follow the pointers
+
+in the 1960s a database was a web of records wired together with pointers. a customer record pointed at its first order, each order at the next one and at its items. to answer a question, your program walked the wires. here's Ada's corner of the shop, stored that way (the orders and items are hers, from the real data):
+
+<Figure caption={<>a hierarchical database stores records under their parents. "what did Ada buy?" is a short walk down. "who bought <code>the art of sql</code>?" means walking every customer, every order, every item.</>}>
+<Tree folded={["order 880 · cancelled", "order 1455 · refunded", "order 8219 · delivered", "order 9946 · placed"]}>{`
+customer 42 · Ada Lovelace
+    order 880 · cancelled
+        mini loofah
+        heavy yo-yo
+        spare monitor stand
+    order 1455 · refunded
+        classic shower caddy
+        small turntable
+        cast iron pan
+    order 6580 · delivered
+        the art of sql            #hot
+        chef's knife
+    order 7787 · delivered
+        the art of sql            #hot
+        steel speaker
+        chef's knife
+    order 8219 · delivered
+        bamboo cookbook
+        classic shower caddy
+        wooden train
+        cat tree
+    order 9615 · delivered
+        mini bath mat
+    order 9946 · placed
+        classic cutting board
+        family soap dish
+`}</Tree>
+</Figure>
+
+that worked well for the questions the designers planned for, and badly for every other one. change the shape (say, file orders under products instead) and every program that walked the old shape breaks. Charles Bachman, who built one of the first of these systems, called his 1973 Turing lecture "The Programmer as Navigator". that was the job.
+
+Codd's paper, "A Relational Model of Data for Large Shared Data Banks" (1970), threw the wires away. store facts as rows of values. connect them by matching values (an order holds `customer_id = 42`), not by pointers. and let people ask for **what** they want, while the system works out **how** to find it.
+
+<Figure caption="click a year, or focus the timeline and use the arrow keys. from pointer-walking to postgres 18, the one running on this page.">
+<Timeline
+  start={2}
+  source="the postgres docs' history chapter, and the systems' own histories"
+  events={[
+    { year: "1963", label: "IDS", note: "Charles Bachman's Integrated Data Store at General Electric. records linked by pointers; the program navigates from one to the next." },
+    { year: "1968", label: "IMS", note: "IBM's hierarchical database, begun in 1966 to track the bill of materials for the Saturn V rocket. records live under parent records." },
+    { year: "1970", label: "Codd", note: "E. F. Codd, at IBM, publishes the relational model: data as relations, connected by values, queried by describing the result." },
+    { year: "1973", label: "the navigator", note: "Bachman's Turing lecture, \"The Programmer as Navigator\", describes the pointer-walking world from the inside." },
+    { year: "1974", label: "SEQUEL", note: "Donald Chamberlin and Raymond Boyce design SEQUEL at IBM for the System R prototype. a trademark clash later shortens it to SQL." },
+    { year: "1979", label: "Oracle V2", note: "one of the first SQL databases anyone could buy. relational goes commercial." },
+    { year: "1986", label: "SQL-86", note: "ANSI publishes the first SQL standard. ISO adopts it the next year." },
+    { year: "1986", label: "POSTGRES", note: "at Berkeley, Michael Stonebraker starts POSTGRES, the successor to his Ingres project." },
+    { year: "1996", label: "PostgreSQL", note: "Postgres95 (POSTGRES plus an SQL interpreter, added in 1994 by Andrew Yu and Jolly Chen) is renamed PostgreSQL, starting at version 6.0." },
+    { year: "2025", label: "postgres 18", note: "released in september 2025. 18.6, compiled to webassembly, is answering every query on this page.", here: true },
+  ]}
+/>
+</Figure>
+
+## everything is a table, even the answer
+
+the relational operators are few. **selection** keeps the rows that pass a test (`WHERE`). **projection** keeps some columns (the `SELECT` list). a **join** pairs rows from two tables by matching values. and every one of them takes tables and returns a table. mathematicians call that closure. you can call it "the answer is a table too".
+
+<Figure wide caption={<>start from 12 real customers and stack operations. each one eats the table above it and hands back a new one, and the sql on the right nests one query inside the next to say the same thing. try <code>SELECT country</code>, then <code>DISTINCT</code>, then <code>count(*)</code>.</>}>
+<RelationLab />
+</Figure>
+
+that nesting is real SQL. a query's result can sit anywhere a table can, including inside the `FROM` of another query:
+
+```sql run db=shop
+SELECT country, count(*) AS customers
+FROM (
+  SELECT id, name, city, country
+  FROM customers
+  WHERE id <= 12
+) AS first_twelve
+GROUP BY country
+ORDER BY customers DESC, country;
+```
+
+even things that don't look like tables are. a list of values is a table, a function can return one, and a single number is a one-row, one-column table. here's a list of values, queried like any table:
+
+```sql run
+SELECT n, word
+FROM (VALUES (1, 'one'), (2, 'two'), (3, 'three')) AS t (n, word)
+ORDER BY n;
+```
+
+## sets, bags and order
+
+Codd's relations are **sets**: no row appears twice, and the rows have no order. SQL kept the second rule and quietly dropped the first.
+
+<Predict options={["one row: Sam Lee", "two rows, both Sam Lee", "an error: duplicate rows"]} answer={1}>
+```sql
+SELECT name
+FROM customers
+WHERE id IN (3, 9)
+ORDER BY id;
+```
+<Explain>
+customers 3 and 9 are two different people with the same name. in a pure relation the answer would be one row, because a set can't hold the same row twice. SQL tables are **bags** (multisets): duplicates stay unless you say `DISTINCT`. that's a choice, not a bug: it's often cheaper, and sometimes the count of copies is the point.
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT name FROM customers WHERE id IN (3, 9) ORDER BY id;
+SELECT DISTINCT name FROM customers WHERE id IN (3, 9);
+```
+
+and order: a table has none. rows come back in whatever order postgres finds convenient, which can change when the data does. the only way to get an order is to ask for one with `ORDER BY`, which is why every query on this site that returns more than one row ends with one. [sorting with ORDER BY](/learn/basics/order-by) has the details. NULL is the other place SQL bends the model, and it gets [a whole chapter](/learn/basics/null-and-three-valued-logic).
+
+## why it won
+
+because the "how" lives in one place, and it isn't your program. you can add an index, move the table to a faster disk, or let postgres pick a different plan, and the query doesn't change. Codd called that **data independence**. watch it happen:
+
+```sql run db=shop session=lyon
+EXPLAIN SELECT name FROM customers WHERE city = 'Lyon';
+```
+
+postgres reads all 2,000 customers to find the one in Lyon (`Seq Scan`). now add an index, and ask the exact same question:
+
+```sql run session=lyon
+CREATE INDEX ON customers (city);
+EXPLAIN SELECT name FROM customers WHERE city = 'Lyon';
+SELECT name FROM customers WHERE city = 'Lyon';
+```
+
+new plan, same query, same answer. don't worry about reading the plans yet ([reading EXPLAIN](/learn/execution/reading-explain) does that). just notice that the first line changed and your SQL didn't. in the pointer days, that change would have meant rewriting every program that walked the old path.
+
+the other reason is the math. because every operator is closed over tables, queries can be rewritten into equivalent ones that run faster, and the rewrite is provably correct. that's [relational algebra](/learn/execution/relational-algebra), and it's what lets a planner exist at all.
+
+<Gotcha title="SQL is relational-ish">
+SQL keeps duplicates, has NULL, and has a column order (`SELECT *` returns them in the order they were declared). none of that is in Codd's model, and each one has burned someone: a join that doubles rows ([fan-out](/learn/joins/fan-out)), a `NOT IN` that returns nothing ([the NOT IN trap](/learn/joins/not-in-trap)), an `INSERT` that breaks when a column is added. knowing the model tells you where SQL bends it.
+</Gotcha>
+
+<Interview q="what's the difference between a relation and a table?">
+a relation is a set of tuples that all share one heading: no duplicates, no row order, no column order (attributes are known by name). a SQL table is a bag: duplicate rows are allowed unless a key forbids them, columns have a position, and NULL can stand in for a value. bonus point: a query result is also a table, which is why you can nest queries. `ORDER BY` is the odd one out: sorting turns a table into a list, so an `ORDER BY` inside a subquery promises nothing to the query around it (unless a `LIMIT` next to it needs the order to pick its rows).
+</Interview>
+
+<Keylines>
+- a relation is a heading of named, typed columns and a body of rows. SQL says table.
+- rows are found by their values, never by position or pointer. that's why tables need keys.
+- every operation takes tables and returns a table, so answers can be questioned again.
+- SQL keeps duplicates and has no row order unless you ask for one.
+- the query says what. the database decides how, and can change its mind without breaking you.
+</Keylines>

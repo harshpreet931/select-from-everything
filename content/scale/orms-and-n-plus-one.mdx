@@ -1,0 +1,139 @@
+import { RoundTrips } from "@/components/figures/scale/RoundTrips";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov } from "@/lib/db/captured";
+import trace from "./traces/n-plus-one.pgtrace.json";
+import measured from "./data/measured.json";
+
+{/* pages and plans: traces/n-plus-one.scenario.sql, captured on PGlite with the shop dataset, so
+    they match the run buttons. timings: data/measured.json, measured on this mac with a node
+    script against a throwaway native postgres 18.6 with the shop dataset. */}
+
+export const top = (i) => { const e = trace.steps[i].explain; const p = (Array.isArray(e) ? e[0] : e).Plan; return p["Shared Hit Blocks"] + p["Shared Read Blocks"]; };
+export const pages = { list: top(0), one: top(1), lookups: top(2), join: top(3), any: top(5) };
+export const med = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+export const page = measured.page;
+export const t = { n1: med(page.n_plus_one_ms), join: med(page.join_ms), any: med(page.any_ms) };
+
+<InShort>
+an ORM that loads a list and then touches a relation on each row sends **1 + N queries**: one for the list, one per row. each query is fast, so nothing looks slow, but every one pays a round trip, a parse, a plan and an executor start. **eager loading** asks for the related rows up front, with a join or one `WHERE id = ANY($1)` query, so the count stops growing with N.
+</InShort>
+
+## the picture
+
+you know how a page that renders 100 orders makes 101 queries, and each one shows up in the logs at 0.1 ms, and the page still takes ages? no query is slow. there are just a lot of them.
+
+think of a waiter who takes your table's order one dish at a time, walking back to the kitchen after each (lazy loading), against one who writes down the whole table's order and walks once (eager loading). the kitchen cooks the same food either way. the walking is the difference.
+
+<Figure wide caption={<>one page of orders, three ways. pick a strategy, then drag the number of orders and the network round trip. the <C k="dead">N+1</C> bar grows with both; the <C k="live">eager</C> ones barely move.</>}>
+<RoundTrips local={{ "lazy (N+1)": t.n1, "eager, JOIN": t.join, "eager, = ANY": t.any }} />
+</Figure>
+
+on one machine, with almost no network between the app and the database, the 101-statement page took about {t.n1.toFixed(1)} ms, the single join about {t.join.toFixed(1)} ms, and the two-statement eager load about {t.any.toFixed(1)} ms (medians of 300 page loads each). put a real network between them and multiply 101 by your round trip.
+
+<Provenance measured={`on ${measured.machine}. ${page.method}`} />
+
+## what the ORM sends
+
+here's the shape in most ORMs. it reads like a loop over objects; it runs like a loop over queries:
+
+<Tabs>
+<Tab label="the code">
+```text
+orders = Order.latest(100)          # 1 query
+for order in orders:
+    print(order.id, order.items.sum("qty"))   # 1 query per order, on first touch
+```
+</Tab>
+<Tab label="what reaches postgres">
+```sql
+SELECT id FROM orders ORDER BY ordered_at DESC, id LIMIT $1;      -- once
+SELECT sum(qty) FROM order_items WHERE order_id = $1;             -- 100 times
+```
+</Tab>
+</Tabs>
+
+the relation is **lazy**: the ORM fetches `order.items` the first time you touch it, for that one order. convenient in a script, and invisible in a template that touches it once per row.
+
+one of those per-order queries, on its own, is as good as a query gets:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)
+SELECT sum(qty) FROM order_items WHERE order_id = 9999;
+```
+
+an index scan on the primary key and three pages. EXPLAIN has nothing to say about it. the database even does the per-row part efficiently: here are all 100 lookups as one statement, done the same way (one index lookup per order, `loops=100`):
+
+<Figure wide caption={<>the 100 follow-up lookups expressed as a <code>LATERAL</code> join, so one EXPLAIN can count them: an index scan run 100 times. the database work of the N+1 is this; what the app adds is 100 round trips, parses and plans.</>}>
+<PlanTree plan={planOf(trace, 2)} show={["actual", "buffers"]} provenance={<Provenance trace={prov(trace)} />} />
+</Figure>
+
+so the pages aren't the problem. {pages.lookups} pages for all the lookups, plus {pages.list} for the list. the statements are.
+
+<Predict question="which one touches the fewest pages for the 100-order page?" options={["the N+1", "one JOIN", "list + one = ANY"]} answer={2}>
+```text
+N+1:        1 list query + 100 lookups
+JOIN:       1 statement
+= ANY:      1 list query + 1 lookup for all ids
+```
+<Explain>
+list + `= ANY`: {pages.list} + {pages.any} = {pages.list + pages.any} pages. the join touched {pages.join}, because the planner chose a hash join that reads all of order_items instead of 100 index lookups. the N+1 touched {pages.list + pages.lookups}. a join is the right fix for the round trips, but it isn't automatically the cheapest plan: look at it.
+</Explain>
+</Predict>
+
+## eager loading, two ways
+
+every ORM has a switch for this, under some name. two shapes come out of it:
+
+```sql run db=shop
+SELECT o.id, sum(oi.qty) AS items
+FROM (SELECT id FROM orders ORDER BY ordered_at DESC, id LIMIT 5) AS o
+LEFT JOIN order_items AS oi ON oi.order_id = o.id
+GROUP BY o.id
+ORDER BY o.id;
+```
+
+the **join** shape: one statement, and the database matches parents to children. it's what django's `select_related`, SQLAlchemy's `joinedload` and Rails' `eager_load` produce. the catch is [fan-out](/learn/joins/fan-out): join two one-to-many relations at once and the rows multiply.
+
+```sql run db=shop
+SELECT order_id, sum(qty) AS items
+FROM order_items
+WHERE order_id = ANY ('{9996,9997,9998,9999,10000}'::int[])
+GROUP BY order_id
+ORDER BY order_id;
+```
+
+the **second query** shape: load the parents, collect their ids, then fetch every child in one query with `IN (...)` or `= ANY($1)`. django's `prefetch_related`, SQLAlchemy's `selectinload` and Rails' `preload` work this way. two statements no matter how many rows, no fan-out, and with `= ANY($1)` the statement text stays the same for any number of ids, so it stays one entry in [pg_stat_statements](/learn/optimizer/finding-slow-queries) and one [prepared statement](/learn/optimizer/generic-plans).
+
+<Figure caption={<>the same page, both ways, counted on the browser's postgres. statements are what the app sends; pages are shared buffers touched, from each plan's BUFFERS.</>}>
+<Bars data={[
+  { label: "N+1: statements", value: 101, tone: "dead" },
+  { label: "join: statements", value: 1, tone: "live" },
+  { label: "= ANY: statements", value: 2, tone: "live" },
+  { label: "N+1: pages", value: pages.list + pages.lookups, tone: "dead" },
+  { label: "join: pages", value: pages.join, tone: "live" },
+  { label: "= ANY: pages", value: pages.list + pages.any, tone: "live" },
+]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+## spotting it
+
+from the app: count queries per request. most frameworks can log them, and test suites can assert a maximum ("this page runs at most 3 queries"), which catches the regression the day someone adds a field to a template.
+
+from the database: a statement with calls in the thousands and about one row per call, filtered on a foreign key. [finding slow queries](/learn/optimizer/finding-slow-queries) shows exactly that row in `pg_stat_statements`, captured from this same page.
+
+<Gotcha title="eager everything is its own bug">
+the fix for lazy loading isn't to make every relation eager. an eager join you don't need reads rows nobody displays, and two eager one-to-many joins on one query multiply rows ([fan-out](/learn/joins/fan-out)). load eagerly what the page uses, per query, and keep the default lazy. some ORMs can raise an error on any lazy load in a given code path (Rails' `strict_loading`, SQLAlchemy's `raiseload`), which turns a slow page into a failing test.
+</Gotcha>
+
+<Interview q="what's the N+1 problem, and how do you fix it?">
+loading a list with one query, then running one more query per row to load a relation, usually because an ORM loads relations lazily on first access. N small queries, each fast, but each paying a round trip and query overhead, so the page is slow and no single query looks guilty. fix it by loading the relation eagerly: a join, or a second query with `WHERE parent_id = ANY($1)` for all the ids at once. bonus point: you find it from the database side in pg_stat_statements, as one statement with huge `calls` and about one row per call.
+</Interview>
+
+<Keylines>
+- lazy relations in a loop send 1 + N queries.
+- each one is fast; the round trips and per-query overhead are the cost.
+- eager load with a join, or with one `= ANY($1)` query for all ids.
+- a join fixes the round trips but can still pick a bigger plan. check it.
+- count queries per request in tests, and look for calls ≈ rows in pg_stat_statements.
+</Keylines>

@@ -1,0 +1,235 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/trees.scenario.sql",
+ "title": "the org chart stored four ways, one subtree query each, and the rows each one writes to add or move people",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "departments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"budget","type":"numeric"}]
+  },
+  "departments_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"departments"},
+  "departments_name_key": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"departments"},
+  "employees": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"manager_id","type":"int4"},
+    {"name":"dept_id","type":"int4"},
+    {"name":"title","type":"text"},
+    {"name":"salary","type":"numeric"},
+    {"name":"hired_on","type":"date"}
+   ]
+  },
+  "employees_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"employees"},
+  "oncall": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"},{"name":"on_call","type":"bool"}]
+  },
+  "oncall_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"}],
+   "on": "oncall"
+  },
+  "emp_path": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"path","type":"text"}]
+  },
+  "emp_closure": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"ancestor","type":"int4"},{"name":"descendant","type":"int4"},{"name":"depth","type":"int4"}]
+  },
+  "emp_sets": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"lft","type":"int4"},{"name":"rgt","type":"int4"}]
+  }
+ },
+ "base": {"xid":795,"lsn":26456368},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE emp_path AS\nWITH RECURSIVE t AS (\n  SELECT id, name, id::text AS path, ARRAY[id] AS ids FROM employees WHERE manager_id IS NULL\n  UNION ALL\n  SELECT e.id, e.name, t.path || '.' || e.id, t.ids || e.id FROM employees AS e JOIN t ON e.manager_id = t.id\n) SELECT id, name, path FROM t ORDER BY ids",
+   "note": "materialized path: each row stores the ids from the root down to itself.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":300,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "CREATE TABLE emp_closure AS\nWITH RECURSIVE c AS (\n  SELECT id AS ancestor, id AS descendant, 0 AS depth FROM employees\n  UNION ALL\n  SELECT c.ancestor, e.id, c.depth + 1 FROM c JOIN employees AS e ON e.manager_id = c.descendant\n) SELECT * FROM c ORDER BY ancestor, descendant",
+   "note": "closure table: one row per (ancestor, descendant) pair, including each node with itself at depth 0.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1621,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "CREATE TABLE emp_sets AS\nWITH RECURSIVE t AS (\n  SELECT id, ARRAY[id] AS ids, 0 AS depth FROM employees WHERE manager_id IS NULL\n  UNION ALL\n  SELECT e.id, t.ids || e.id, t.depth + 1 FROM employees AS e JOIN t ON e.manager_id = t.id\n), pre AS (SELECT id, depth, row_number() OVER (ORDER BY ids) AS p FROM t)\nSELECT pre.id, (2 * p - depth - 1)::int AS lft,\n       (2 * p - depth - 1 + 2 * (SELECT count(*) FROM emp_closure AS c WHERE c.ancestor = pre.id) - 1)::int AS rgt\nFROM pre ORDER BY lft",
+   "note": "nested sets: number the nodes in a depth-first walk; a subtree is everything between a node's lft and rgt.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":300,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "WITH RECURSIVE team AS (\n  SELECT id, 1 AS depth FROM employees WHERE manager_id = 2\n  UNION ALL\n  SELECT e.id, team.depth + 1 FROM employees AS e JOIN team ON e.manager_id = team.id\n)\nSELECT count(*) AS reports, max(depth) AS levels FROM team",
+   "note": "adjacency list: a recursive CTE walks down from Olivia Lopez (id 2), one level per round.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"reports","type":"int8"},{"name":"levels","type":"int4"}],
+    "data": [["120","4"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT count(*) AS reports, max(array_length(string_to_array(path, '.'), 1)) - 2 AS levels\nFROM emp_path WHERE path LIKE '1.2.%'",
+   "note": "materialized path: a prefix match. her path is 1.2, so her team is everything under 1.2.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"reports","type":"int8"},{"name":"levels","type":"int4"}],
+    "data": [["120","4"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT count(*) AS reports, NULL::int AS levels\nFROM emp_sets AS c JOIN emp_sets AS boss ON boss.id = 2\nWHERE c.lft > boss.lft AND c.rgt < boss.rgt",
+   "note": "nested sets: a range. everyone whose lft and rgt sit inside hers.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"reports","type":"int8"},{"name":"levels","type":"int4"}],
+    "data": [["120",null]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT count(*) AS reports, max(depth) AS levels\nFROM emp_closure WHERE ancestor = 2 AND depth > 0",
+   "note": "closure table: the pairs are already stored. one index-friendly lookup.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"reports","type":"int8"},{"name":"levels","type":"int4"}],
+    "data": [["120","4"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "INSERT INTO employees (id, name, manager_id, dept_id, title, salary, hired_on)\nVALUES (301, 'Ada Lovelace', 5, 2, 'engineer', 90000, '2026-03-02')",
+   "note": "adding someone under Rahul Singh (id 5), adjacency list: one row.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "INSERT INTO emp_path SELECT 301, 'Ada Lovelace', path || '.301' FROM emp_path WHERE id = 5",
+   "note": "materialized path: one row, its path built from the parent's.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "INSERT INTO emp_closure\nSELECT ancestor, 301, depth + 1 FROM emp_closure WHERE descendant = 5\nUNION ALL SELECT 301, 301, 0",
+   "note": "closure table: one row per ancestor, plus the node itself.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":4,"columns":[],"data":[]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "UPDATE emp_sets SET rgt = rgt + 2 WHERE rgt >= (SELECT rgt FROM emp_sets WHERE id = 5)",
+   "note": "nested sets: make room. every rgt at or after the parent's moves up by 2.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":261,"columns":[],"data":[]}
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "UPDATE emp_sets SET lft = lft + 2 WHERE lft > (SELECT rgt - 2 FROM emp_sets WHERE id = 5)",
+   "note": "and every lft after it.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":258,"columns":[],"data":[]}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "INSERT INTO emp_sets SELECT 301, rgt - 2, rgt - 1 FROM emp_sets WHERE id = 5",
+   "note": "then the row itself.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "UPDATE employees SET manager_id = 3 WHERE id = 5",
+   "note": "moving Rahul Singh's whole team under Mei Dubois (id 3), adjacency list: one row.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "UPDATE emp_path SET path = '1.3.5' || substr(path, length('1.2.5') + 1)\nWHERE path = '1.2.5' OR path LIKE '1.2.5.%'",
+   "note": "materialized path: every path in the moved subtree is rewritten.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":41,"columns":[],"data":[]}
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "DELETE FROM emp_closure AS c\nWHERE c.descendant IN (SELECT descendant FROM emp_closure WHERE ancestor = 5)\n  AND c.ancestor NOT IN (SELECT descendant FROM emp_closure WHERE ancestor = 5)",
+   "note": "closure table: drop the pairs linking the subtree to its old ancestors.",
+   "status": "ok",
+   "result": {"command":"DELETE","rows":82,"columns":[],"data":[]}
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "INSERT INTO emp_closure\nSELECT up.ancestor, down.descendant, up.depth + down.depth + 1\nFROM emp_closure AS up, emp_closure AS down\nWHERE up.descendant = 3 AND down.ancestor = 5",
+   "note": "and add one pair per (new ancestor, subtree member).",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":82,"columns":[],"data":[]}
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "SELECT count(*) AS people FROM emp_closure WHERE ancestor = 5",
+   "note": "the subtree that moved.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"people","type":"int8"}],"data":[["41"]]}
+  }
+ ],
+ "db": "org"
+}

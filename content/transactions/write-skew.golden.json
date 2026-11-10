@@ -1,0 +1,75 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "40039de37a86e896": {
+      "db": "empty",
+      "sql": "CREATE TABLE doctors (name text PRIMARY KEY, on_call boolean NOT NULL);\nINSERT INTO doctors VALUES ('asha', true), ('ben', true);\nBEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT count(*) FROM doctors WHERE on_call;\nUPDATE doctors SET on_call = false WHERE name = 'asha';\nCOMMIT;\nSELECT name, on_call FROM doctors ORDER BY name;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "88e18ef3591809ae",
+          "rows": [
+            ["2"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "8076d3d0a61a7e81"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a9a261271328ed1"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["on_call", "bool", 16]
+          ],
+          "rowCount": 2,
+          "digest": "52dc9666675e5cfe",
+          "rows": [
+            ["asha", "f"],
+            ["ben", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

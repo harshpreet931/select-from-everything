@@ -1,0 +1,117 @@
+import dirtyPages from "./traces/dirty-pages.pgtrace.json";
+import backendWrites from "./traces/backend-writes.pgtrace.json";
+import { tracePool } from "@/lib/db/fromTrace";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+export const ckpt = dirtyPages.steps[4].result;
+// the pool as the capture saw it, step by step (only the views go to the browser, not the whole capture)
+export const poolSteps = dirtyPages.steps.map((st, i) => ({ view: tracePool(dirtyPages, i), note: st.note, label: `${st.session}: ${st.sql.trim()}` }));
+export const ckptDirty = dirtyPages.steps[2].buffers.summary.dirty;
+export const bw = backendWrites.steps[4].result;
+export const bwPages = backendWrites.steps[0].result.data[0][0];
+
+<InShort>
+a write in postgres changes the page in shared buffers, and appends to the WAL. that's all a COMMIT waits for. the table's files catch up later, written by one of three: the **checkpointer**, which writes every dirty page on a schedule; the **background writer**, which cleans pages the clock hand is about to reach; and, if neither got there first, the **backend** that needs the frame.
+
+and every one of those writes lands in the operating system's page cache first. only an **fsync** makes it durable.
+</InShort>
+
+## the picture
+
+you know how a COMMIT comes back in a millisecond, but the table's file on disk hasn't changed at all? the change is real (it's in the WAL, flushed), it's just not in the table yet.
+
+think of a busy kitchen. the orders go on the ticket rail the moment they're taken (the WAL). plates pile up dirty on the counter as the cooks work (dirty pages). a dishwasher keeps clearing the ones about to be needed (the background writer). every so often the whole counter gets cleared at once and the manager writes "everything clean as of 9:40" in the log (a checkpoint). and if a cook needs a plate and there isn't a clean one, they wash one themselves, mid-order (a backend write).
+
+here's the counter, captured on a real server: a table read, then updated, then checkpointed:
+
+<Figure wide caption={<>step through. a frame with a corner is <C k="accent">dirty</C>: its page differs from the file. that's normal, not an error. the UPDATE dirties every page it touches, and the CHECKPOINT writes them all out and leaves the frames clean, still holding their pages.</>}>
+<BufferPool steps={poolSteps} />
+<Provenance trace={{ engine: dirtyPages.engine, scenario: dirtyPages.scenario }} />
+</Figure>
+
+the UPDATE dirtied 8 heap pages (the 4 it read, plus 4 new ones for the new versions, since the old pages were full) and most of the index. nothing went to the table's file. the CHECKPOINT then wrote out every dirty buffer in the pool, these and the catalog pages the setup had dirtied, and counted them:
+
+<Figure caption={<>what the checkpoint wrote, from its own counters, after zeroing them. the pool had {ckptDirty} dirty buffers just before it.</>}>
+<ResultTable columns={ckpt.columns.map((c) => ({ name: c.name, type: c.type }))} rows={ckpt.data} />
+</Figure>
+
+{ckptDirty} dirty buffers, {ckpt.data[0][0]} pages written: every one. and {ckpt.data[0][2]} fsyncs, one per file it wrote to. those fsyncs are the expensive part, and they're why the checkpoint is allowed to take its time.
+
+## the checkpointer
+
+the checkpointer's job is to make sure that, every so often, everything the WAL describes up to some point is in the data files. after that, crash recovery never has to replay WAL older than that point, and that old WAL can be recycled. it starts a checkpoint when `checkpoint_timeout` passes or when `max_wal_size` worth of WAL has been written since the last one, whichever comes first, and it spreads the writes over most of the gap until the next one, so the disks see a trickle instead of a flood:
+
+```sql native
+SELECT name, setting, unit FROM pg_settings
+WHERE name IN ('checkpoint_timeout', 'max_wal_size', 'checkpoint_completion_target',
+               'bgwriter_delay', 'bgwriter_lru_maxpages', 'bgwriter_lru_multiplier')
+ORDER BY name;
+```
+
+every 5 minutes or every 1 GB of WAL, with the writes spread over 90% of the interval. what checkpoints mean for recovery is in [checkpoints](/learn/wal/checkpoints), and why the first change to a page after one logs the whole page is in [full-page writes](/learn/wal/full-page-writes).
+
+## the background writer
+
+between checkpoints, the clock hand keeps going round looking for victims, and a victim that's dirty has to be written before its frame can be reused. if the backend doing the sweep has to do that write, some unrelated SELECT just waited on a disk write. the background writer tries to get there first. every `bgwriter_delay` (200 ms) it looks at how many buffers backends have been grabbing lately, multiplies by `bgwriter_lru_multiplier` (2), and walks ahead of the clock hand writing out up to `bgwriter_lru_maxpages` (100) dirty buffers that are unpinned and at usage 0, the ones the hand will take next. it never moves the hand itself. it just makes sure that when the hand arrives, the frame is clean.
+
+the captures in this book turn it off (`bgwriter_lru_maxpages = 0`), because when it runs depends on the clock and a capture has to come out the same twice. so here is what happens without it: a 2 MB pool, a table of {bwPages} pages (bigger than the whole pool), and one UPDATE of every row:
+
+<Figure caption={<>writes by who did them, from pg_stat_io, after the UPDATE. nobody else was running.</>}>
+<ResultTable columns={bw.columns.map((c) => ({ name: c.name, type: c.type }))} rows={bw.data} />
+</Figure>
+
+{bw.data[0][1]} pages written, all by the client backend, in the middle of its own UPDATE. every frame it needed for the next page was holding a page it had dirtied a moment ago. on a real server with the background writer on, a good part of that would have been written by it instead, and in `pg_stat_io` the `client backend` writes would be a small number next to the `background writer` and `checkpointer` ones. if they aren't, the pool is too small for the write load, or the background writer is set too timid.
+
+## none of them in the browser
+
+the browser engine is one process. there's no checkpointer, no background writer, no WAL writer: when you run `CHECKPOINT` there, your own session does the work. a real server is a family of processes:
+
+```sql run db=lab
+SELECT backend_type, count(*) FROM pg_stat_activity GROUP BY backend_type ORDER BY backend_type;
+```
+
+```sql native
+SELECT backend_type, count(*) FROM pg_stat_activity GROUP BY backend_type ORDER BY backend_type;
+```
+
+one row in the browser: a `standalone backend`, which is postgres running as a single process. on a native postgres 18.6 there's the checkpointer, the background writer, the WAL writer, three io workers (those are [asynchronous I/O](/learn/storage/async-io)), the logical replication launcher, and two client backends: this session and the checking tool's own connection. (that throwaway server runs with autovacuum off, or you'd see its launcher too.)
+
+<Predict question="you UPDATE a row and COMMIT. COMMIT returns. what's been written to the table's file?" options={["the new row version", "the whole page", "nothing yet", "half the page"]} answer={2}>
+```sql
+BEGIN;
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+COMMIT;   -- returns
+```
+<Explain>
+nothing yet. COMMIT waits for the WAL to be flushed: the change is described there, durably. the page itself is only dirty in shared buffers. the table's file gets it whenever the background writer, the checkpointer, or a backend that needs the frame writes it out, maybe minutes later. if the server crashes first, recovery replays the WAL onto the old page. that's the [write-ahead rule](/learn/wal/write-ahead-rule).
+</Explain>
+</Predict>
+
+## the OS page cache under all of it
+
+postgres writes a page with an ordinary `write()`, and an ordinary write doesn't go to the disk. it goes into the kernel's page cache, and the kernel writes it out when it feels like it. that's why the checkpointer calls `fsync()` on every file it wrote to before it calls a checkpoint done: until then, a power cut could lose the writes. (a crash of postgres alone doesn't: the kernel still has them.)
+
+reads go through the same cache. a page that isn't in shared buffers is often still in the OS page cache, and then a "read" costs a memory copy, about 1 µs on the machine [why pages exist](/learn/storage/why-pages) measured, instead of 70 to 80 µs from its SSD. that's **double buffering**: the same 8 KB can sit in shared buffers and in the OS cache at once. it wastes some RAM, and it's also why shared_buffers is usually set to a fraction of memory rather than most of it: the OS cache is the second tier.
+
+| layer | what puts a page there | what makes it durable |
+| --- | --- | --- |
+| shared buffers | any read or write, via the buffer manager | nothing: it's memory |
+| OS page cache | postgres's `write()`, and its reads | `fsync()`, from the checkpointer |
+| the disk | the kernel, eventually, or `fsync()` | it's there |
+
+<Gotcha title="a checkpoint you didn't schedule">
+if a burst of writes produces `max_wal_size` of WAL before `checkpoint_timeout` is up, a checkpoint starts early, and then another, and another. each one has less time to spread its writes over, and after each one, the first change to every page writes a full-page image to the WAL, which makes more WAL, which brings the next checkpoint sooner. the log says `checkpoints are occurring too frequently` when it happens. the fix is usually a bigger `max_wal_size`, so checkpoints go back to being timed.
+</Gotcha>
+
+<Interview q="what happens to a page between an UPDATE and the disk?">
+the backend changes the page in shared buffers, marking the buffer dirty, and writes a WAL record. at commit the WAL is flushed, and that's what makes the change durable. the data page is written later: by the background writer if it's about to be evicted, by the checkpointer as part of a checkpoint, or by a backend that needs the buffer and finds it dirty. the write goes to the OS page cache, and the checkpointer fsyncs each file before it finishes, after which WAL older than the checkpoint's redo point isn't needed for recovery. bonus point: pg_stat_io (postgres 16+) shows writes per backend type, so you can see whether backends are doing their own writes, which means the background writer or shared_buffers isn't keeping up.
+</Interview>
+
+<Keylines>
+- a write dirties a page in shared buffers and appends WAL. COMMIT waits for the WAL, not the page.
+- the checkpointer writes every dirty page on a schedule, then fsyncs each file.
+- the background writer cleans buffers just ahead of the clock hand, so backends rarely have to.
+- when nobody got there first, the backend writes the dirty page itself, mid-query.
+- every write goes through the OS page cache. fsync is what makes it durable.
+- the browser engine has none of these processes: your session does all of it.
+</Keylines>

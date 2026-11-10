@@ -1,0 +1,181 @@
+{
+ "v": 1,
+ "scenario": "content/execution/traces/parallel.scenario.sql",
+ "title": "parallel query on a real postgres 18.6 server: a 2-million-row table, then events with the browser's settings",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"},
+  "big": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"k","type":"int4"},{"name":"v","type":"int4"}]
+  }
+ },
+ "base": {"xid":802,"lsn":174294480},
+ "setup": "-- a table big enough that the planner wants workers on its own (the default\n-- min_parallel_table_scan_size is 8MB). statistics on k use a target of 10,000, so ANALYZE\n-- reads every row and the estimates are the same on every run.\nCREATE TABLE big AS\nSELECT g AS id, g % 1000 AS k, (g::bigint * 7919 % 100000)::int AS v\nFROM generate_series(1, 2000000) AS g\nORDER BY g;\nALTER TABLE big ALTER COLUMN k SET STATISTICS 10000;\nVACUUM ANALYZE big;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT pg_size_pretty(pg_relation_size('big')) AS size,\n       current_setting('min_parallel_table_scan_size') AS min_scan,\n       current_setting('max_parallel_workers') AS max_workers",
+   "note": "the size of big, and the planner settings that decide how many workers it gets.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"size","type":"text"},{"name":"min_scan","type":"text"},{"name":"max_workers","type":"text"}],
+    "data": [["85 MB","8MB","8"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM big",
+   "note": "this cluster starts with max_parallel_workers_per_gather = 0, like the browser. so: one process, one Seq Scan.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Aggregate (actual rows=1.00 loops=1)"],
+     ["  Buffers: shared hit=2304 read=8512"],
+     ["  ->  Seq Scan on big (actual rows=2000000.00 loops=1)"],
+     ["        Buffers: shared hit=2304 read=8512"],
+     ["Planning:"],
+     ["  Buffers: shared hit=5"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SET max_parallel_workers_per_gather = 4;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM big",
+   "note": "allow up to 4 workers per Gather. the planner asks for 3 (from the table's size), all 3 start, and the leader works too: four processes split the table.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Finalize Aggregate (actual rows=1.00 loops=1)"],
+     ["  Buffers: shared hit=2398 read=8418"],
+     ["  ->  Gather (actual rows=4.00 loops=1)"],
+     ["        Workers Planned: 3"],
+     ["        Workers Launched: 3"],
+     ["        Buffers: shared hit=2398 read=8418"],
+     ["        ->  Partial Aggregate (actual rows=1.00 loops=4)"],
+     ["              Buffers: shared hit=2398 read=8418"],
+     ["              ->  Parallel Seq Scan on big (actual rows=500000.00 loops=4)"],
+     ["                    Buffers: shared hit=2398 read=8418"],
+     ["Planning:"],
+     ["  Buffers: shared hit=3"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT k, count(*) FROM big GROUP BY k ORDER BY k",
+   "note": "a GROUP BY in parallel: each process aggregates its share, the partial groups are merged in order, and a final aggregate combines them.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Finalize GroupAggregate (actual rows=1000.00 loops=1)"],
+     ["  Group Key: k"],
+     ["  Buffers: shared hit=2795 read=8042"],
+     ["  ->  Gather Merge (actual rows=4000.00 loops=1)"],
+     ["        Workers Planned: 3"],
+     ["        Workers Launched: 3"],
+     ["        Buffers: shared hit=2795 read=8042"],
+     ["        ->  Sort (actual rows=1000.00 loops=4)"],
+     ["              Sort Key: k"],
+     ["              Sort Method: quicksort  Memory: 56kB"],
+     ["              Buffers: shared hit=2795 read=8042"],
+     ["              Worker 0:  Sort Method: quicksort  Memory: 56kB"],
+     ["              Worker 1:  Sort Method: quicksort  Memory: 56kB"],
+     ["              Worker 2:  Sort Method: quicksort  Memory: 56kB"],
+     ["              ->  Partial HashAggregate (actual rows=1000.00 loops=4)"],
+     ["                    Group Key: k"],
+     ["                    Batches: 1  Memory Usage: 121kB"],
+     ["                    Buffers: shared hit=2774 read=8042"],
+     ["                    Worker 0:  Batches: 1  Memory Usage: 121kB"],
+     ["                    Worker 1:  Batches: 1  Memory Usage: 121kB"],
+     ["                    Worker 2:  Batches: 1  Memory Usage: 121kB"],
+     ["                    ->  Parallel Seq Scan on big (actual rows=500000.00 loops=4)"],
+     ["                          Buffers: shared hit=2774 read=8042"],
+     ["Planning:"],
+     ["  Buffers: shared hit=62"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SET min_parallel_table_scan_size = 0;\nSET parallel_setup_cost = 0;\nSET parallel_tuple_cost = 0;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM events",
+   "note": "events, with the thresholds lowered so a small table gets workers too: the query the browser runs below. here, 4 workers start.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Finalize Aggregate (actual rows=1.00 loops=1)"],
+     ["  Buffers: shared hit=335"],
+     ["  ->  Gather (actual rows=5.00 loops=1)"],
+     ["        Workers Planned: 4"],
+     ["        Workers Launched: 4"],
+     ["        Buffers: shared hit=335"],
+     ["        ->  Partial Aggregate (actual rows=1.00 loops=5)"],
+     ["              Buffers: shared hit=335"],
+     ["              ->  Parallel Seq Scan on events (actual rows=5000.00 loops=5)"],
+     ["                    Buffers: shared hit=335"],
+     ["Planning:"],
+     ["  Buffers: shared hit=27"]
+    ]
+   }
+  }
+ ],
+ "db": "events"
+}

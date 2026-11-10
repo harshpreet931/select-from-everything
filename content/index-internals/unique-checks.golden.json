@@ -1,0 +1,347 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "910d900df2b21765": {
+      "db": "shop",
+      "sql": "INSERT INTO customers (id, name, country, created_at)\nVALUES (42, 'Ada again', 'GB', '2026-01-01');",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"customers_pkey\"",
+            "detail": "Key (id)=(42) already exists.",
+            "schema": "public",
+            "table": "customers",
+            "constraint": "customers_pkey"
+          },
+          "digest": "1277ec35a7a89558"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"customers_pkey\"",
+        "detail": "Key (id)=(42) already exists.",
+        "schema": "public",
+        "table": "customers",
+        "constraint": "customers_pkey",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "88990177894ac119": {
+      "db": "empty",
+      "sql": "CREATE TABLE k (id int PRIMARY KEY);\nINSERT INTO k VALUES (1), (2), (3);\nBEGIN;\nDELETE FROM k WHERE id = 2;\nINSERT INTO k VALUES (2);\nCOMMIT;\nSELECT itemoffset, ctid, dead, data\nFROM bt_page_items('k_pkey', 1)\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "456642ddbdad5c7c"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0dfde0eb54f44c36"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a9a261271328ed1"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["dead", "bool", 16],
+            ["data", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "67d6fd62f4e6c8b3",
+          "rows": [
+            ["1", "(0,1)", "f", "01 00 00 00 00 00 00 00"],
+            ["2", "(0,2)", "f", "02 00 00 00 00 00 00 00"],
+            ["3", "(0,4)", "f", "02 00 00 00 00 00 00 00"],
+            ["4", "(0,3)", "f", "03 00 00 00 00 00 00 00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a808099ffe1b4b1b": {
+      "db": "empty",
+      "sql": "CREATE TABLE a (email text UNIQUE);\nINSERT INTO a VALUES (NULL), (NULL);\nCREATE TABLE b (email text UNIQUE NULLS NOT DISTINCT);\nINSERT INTO b VALUES (NULL);\nINSERT INTO b VALUES (NULL);\nSELECT (SELECT count(*) FROM a) AS a_rows, (SELECT count(*) FROM b) AS b_rows;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"b_email_key\"",
+            "detail": "Key (email)=(null) already exists.",
+            "schema": "public",
+            "table": "b",
+            "constraint": "b_email_key"
+          },
+          "digest": "82f9c2445b110f88"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["a_rows", "int8", 20],
+            ["b_rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "f4831400ef1aee98",
+          "rows": [
+            ["2", "1"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"b_email_key\"",
+        "detail": "Key (email)=(null) already exists.",
+        "schema": "public",
+        "table": "b",
+        "constraint": "b_email_key",
+        "statement": 4
+      },
+      "txn": "I"
+    },
+    "97bdaf0e4ea8717e": {
+      "db": "empty",
+      "sql": "CREATE TABLE plain (id int PRIMARY KEY);\nCREATE TABLE later (id int PRIMARY KEY DEFERRABLE);\nINSERT INTO plain SELECT generate_series(1, 3);\nINSERT INTO later SELECT generate_series(1, 3);\nUPDATE plain SET id = id + 1;\nUPDATE later SET id = id + 1;\nSELECT (SELECT array_agg(id ORDER BY id) FROM plain) AS plain,\n       (SELECT array_agg(id ORDER BY id) FROM later) AS later;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "9bac3e1aed2851fd"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "01f7a8f15b10540a"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"plain_pkey\"",
+            "detail": "Key (id)=(2) already exists.",
+            "schema": "public",
+            "table": "plain",
+            "constraint": "plain_pkey"
+          },
+          "digest": "e399184adcd4e323"
+        },
+        {
+          "tag": "UPDATE 3",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "7386dea94e72bf44"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["plain", "int4[]", 1007],
+            ["later", "int4[]", 1007]
+          ],
+          "rowCount": 1,
+          "digest": "1b99035acba4cc88",
+          "rows": [
+            ["{1,2,3}", "{2,3,4}"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"plain_pkey\"",
+        "detail": "Key (id)=(2) already exists.",
+        "schema": "public",
+        "table": "plain",
+        "constraint": "plain_pkey",
+        "statement": 4
+      },
+      "txn": "I"
+    },
+    "62b136e3188dc75a": {
+      "db": "empty",
+      "sql": "CREATE TABLE seat (n int UNIQUE DEFERRABLE INITIALLY DEFERRED);\nBEGIN;\nINSERT INTO seat VALUES (1);\nINSERT INTO seat VALUES (1);\nSELECT count(*) AS rows_so_far FROM seat;\nCOMMIT;\nSELECT count(*) AS rows_after FROM seat;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5693d3fc01d98245"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rows_so_far", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "9e199c28ab36543a",
+          "rows": [
+            ["2"]
+          ]
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"seat_n_key\"",
+            "detail": "Key (n)=(1) already exists.",
+            "schema": "public",
+            "table": "seat",
+            "constraint": "seat_n_key"
+          },
+          "digest": "1d2fe2c544c99d7a"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rows_after", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "e32d9df91762f20a",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"seat_n_key\"",
+        "detail": "Key (n)=(1) already exists.",
+        "schema": "public",
+        "table": "seat",
+        "constraint": "seat_n_key",
+        "statement": 5
+      },
+      "txn": "I"
+    }
+  }
+}

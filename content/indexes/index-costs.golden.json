@@ -1,0 +1,227 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "d5f04829e4ebe8d4": {
+      "db": "lab",
+      "sql": "CREATE TABLE people (id int PRIMARY KEY, email text NOT NULL, city text NOT NULL);\nCREATE INDEX people_email ON people (email);\nCREATE INDEX people_city ON people (city);\nINSERT INTO people VALUES (1, 'maya.chen@example.com', 'San Francisco');\nSELECT set_config('my.start', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;\nINSERT INTO people VALUES (42, 'ada@example.com', 'London');\nSELECT c.relname AS relation, r.resource_manager || '/' || r.record_type AS record\nFROM pg_get_wal_records_info(current_setting('my.start')::pg_lsn, pg_current_wal_insert_lsn()) AS r\nLEFT JOIN pg_get_wal_block_info(current_setting('my.start')::pg_lsn, pg_current_wal_insert_lsn()) AS b\n  ON b.start_lsn = r.start_lsn\nLEFT JOIN pg_class AS c ON c.relfilenode = b.relfilenode\nORDER BY r.start_lsn;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "8b82218158f7641b",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e50818625cce39de"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["relation", "name", 19],
+            ["record", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "ae02d25458448300",
+          "rows": [
+            ["people", "Heap/INSERT"],
+            ["people_pkey", "Btree/INSERT_LEAF"],
+            ["people_email", "Btree/INSERT_LEAF"],
+            ["people_city", "Btree/INSERT_LEAF"],
+            [null, "Transaction/COMMIT"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8f00ccd24c10cb09": {
+      "db": "lab",
+      "sql": "CREATE TABLE counters (id int PRIMARY KEY, hits int NOT NULL, note text);\nINSERT INTO counters SELECT g, 0, 'x' FROM generate_series(1, 100) AS g ORDER BY g;\nUPDATE counters SET hits = hits + 1 WHERE id <= 50;\nCREATE INDEX counters_hits ON counters (hits);\nUPDATE counters SET hits = hits + 1 WHERE id > 50;\nSELECT pg_stat_force_next_flush();\nSELECT n_tup_upd, n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'counters';",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 100",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100,
+          "digest": "89d0de0edc5fa9d2"
+        },
+        {
+          "tag": "UPDATE 50",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 50,
+          "digest": "46e2fac614374245"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "UPDATE 50",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 50,
+          "digest": "6476348a3f10d367"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "b7e4a8b8897b9367",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_tup_upd", "int8", 20],
+            ["n_tup_hot_upd", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "fcd70f6e38be5681",
+          "rows": [
+            ["100", "50"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "684fd4aab6774b30": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_customer ON orders (customer_id);\nCREATE INDEX orders_status ON orders (status);\nCREATE INDEX orders_ordered_at ON orders (ordered_at);\nSELECT count(*) FROM orders WHERE customer_id = 42;\nSELECT id FROM orders ORDER BY ordered_at DESC LIMIT 1;\nSELECT pg_stat_force_next_flush();\nSELECT s.indexrelname, s.idx_scan, pg_size_pretty(pg_relation_size(s.indexrelid)) AS size\nFROM pg_stat_user_indexes AS s\nJOIN pg_index AS i ON i.indexrelid = s.indexrelid\nWHERE s.relname = 'orders' AND NOT i.indisunique\nORDER BY s.idx_scan, s.indexrelname;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "88e193f35918122d",
+          "rows": [
+            ["7"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "f873c7f88efaa21c",
+          "rows": [
+            ["10000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "b7e4a8b8897b9367",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["indexrelname", "name", 19],
+            ["idx_scan", "int8", 20],
+            ["size", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "46a9fb4e0a62edc0",
+          "rows": [
+            ["orders_status", "0", "88 kB"],
+            ["orders_customer", "1", "136 kB"],
+            ["orders_ordered_at", "1", "240 kB"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

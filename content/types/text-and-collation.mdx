@@ -1,0 +1,186 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf, runsOf } from "@/lib/db/captured";
+import pad from "./traces/text-and-collation.pgtrace.json";
+import coll from "./traces/collations.pgtrace.json";
+
+{/* the byte strips read traces/text-and-collation.scenario.sql (PGlite, the browser's engine).
+    the collation switch and the case-insensitive table read traces/collations.scenario.sql,
+    captured on a real postgres 18.6 server, because ICU's language collations and
+    nondeterministic collations don't work in the browser. */}
+
+export const bytes = resultOf(pad, 1).rows[0].map(Number);
+export const strip = (n, chars, padTo) => ["hdr", ...chars, ...Array.from({ length: padTo - chars.length }, () => "␠")].slice(0, n);
+export const sorts = runsOf(coll, ["C", "english", "swedish"], 0);
+export const ci = resultOf(coll, 3);
+export const ciRows = ci.rows.map((r) => r.map((v, j) => (j === 0 ? v : { v, tone: v === "t" ? "live" : "faint" })));
+
+<InShort>
+**text**, **varchar(n)** and **char(n)** are stored the same way. varchar(n) adds a length check and nothing else; char(n) pads with spaces and then pretends they aren't there. use text, and a CHECK if the length really matters.
+
+how text compares and sorts is the **collation**'s job. this page's database uses **C**, byte order, so `'B' < 'a'`. a real server can sort like a dictionary, in any language, and compare without caring about case.
+</InShort>
+
+## the picture
+
+you know how every schema you've inherited has `varchar(255)` on every column? nobody remembers choosing 255. it's a habit from databases where the declared length decided how a row was stored, or how much of a column an index could hold. in postgres, it decides nothing about storage.
+
+think of three boxes from the same shelf, with different labels. `text` is the plain box. `varchar(5)` is the same box with a sticker that says "five at most". `char(5)` is the box with the empty space stuffed with packing peanuts (spaces) so it always looks full, and a habit of ignoring the peanuts when you compare.
+
+<Figure caption={<>the letters <code>ab</code> stored in three columns of one row, measured with <code>pg_column_size</code>. each starts with a 1-byte length header. char(5) also stores three <C k="hot">spaces</C> of padding: {bytes[0]} bytes against {bytes[1]} and {bytes[2]}.</>}>
+<div className="grid gap-5">
+<ArrayViz label={`char(5): ${bytes[0]} bytes`} values={strip(bytes[0], ["a", "b"], 5)} tones={{ 3: "hot", 4: "hot", 5: "hot" }} indices={false} />
+<ArrayViz label={`varchar(5): ${bytes[1]} bytes`} values={strip(bytes[1], ["a", "b"], 2)} indices={false} />
+<ArrayViz label={`text: ${bytes[2]} bytes`} values={strip(bytes[2], ["a", "b"], 2)} indices={false} />
+</div>
+<Provenance trace={prov(pad)} />
+</Figure>
+
+same header, same bytes, same code underneath. the only differences are the rules on the way in.
+
+## text, varchar(n), char(n)
+
+`varchar(n)` refuses a value longer than n characters (characters, not bytes):
+
+```sql run expect=error
+CREATE TABLE users (name varchar(5));
+INSERT INTO users (name) VALUES ('Ada Lovelace');
+```
+
+but only when you *store* it. an explicit cast to varchar(n) cuts the string down without a word, because the standard says so:
+
+```sql run
+SELECT 'Ada Lovelace'::varchar(3) AS cut, 'Ada Lovelace'::text AS whole;
+```
+
+`char(n)` (or `character(n)`, or `bpchar`) pads every value with spaces up to n, and treats trailing spaces as meaningless when it compares. that's the whole difference, and it leaks:
+
+```sql run
+SELECT 'ab'::char(5) = 'ab   '::char(5)        AS char_equal,
+       'ab'::varchar(5) = 'ab   '::varchar(5)  AS varchar_equal,
+       length('ab'::char(5))                   AS char_length,
+       octet_length('ab'::char(5))             AS char_bytes;
+```
+
+<Predict options={["'ab   x' both times", "'abx' both times", "'abx', then 'ab   x'"]} answer={2}>
+```sql
+SELECT 'ab'::char(5) || 'x'       AS glued,
+       concat('ab'::char(5), 'x') AS concatenated;
+```
+<Explain>
+`||` has no char version, so the char(5) is cast to text first, and that cast strips the trailing spaces: 'abx'. concat() takes "any", prints the value with its padding, and keeps it: 'ab   x'. two ways to glue the same value, two answers. that's char(n) in one line, and why nobody should use it.
+</Explain>
+</Predict>
+
+```sql run
+SELECT 'ab'::char(5) || 'x'       AS glued,
+       concat('ab'::char(5), 'x') AS concatenated;
+```
+
+so: `text` for strings. if a length limit is a business rule, it's a constraint, and a CHECK says so more honestly than a type: `CHECK (length(code) = 2)` (more on that in [NOT NULL, CHECK and UNIQUE](/learn/design/constraints)). `varchar(n)` isn't wrong, just pointless, with one exception: making it *wider* later is free. postgres keeps the same file, and only narrowing has to rewrite the table and check every row:
+
+```sql run
+CREATE TABLE people (name varchar(50));
+INSERT INTO people VALUES ('Ada Lovelace'), ('Grace Hopper');
+SELECT pg_relation_filenode('people') AS file_before;
+ALTER TABLE people ALTER COLUMN name TYPE varchar(255);
+SELECT pg_relation_filenode('people') AS file_after_widening;
+ALTER TABLE people ALTER COLUMN name TYPE varchar(20);
+SELECT pg_relation_filenode('people') AS file_after_narrowing;
+```
+
+same file number after widening, a new one after narrowing: the table was rewritten. ([the files behind a table](/learn/storage/files-and-forks) explains the file number.)
+
+## collation: who decided 'B' < 'a'
+
+comparing two strings means deciding an order for every pair of characters, and that's what a collation is: a set of rules for `<`, `=` and ORDER BY. this page's database was created with the C collation:
+
+```sql run
+SELECT datcollate, datctype FROM pg_database WHERE datname = current_database();
+SELECT 'B' < 'a' AS capital_b_first, 'Zoe' < 'Zoë' AS plain_e_first;
+```
+
+C compares bytes. capital letters are 41 to 5a in UTF-8, small ones 61 to 7a, and anything accented starts with a byte above all of them. so Banana and Zoë come before apple, and Ångström and Öl come after zebra:
+
+```sql run
+SELECT w
+FROM (VALUES ('apple'), ('Banana'), ('cherry'), ('ost'), ('Öl'), ('zebra'), ('zoe'), ('Zoë'), ('Ångström')) AS t (w)
+ORDER BY w;
+```
+
+a real server can use ICU, the unicode consortium's collation library, which knows how dozens of languages sort. and they don't agree:
+
+<Figure wide caption={<>the same nine words sorted under three collations, on a postgres 18.6 server. C is byte order. english sorts by letter first, then accent, then case. swedish has Å and Ö as letters of their own, after z.</>}>
+<RunPick options={[{ key: "COLLATE", values: ["C", "english", "swedish"] }]} runs={sorts} hot={['"C"', '"en-US-x-icu"', '"sv-SE-x-icu"']} file="sort.sql" trace={prov(coll)} />
+</Figure>
+
+none of these is wrong. Ångström is next to apple for an english speaker and at the end of the dictionary for a swede. the database can't know which you want, so you say it, at one of three levels: the database's default (`CREATE DATABASE ... LOCALE`), a column (`name text COLLATE "sv-SE-x-icu"`), or one expression (`ORDER BY name COLLATE "sv-SE-x-icu"`).
+
+the browser's engine has ICU's language-neutral root order and nothing more (it answers to `unicode` and to `und-x-icu`). for these nine words it agrees with english, letters first and case last:
+
+```sql run
+SELECT w
+FROM (VALUES ('apple'), ('Banana'), ('cherry'), ('ost'), ('Öl'), ('zebra'), ('zoe'), ('Zoë'), ('Ångström')) AS t (w)
+ORDER BY w COLLATE "unicode";
+```
+
+ICU can do things byte order never could. a custom collation with `kn` (numeric) sorts digits by their value, so item 9 comes before item 10:
+
+```sql native
+CREATE COLLATION numeric_sort (provider = icu, locale = 'en-u-kn');
+SELECT x
+FROM (VALUES ('item 10'), ('item 9'), ('item 100'), ('Item 2')) AS t (x)
+ORDER BY x COLLATE numeric_sort;
+```
+
+<Gotcha title="an index is sorted in one collation">
+a b-tree index stores its keys in its column's collation order. a query that sorts or compares in another collation can't use it. and `LIKE 'Ada%'` can only become an index range when the order is plain bytes (C), so on a server whose default is a language collation, prefix searches need an index with `text_pattern_ops` or `COLLATE "C"`. [why isn't my index used?](/learn/indexes/index-not-used) has the plans. and when the operating system's collation library is upgraded under a running server, indexes built with the old rules can silently stop matching the new ones; postgres records collation versions and warns about it.
+</Gotcha>
+
+## comparing without case
+
+the browser can do the simple version. `lower()` on both sides, or `ILIKE`, which postgres has and the standard doesn't <Since only />:
+
+```sql run
+SELECT lower('Zoë') = lower('ZOË') AS lowered, 'Zoë Martin' ILIKE 'zoë%' AS ilike;
+```
+
+both true here. but there are more ways, and they disagree in the corners. on a server:
+
+<Figure caption={<>three pairs of strings, five ways to compare them, on a postgres 18.6 server whose ctype is C. <C k="live">t</C> means equal. lower() and citext only fold what the database's ctype knows, which on this server is plain ASCII. the ICU collations know unicode.</>}>
+<ResultTable columns={ci.columns.map((c) => c.name)} rows={ciRows} />
+<Provenance trace={prov(coll)} />
+</Figure>
+
+- **lower() on both sides** works anywhere, but an index on `email` won't serve `lower(email) = ...`. index the expression: `CREATE INDEX ON users (lower(email))` ([expression indexes](/learn/indexes/partial-and-expression)).
+- **citext** is an extension with a case-insensitive text type. it calls lower() for you on every comparison, so it folds exactly what lower() does under the database's ctype. the browser can't load it.
+- a **nondeterministic collation** decides equality by ICU's rules instead of bytes. `ks-level2` ignores case, `ks-level1` ignores accents too. this is the modern answer, and the only one that knows unicode on every server.
+
+a nondeterministic collation on a column changes what UNIQUE means:
+
+```sql native expect=error
+CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+CREATE TABLE members (name text COLLATE ci UNIQUE);
+INSERT INTO members VALUES ('Zoë');
+INSERT INTO members VALUES ('ZOË');
+```
+
+since postgres 18 <Since v={18} />, LIKE works with nondeterministic collations too (it used to be an error):
+
+```sql native
+CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+SELECT 'Zoë Martin' LIKE 'ZOË%' COLLATE ci AS case_blind_like;
+```
+
+<Docs href="https://www.postgresql.org/docs/18/collation.html" title="collation support">how collations are chosen at the database, column and expression level, the libc, ICU and builtin providers, and nondeterministic collations with their ICU settings (ks, ka, kn). paraphrased above; the manual has the full list.</Docs>
+
+<Interview q="is varchar(255) faster than text in postgres?">
+no. they're the same type underneath: a length header and the bytes, whatever the declared limit. varchar(n) only adds a length check when you store a value. postgres has no reason to prefer 255 (that's a habit from engines where the declared length changed how rows or index keys were stored). use text, and a CHECK constraint when the limit is a real rule. bonus point: char(n) is worse than both, because it pads with spaces and then drops them in some operations and not others, so `'ab'::char(5) || 'x'` and `concat('ab'::char(5), 'x')` disagree.
+</Interview>
+
+<Keylines>
+- text, varchar(n) and char(n) are stored the same way; only the rules on the way in differ.
+- varchar(n) checks a length, char(n) pads with spaces. prefer text, with a CHECK if needed.
+- a collation decides order and equality. the browser's is C: byte order, so 'B' < 'a'.
+- languages sort differently, and ICU collations on a server know how.
+- for case-insensitive matching: lower() plus an expression index, citext, or a nondeterministic collation.
+</Keylines>

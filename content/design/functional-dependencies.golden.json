@@ -1,0 +1,107 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "45005484ef99a9a2": {
+      "db": "school",
+      "sql": "SELECT instructor_name, count(DISTINCT instructor_office) AS offices,\n       string_agg(DISTINCT instructor_office, ', ' ORDER BY instructor_office) AS which\nFROM enrollments_flat\nGROUP BY instructor_name\nHAVING count(DISTINCT instructor_office) > 1\nORDER BY instructor_name;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["instructor_name", "text", 25],
+            ["offices", "int8", 20],
+            ["which", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "0a027f1ff4b21e5f",
+          "rows": [
+            ["Hannah Okoye", "2", "B-101, B-199"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0e62c902dce3780f": {
+      "db": "school",
+      "sql": "SELECT student_name, course_code, instructor_name, instructor_office\nFROM enrollments_flat\nWHERE instructor_name = 'Hannah Okoye'\nORDER BY student_name, course_code;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["student_name", "text", 25],
+            ["course_code", "text", 25],
+            ["instructor_name", "text", 25],
+            ["instructor_office", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "857cc343772f19c9",
+          "rows": [
+            ["Emma Dubois", "CS101", "Hannah Okoye", "B-199"],
+            ["Kenji Watanabe", "CS301", "Hannah Okoye", "B-101"],
+            ["Noah Schmidt", "CS301", "Hannah Okoye", "B-101"],
+            ["Priya Nair", "CS101", "Hannah Okoye", "B-101"],
+            ["Priya Nair", "CS301", "Hannah Okoye", "B-101"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c793eeba96611e02": {
+      "db": "school",
+      "sql": "SELECT s.id, s.name, s.email, count(*) AS enrollments\nFROM students AS s JOIN enrollments AS e ON e.student_id = s.id\nGROUP BY s.id\nORDER BY enrollments DESC, s.id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["email", "text", 25],
+            ["enrollments", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "6de603a179034e5f",
+          "rows": [
+            ["18", "Clara Novak", "clara.novak@uni.example", "8"],
+            ["26", "Leila Karimi", "leila.karimi@uni.example", "8"],
+            ["5", "Emma Dubois", "emma.dubois@uni.example", "7"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a88c60a3c3cd2763": {
+      "db": "school",
+      "sql": "SELECT s.name, s.email, count(*) AS enrollments\nFROM students AS s JOIN enrollments AS e ON e.student_id = s.id\nGROUP BY s.name;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42803",
+            "message": "column \"s.email\" must appear in the GROUP BY clause or be used in an aggregate function",
+            "position": 16
+          },
+          "digest": "3bc703ecedd0317f"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42803",
+        "message": "column \"s.email\" must appear in the GROUP BY clause or be used in an aggregate function",
+        "position": 16,
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

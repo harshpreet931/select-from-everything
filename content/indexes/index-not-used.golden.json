@@ -1,0 +1,317 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "9ed31503901b5495": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE lower(name) = 'ada lovelace';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "72ad9906924a571c",
+          "rows": [
+            ["Seq Scan on customers"],
+            ["  Filter: (lower(name) = 'ada lovelace'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9195a25e3cb8f0de": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42.0;\nEXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = '42';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5126aae83a1d934b",
+          "rows": [
+            ["Seq Scan on orders"],
+            ["  Filter: ((customer_id)::numeric = 42.0)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "94601fadda55ad9f",
+          "rows": [
+            ["Bitmap Heap Scan on orders"],
+            ["  Recheck Cond: (customer_id = 42)"],
+            ["  ->  Bitmap Index Scan on orders_customer"],
+            ["        Index Cond: (customer_id = 42)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b089beeacf0d9dfd": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE '%Lovelace';\nEXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE 'Ada%';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "f112e2d16fc27c04",
+          "rows": [
+            ["Seq Scan on customers"],
+            ["  Filter: (name ~~ '%Lovelace'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d74714e070358e96",
+          "rows": [
+            ["Index Scan using customers_name on customers"],
+            ["  Index Cond: ((name >= 'Ada'::text) AND (name < 'Adb'::text))"],
+            ["  Filter: (name ~~ 'Ada%'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d018e8554d0f21f0": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42 OR status = 'placed';\nEXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42 OR shipped_at IS NULL;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7915a097031b6827",
+          "rows": [
+            ["Bitmap Heap Scan on orders"],
+            ["  Recheck Cond: ((customer_id = 42) OR (status = 'placed'::text))"],
+            ["  ->  BitmapOr"],
+            ["        ->  Bitmap Index Scan on orders_customer"],
+            ["              Index Cond: (customer_id = 42)"],
+            ["        ->  Bitmap Index Scan on orders_status"],
+            ["              Index Cond: (status = 'placed'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "15fa76da12f7fd97",
+          "rows": [
+            ["Seq Scan on orders"],
+            ["  Filter: ((customer_id = 42) OR (shipped_at IS NULL))"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "108064dfc32380e0": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42 OR customer_id = 43;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "55fefb5520476fd9",
+          "rows": [
+            ["Bitmap Heap Scan on orders"],
+            ["  Recheck Cond: ((customer_id = 42) OR (customer_id = 43))"],
+            ["  ->  Bitmap Index Scan on orders_customer"],
+            ["        Index Cond: (customer_id = ANY ('{42,43}'::integer[]))"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9e4d8e4a4b8c9f32": {
+      "db": "shop",
+      "sql": "SELECT status, count(*) FROM orders GROUP BY status ORDER BY count(*) DESC;\nEXPLAIN (COSTS OFF) SELECT id FROM orders WHERE status = 'delivered';",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["status", "text", 25],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "f97706d0b5f271b7",
+          "rows": [
+            ["delivered", "9352"],
+            ["cancelled", "317"],
+            ["shipped", "120"],
+            ["refunded", "98"],
+            ["paid", "62"],
+            ["placed", "51"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c23813c2738f80bb",
+          "rows": [
+            ["Seq Scan on orders"],
+            ["  Filter: (status = 'delivered'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "37c82fdd1df42300": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE status = 'paid';\nSELECT most_common_vals, most_common_freqs FROM pg_stats\nWHERE tablename = 'orders' AND attname = 'status';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "94c0fe29defe5939",
+          "rows": [
+            ["Index Scan using orders_status on orders"],
+            ["  Index Cond: (status = 'paid'::text)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["most_common_vals", "anyarray", 2277],
+            ["most_common_freqs", "float4[]", 1021]
+          ],
+          "rowCount": 1,
+          "digest": "a4a6f9cbac187210",
+          "rows": [
+            ["{delivered,cancelled,shipped,refunded,paid,placed}", "{0.9352,0.0317,0.012,0.0098,0.0062,0.0051}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "65d6d7d5fb594fe7": {
+      "db": "shop",
+      "sql": "CREATE TABLE jobs (id int PRIMARY KEY, state text NOT NULL);\nINSERT INTO jobs SELECT g, CASE WHEN g <= 20 THEN 'done' ELSE 'new' END\nFROM generate_series(1, 10000) AS g ORDER BY g;\nCREATE INDEX jobs_state ON jobs (state);\nANALYZE jobs;\nUPDATE jobs SET state = 'done' WHERE id <= 9980;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM jobs WHERE state = 'done';\nANALYZE jobs;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM jobs WHERE state = 'done';",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 10000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "1eceb28972b9ecc2"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4e5fc8411bd30366"
+        },
+        {
+          "tag": "UPDATE 9980",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 9980,
+          "digest": "866d84cc3ad457b8"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a4c4c4980377e4a3",
+          "rows": [
+            ["Index Scan using jobs_state on jobs (actual rows=9980.00 loops=1)"],
+            ["  Index Cond: (state = 'done'::text)"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared hit=66"],
+            ["Planning:"],
+            ["  Buffers: shared hit=3"]
+          ]
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7720ec5d52c002cb"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "3c3ab6c08a99315a",
+          "rows": [
+            ["Seq Scan on jobs (actual rows=9980.00 loops=1)"],
+            ["  Filter: (state = 'done'::text)"],
+            ["  Rows Removed by Filter: 20"],
+            ["  Buffers: shared hit=99"],
+            ["Planning:"],
+            ["  Buffers: shared hit=24"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,203 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "4b477e72beb07c1f": {
+      "db": "school",
+      "sql": "SELECT i.name, c.code, c.title\nFROM instructors AS i\nLEFT JOIN courses AS c ON c.instructor_id = i.id\nORDER BY i.id, c.code;",
+      "statements": [
+        {
+          "tag": "SELECT 12",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["code", "text", 25],
+            ["title", "text", 25]
+          ],
+          "rowCount": 12,
+          "digest": "b57bab40a3b936a8",
+          "rows": [
+            ["Hannah Okoye", "CS101", "Intro to Programming"],
+            ["Hannah Okoye", "CS301", "Databases"],
+            ["Marco Rossi", "CS201", "Data Structures"],
+            ["Marco Rossi", "CS350", "Operating Systems"],
+            ["Lena Fischer", "CS401", "Database Internals"],
+            ["Tomás Ortega", "MATH101", "Calculus I"],
+            ["Tomás Ortega", "MATH301", "Linear Algebra"],
+            ["Yuki Tanaka", "MATH201", "Discrete Math"],
+            ["Amara Diallo", "PHYS101", "Mechanics"],
+            ["Amara Diallo", "PHYS201", "Electromagnetism"],
+            ["Oliver Grant", "HIST101", "History of Computing"],
+            ["Sofia Petrova", null, null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "26b0b66d1db65802": {
+      "db": "school",
+      "sql": "SELECT c.code, i.name\nFROM courses AS c\nFULL JOIN instructors AS i ON i.id = c.instructor_id\nORDER BY c.code NULLS LAST, i.name;",
+      "statements": [
+        {
+          "tag": "SELECT 13",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25],
+            ["name", "text", 25]
+          ],
+          "rowCount": 13,
+          "digest": "ace88498906d92ac",
+          "rows": [
+            ["CS101", "Hannah Okoye"],
+            ["CS201", "Marco Rossi"],
+            ["CS301", "Hannah Okoye"],
+            ["CS350", "Marco Rossi"],
+            ["CS401", "Lena Fischer"],
+            ["CS499", null],
+            ["HIST101", "Oliver Grant"],
+            ["MATH101", "Tomás Ortega"],
+            ["MATH201", "Yuki Tanaka"],
+            ["MATH301", "Tomás Ortega"],
+            ["PHYS101", "Amara Diallo"],
+            ["PHYS201", "Amara Diallo"],
+            [null, "Sofia Petrova"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3377a1bad4a85edd": {
+      "db": "school",
+      "sql": "SELECT i.name, count(*) AS rows, count(c.code) AS courses\nFROM instructors AS i\nLEFT JOIN courses AS c ON c.instructor_id = i.id\nGROUP BY i.id\nORDER BY i.id;",
+      "statements": [
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["rows", "int8", 20],
+            ["courses", "int8", 20]
+          ],
+          "rowCount": 8,
+          "digest": "58e8112745afe169",
+          "rows": [
+            ["Hannah Okoye", "2", "2"],
+            ["Marco Rossi", "2", "2"],
+            ["Lena Fischer", "1", "1"],
+            ["Tomás Ortega", "2", "2"],
+            ["Yuki Tanaka", "1", "1"],
+            ["Amara Diallo", "2", "2"],
+            ["Oliver Grant", "1", "1"],
+            ["Sofia Petrova", "1", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5913db3ec2834726": {
+      "db": "school",
+      "sql": "SELECT i.name, c.code, c.credits\nFROM instructors AS i\nLEFT JOIN courses AS c ON c.instructor_id = i.id\nWHERE c.credits >= 4\nORDER BY i.id, c.code;",
+      "statements": [
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["code", "text", 25],
+            ["credits", "int2", 21]
+          ],
+          "rowCount": 8,
+          "digest": "f8b552e77db2a947",
+          "rows": [
+            ["Hannah Okoye", "CS101", "4"],
+            ["Hannah Okoye", "CS301", "4"],
+            ["Marco Rossi", "CS201", "4"],
+            ["Marco Rossi", "CS350", "4"],
+            ["Lena Fischer", "CS401", "4"],
+            ["Tomás Ortega", "MATH101", "4"],
+            ["Amara Diallo", "PHYS101", "4"],
+            ["Amara Diallo", "PHYS201", "4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4dcd6b95808206de": {
+      "db": "school",
+      "sql": "SELECT i.name, c.code, c.credits\nFROM instructors AS i\nLEFT JOIN courses AS c ON c.instructor_id = i.id AND c.credits >= 4\nORDER BY i.id, c.code;",
+      "statements": [
+        {
+          "tag": "SELECT 11",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["code", "text", 25],
+            ["credits", "int2", 21]
+          ],
+          "rowCount": 11,
+          "digest": "619b08df5f6338ab",
+          "rows": [
+            ["Hannah Okoye", "CS101", "4"],
+            ["Hannah Okoye", "CS301", "4"],
+            ["Marco Rossi", "CS201", "4"],
+            ["Marco Rossi", "CS350", "4"],
+            ["Lena Fischer", "CS401", "4"],
+            ["Tomás Ortega", "MATH101", "4"],
+            ["Yuki Tanaka", null, null],
+            ["Amara Diallo", "PHYS101", "4"],
+            ["Amara Diallo", "PHYS201", "4"],
+            ["Oliver Grant", null, null],
+            ["Sofia Petrova", null, null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0cbfd71a8bdc0a32": {
+      "db": "school",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT i.name, c.code FROM instructors AS i\nLEFT JOIN courses AS c ON c.instructor_id = i.id;\n\nEXPLAIN (COSTS OFF)\nSELECT i.name, c.code FROM instructors AS i\nLEFT JOIN courses AS c ON c.instructor_id = i.id\nWHERE c.credits >= 4;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "65bb42798b33e8bc",
+          "rows": [
+            ["Hash Right Join"],
+            ["  Hash Cond: (c.instructor_id = i.id)"],
+            ["  ->  Seq Scan on courses c"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on instructors i"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d6f8223d0bbc6b2f",
+          "rows": [
+            ["Hash Join"],
+            ["  Hash Cond: (c.instructor_id = i.id)"],
+            ["  ->  Seq Scan on courses c"],
+            ["        Filter: (credits >= 4)"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on instructors i"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

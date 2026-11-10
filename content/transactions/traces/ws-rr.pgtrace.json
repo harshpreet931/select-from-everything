@@ -1,0 +1,680 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/ws-rr.scenario.sql",
+ "title": "on call, at repeatable read: asha and ben both check that the other is on call, then both go off call",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "doctors": {"kind":"table","am":"heap","columns":[{"name":"name","type":"text"},{"name":"on_call","type":"bool"}]},
+  "doctors_pkey": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"doctors"}
+ },
+ "base": {"xid":759,"lsn":23208904},
+ "setup": "CREATE TABLE doctors (\n  name    text PRIMARY KEY,\n  on_call boolean NOT NULL\n);\nINSERT INTO doctors VALUES ('asha', true), ('ben', true);\nVACUUM doctors;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN ISOLATION LEVEL REPEATABLE READ",
+   "note": "asha (T1) wants to go off call, at repeatable read. the rule: at least one doctor stays on call.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8128,
+      "special": 8192,
+      "lsn": 23063168,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"ben","on_call":"t"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM doctors WHERE on_call",
+   "note": "T1 counts the doctors on call: 2. so asha can leave.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["2"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8128,
+      "special": 8192,
+      "lsn": 23063168,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"ben","on_call":"t"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL REPEATABLE READ",
+   "note": "ben (T2) wants to go off call at the same moment, also at repeatable read.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":null,"iso":"repeatable read","inTxn":true}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8128,
+      "special": 8192,
+      "lsn": 23063168,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"ben","on_call":"t"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "SELECT count(*) FROM doctors WHERE on_call",
+   "note": "T2 counts too: 2. so ben can leave.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["2"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8128,
+      "special": 8192,
+      "lsn": 23063168,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"ben","on_call":"t"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "UPDATE doctors SET on_call = false WHERE name = 'asha'",
+   "note": "T1 takes asha off call.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":759,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8096,
+      "special": 8192,
+      "lsn": 23208984,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"name":"ben","on_call":"t"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 30,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"asha","on_call":"f"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"in progress"}
+  },
+  {
+   "i": 5,
+   "session": "T2",
+   "sql": "UPDATE doctors SET on_call = false WHERE name = 'ben'",
+   "note": "T2 takes ben off call. a different row, so there's no lock to wait for.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":759,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":760,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8064,
+      "special": 8192,
+      "lsn": 23209056,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 760,
+        "ctid": [0,4],
+        "infomask": 258,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"ben","on_call":"t"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 30,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"asha","on_call":"f"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8064,
+        "len": 29,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 10242,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"ben","on_call":"f"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"in progress","760":"in progress"}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":760,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8064,
+      "special": 8192,
+      "lsn": 23209056,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 760,
+        "ctid": [0,4],
+        "infomask": 258,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"ben","on_call":"t"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 30,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"asha","on_call":"f"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8064,
+        "len": 29,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 10242,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"ben","on_call":"f"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed","760":"in progress"}
+  },
+  {
+   "i": 7,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 commits too. nothing in either transaction looked wrong.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8064,
+      "special": 8192,
+      "lsn": 23209056,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 760,
+        "ctid": [0,4],
+        "infomask": 258,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"ben","on_call":"t"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 30,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"asha","on_call":"f"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8064,
+        "len": 29,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 10242,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"ben","on_call":"f"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed","760":"committed"}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT name, on_call FROM doctors ORDER BY name",
+   "note": "nobody is on call. each one checked the rule, and the two together broke it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"name","type":"text"},{"name":"on_call","type":"bool"}],
+    "data": [["asha","f"],["ben","f"]]
+   },
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "doctors": [
+     {
+      "rel": "doctors",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8064,
+      "special": 8192,
+      "lsn": 23209056,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 30,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"asha","on_call":"t"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8128,
+        "len": 29,
+        "xmin": 758,
+        "xmax": 760,
+        "ctid": [0,4],
+        "infomask": 1282,
+        "infomask2": 16386,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"name":"ben","on_call":"t"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 30,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"asha","on_call":"f"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8064,
+        "len": 29,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 10498,
+        "infomask2": 32770,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"name":"ben","on_call":"f"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed","760":"committed"}
+  }
+ ]
+}

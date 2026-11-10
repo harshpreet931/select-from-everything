@@ -1,0 +1,709 @@
+{
+  "pg": "18.6",
+  "pglite": "0.5.12",
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "assets": "pglite/0.5.12/",
+  "extensions": [
+    "pageinspect",
+    "pg_buffercache",
+    "pg_visibility",
+    "pg_walinspect",
+    "amcheck",
+    "pg_freespacemap",
+    "pg_trgm",
+    "btree_gist",
+    "ltree"
+  ],
+  "download": 5996084,
+  "datasets": {
+    "empty": {
+      "url": "datasets/empty.e5f587f8b6a86b59.json",
+      "hash": "e5f587f8b6a86b59",
+      "title": "empty",
+      "blurb": "a brand new database with nothing in it. the default when a block doesn't say db=.",
+      "bytes": 143,
+      "fingerprint": "752:752: 0/16EFAA0 12770",
+      "analyze": false,
+      "extensions": [],
+      "setups": [],
+      "tables": []
+    },
+    "shop": {
+      "url": "datasets/shop.37a4393b24e1c3bb.json",
+      "hash": "37a4393b24e1c3bb",
+      "title": "shop",
+      "blurb": "a small online shop: 2,000 customers, 200 products, 10,000 orders and their line items.",
+      "bytes": 12967,
+      "fingerprint": "798:798: 0/1ECA668 16447",
+      "analyze": true,
+      "extensions": [],
+      "setups": [],
+      "tables": [
+        {
+          "name": "customers",
+          "kind": "table",
+          "rows": 2000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "name": "city",
+              "type": "text"
+            },
+            {
+              "name": "country",
+              "type": "bpchar",
+              "notNull": true
+            },
+            {
+              "name": "created_at",
+              "type": "timestamptz",
+              "notNull": true
+            }
+          ]
+        },
+        {
+          "name": "order_items",
+          "kind": "table",
+          "rows": 24942,
+          "columns": [
+            {
+              "name": "order_id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true,
+              "fk": "orders.id"
+            },
+            {
+              "name": "line_no",
+              "type": "int2",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "product_id",
+              "type": "int4",
+              "notNull": true,
+              "fk": "products.id"
+            },
+            {
+              "name": "qty",
+              "type": "int4",
+              "notNull": true
+            },
+            {
+              "name": "unit_price",
+              "type": "numeric",
+              "notNull": true
+            }
+          ]
+        },
+        {
+          "name": "orders",
+          "kind": "table",
+          "rows": 10000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "customer_id",
+              "type": "int4",
+              "notNull": true,
+              "fk": "customers.id"
+            },
+            {
+              "name": "status",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "ordered_at",
+              "type": "timestamptz",
+              "notNull": true
+            },
+            {
+              "name": "shipped_at",
+              "type": "timestamptz"
+            }
+          ]
+        },
+        {
+          "name": "products",
+          "kind": "table",
+          "rows": 200,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "sku",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "category",
+              "type": "text"
+            },
+            {
+              "name": "price",
+              "type": "numeric",
+              "notNull": true
+            },
+            {
+              "name": "tags",
+              "type": "text[]",
+              "notNull": true
+            },
+            {
+              "name": "attrs",
+              "type": "jsonb",
+              "notNull": true
+            },
+            {
+              "name": "description",
+              "type": "text"
+            },
+            {
+              "name": "discontinued",
+              "type": "bool",
+              "notNull": true
+            }
+          ]
+        }
+      ]
+    },
+    "school": {
+      "url": "datasets/school.224859b70ae66c64.json",
+      "hash": "224859b70ae66c64",
+      "title": "school",
+      "blurb": "a small university: 8 instructors, 40 students, 12 courses, who took what, and what each course requires first.",
+      "bytes": 7168,
+      "fingerprint": "798:798: 0/185E268 16475",
+      "analyze": true,
+      "extensions": [],
+      "setups": [],
+      "tables": [
+        {
+          "name": "courses",
+          "kind": "table",
+          "rows": 12,
+          "columns": [
+            {
+              "name": "code",
+              "type": "text",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "title",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "dept",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "credits",
+              "type": "int2",
+              "notNull": true
+            },
+            {
+              "name": "instructor_id",
+              "type": "int4",
+              "fk": "instructors.id"
+            }
+          ]
+        },
+        {
+          "name": "enrollments",
+          "kind": "table",
+          "rows": 164,
+          "columns": [
+            {
+              "name": "student_id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true,
+              "fk": "students.id"
+            },
+            {
+              "name": "course_code",
+              "type": "text",
+              "notNull": true,
+              "pk": true,
+              "fk": "courses.code"
+            },
+            {
+              "name": "term",
+              "type": "text",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "grade",
+              "type": "bpchar"
+            }
+          ]
+        },
+        {
+          "name": "enrollments_flat",
+          "kind": "table",
+          "rows": 30,
+          "columns": [
+            {
+              "name": "student_name",
+              "type": "text"
+            },
+            {
+              "name": "student_email",
+              "type": "text"
+            },
+            {
+              "name": "course_code",
+              "type": "text"
+            },
+            {
+              "name": "course_title",
+              "type": "text"
+            },
+            {
+              "name": "instructor_name",
+              "type": "text"
+            },
+            {
+              "name": "instructor_office",
+              "type": "text"
+            },
+            {
+              "name": "term",
+              "type": "text"
+            },
+            {
+              "name": "grade",
+              "type": "bpchar"
+            }
+          ]
+        },
+        {
+          "name": "instructors",
+          "kind": "table",
+          "rows": 8,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "dept",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "office",
+              "type": "text"
+            },
+            {
+              "name": "salary",
+              "type": "numeric",
+              "notNull": true
+            }
+          ]
+        },
+        {
+          "name": "prerequisites",
+          "kind": "table",
+          "rows": 14,
+          "columns": [
+            {
+              "name": "course_code",
+              "type": "text",
+              "notNull": true,
+              "pk": true,
+              "fk": "courses.code"
+            },
+            {
+              "name": "requires_code",
+              "type": "text",
+              "notNull": true,
+              "pk": true,
+              "fk": "courses.code"
+            }
+          ]
+        },
+        {
+          "name": "students",
+          "kind": "table",
+          "rows": 40,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "email",
+              "type": "text"
+            },
+            {
+              "name": "year",
+              "type": "int2",
+              "notNull": true
+            },
+            {
+              "name": "advisor_id",
+              "type": "int4",
+              "fk": "instructors.id"
+            }
+          ]
+        }
+      ]
+    },
+    "bank": {
+      "url": "datasets/bank.9a136bec59e7f9ba.json",
+      "hash": "9a136bec59e7f9ba",
+      "title": "bank",
+      "blurb": "1,000 accounts and 20,000 transfers between them. alice and bob hold 200.00 between them, always.",
+      "bytes": 3396,
+      "fingerprint": "796:796: 0/1B5E4D8 16412",
+      "analyze": true,
+      "extensions": [],
+      "setups": [],
+      "tables": [
+        {
+          "name": "accounts",
+          "kind": "table",
+          "rows": 1000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "owner",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "opening_balance",
+              "type": "numeric",
+              "notNull": true
+            },
+            {
+              "name": "balance",
+              "type": "numeric",
+              "notNull": true
+            },
+            {
+              "name": "currency",
+              "type": "bpchar",
+              "notNull": true
+            },
+            {
+              "name": "version",
+              "type": "int4",
+              "notNull": true
+            },
+            {
+              "name": "opened_at",
+              "type": "timestamptz",
+              "notNull": true
+            }
+          ]
+        },
+        {
+          "name": "transfers",
+          "kind": "table",
+          "rows": 20000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int8",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "from_id",
+              "type": "int4",
+              "notNull": true,
+              "fk": "accounts.id"
+            },
+            {
+              "name": "to_id",
+              "type": "int4",
+              "notNull": true,
+              "fk": "accounts.id"
+            },
+            {
+              "name": "amount",
+              "type": "numeric",
+              "notNull": true
+            },
+            {
+              "name": "sent_at",
+              "type": "timestamptz",
+              "notNull": true
+            }
+          ]
+        }
+      ]
+    },
+    "org": {
+      "url": "datasets/org.a3549432337f85db.json",
+      "hash": "a3549432337f85db",
+      "title": "org",
+      "blurb": "a company of 300: a reporting tree six levels deep, eight departments and a week of on-call shifts.",
+      "bytes": 3218,
+      "fingerprint": "795:795: 0/1831108 16424",
+      "analyze": true,
+      "extensions": [],
+      "setups": [],
+      "tables": [
+        {
+          "name": "departments",
+          "kind": "table",
+          "rows": 8,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "budget",
+              "type": "numeric"
+            }
+          ]
+        },
+        {
+          "name": "employees",
+          "kind": "table",
+          "rows": 300,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "name",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "manager_id",
+              "type": "int4",
+              "fk": "employees.id"
+            },
+            {
+              "name": "dept_id",
+              "type": "int4",
+              "fk": "departments.id"
+            },
+            {
+              "name": "title",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "salary",
+              "type": "numeric",
+              "notNull": true
+            },
+            {
+              "name": "hired_on",
+              "type": "date",
+              "notNull": true
+            }
+          ]
+        },
+        {
+          "name": "oncall",
+          "kind": "table",
+          "rows": 14,
+          "columns": [
+            {
+              "name": "shift_date",
+              "type": "date",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "employee_id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true,
+              "fk": "employees.id"
+            },
+            {
+              "name": "on_call",
+              "type": "bool",
+              "notNull": true
+            }
+          ]
+        }
+      ]
+    },
+    "events": {
+      "url": "datasets/events.a8070981e1389518.json",
+      "hash": "a8070981e1389518",
+      "title": "events",
+      "blurb": "25,000 product events from 500 users, march to may 2026, in time order. one day is missing.",
+      "bytes": 3200,
+      "fingerprint": "794:794: 0/1CE6F78 16398",
+      "analyze": true,
+      "extensions": [],
+      "setups": [],
+      "tables": [
+        {
+          "name": "events",
+          "kind": "table",
+          "rows": 25000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int8",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "user_id",
+              "type": "int4",
+              "notNull": true
+            },
+            {
+              "name": "kind",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "occurred_at",
+              "type": "timestamptz",
+              "notNull": true
+            },
+            {
+              "name": "amount",
+              "type": "numeric"
+            },
+            {
+              "name": "props",
+              "type": "jsonb",
+              "notNull": true
+            }
+          ]
+        }
+      ]
+    },
+    "lab": {
+      "url": "datasets/lab.c73b9987a2105e45.json",
+      "hash": "c73b9987a2105e45",
+      "title": "lab",
+      "blurb": "a bench for looking inside: pageinspect, pg_buffercache, pg_visibility, pg_walinspect, amcheck and pg_freespacemap installed, two small tables, never vacuumed.",
+      "bytes": 1008,
+      "fingerprint": "753:753: 0/17E1878 16493",
+      "analyze": false,
+      "extensions": [
+        "pageinspect",
+        "pg_buffercache",
+        "pg_visibility",
+        "pg_walinspect",
+        "amcheck",
+        "pg_freespacemap"
+      ],
+      "setups": [
+        "bloat"
+      ],
+      "tables": [
+        {
+          "name": "accounts",
+          "kind": "table",
+          "rows": 3,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "owner",
+              "type": "text",
+              "notNull": true
+            },
+            {
+              "name": "balance",
+              "type": "numeric",
+              "notNull": true
+            }
+          ]
+        },
+        {
+          "name": "notes",
+          "kind": "table",
+          "rows": 400,
+          "columns": [
+            {
+              "name": "id",
+              "type": "int4",
+              "notNull": true,
+              "pk": true
+            },
+            {
+              "name": "body",
+              "type": "text",
+              "notNull": true
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

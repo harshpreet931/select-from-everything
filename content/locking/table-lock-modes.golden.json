@@ -1,0 +1,65 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "139aff6999ec7457": {
+      "db": "empty",
+      "sql": "CREATE TABLE accounts (id int PRIMARY KEY, owner text NOT NULL, balance numeric(12,2) NOT NULL);\nALTER TABLE accounts ADD CONSTRAINT nonneg CHECK (balance >= 0) NOT VALID;\nCREATE TABLE transfers (id int PRIMARY KEY, src int NOT NULL, amount numeric(12,2) NOT NULL);\nCREATE FUNCTION lock_taken(stmt text) RETURNS text LANGUAGE plpgsql AS $$\nDECLARE m text;\nBEGIN\n  BEGIN\n    EXECUTE stmt;\n    SELECT string_agg(mode, ', ' ORDER BY mode) INTO m FROM pg_locks\n    WHERE pid = pg_backend_pid() AND locktype = 'relation'\n      AND relation = 'accounts'::regclass;\n    RAISE EXCEPTION USING ERRCODE = 'P0001';     -- undo the statement\n  EXCEPTION WHEN raise_exception THEN NULL;\n  END;\n  RETURN m;\nEND $$;\nSELECT stmt, lock_taken(stmt) AS lock FROM (VALUES\n  (1, 'SELECT * FROM accounts'),\n  (2, 'SELECT * FROM accounts FOR UPDATE'),\n  (3, 'UPDATE accounts SET balance = 0'),\n  (4, 'ANALYZE accounts'),\n  (5, 'ALTER TABLE accounts VALIDATE CONSTRAINT nonneg'),\n  (6, 'ALTER TABLE accounts SET (fillfactor = 70)'),\n  (7, 'CREATE INDEX ON accounts (owner)'),\n  (8, 'ALTER TABLE transfers ADD FOREIGN KEY (src) REFERENCES accounts'),\n  (9, 'LOCK TABLE accounts IN EXCLUSIVE MODE'),\n  (10, 'ALTER TABLE accounts ADD COLUMN note text'),\n  (11, 'ALTER TABLE accounts ADD CONSTRAINT pos CHECK (balance >= 0) NOT VALID')\n) AS s(n, stmt) ORDER BY n;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "09faaedc5586cc0c"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c1bc3c4899a392aa"
+        },
+        {
+          "tag": "SELECT 11",
+          "command": "SELECT",
+          "columns": [
+            ["stmt", "text", 25],
+            ["lock", "text", 25]
+          ],
+          "rowCount": 11,
+          "digest": "fe78a563fe45e297",
+          "rows": [
+            ["SELECT * FROM accounts", "AccessShareLock"],
+            ["SELECT * FROM accounts FOR UPDATE", "RowShareLock"],
+            ["UPDATE accounts SET balance = 0", "RowExclusiveLock"],
+            ["ANALYZE accounts", "ShareUpdateExclusiveLock"],
+            ["ALTER TABLE accounts VALIDATE CONSTRAINT nonneg", "ShareUpdateExclusiveLock"],
+            ["ALTER TABLE accounts SET (fillfactor = 70)", "ShareUpdateExclusiveLock"],
+            ["CREATE INDEX ON accounts (owner)", "ShareLock"],
+            ["ALTER TABLE transfers ADD FOREIGN KEY (src) REFERENCES accounts", "AccessShareLock, RowShareLock, ShareRowExclusiveLock"],
+            ["LOCK TABLE accounts IN EXCLUSIVE MODE", "ExclusiveLock"],
+            ["ALTER TABLE accounts ADD COLUMN note text", "AccessExclusiveLock"],
+            ["ALTER TABLE accounts ADD CONSTRAINT pos CHECK (balance >= 0) NOT VALID", "AccessExclusiveLock"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+[
+  { "term": "clustered index", "short": "a b-tree whose leaves hold the rows themselves, in key order. InnoDB tables are one; postgres tables are heaps", "chapter": "postgres-vs-innodb", "aka": ["index-organized table"] },
+  { "term": "secondary index", "short": "any index other than the clustered one. in InnoDB its entries hold the primary key, so a lookup descends twice", "chapter": "postgres-vs-innodb" },
+  { "term": "gap lock", "short": "an InnoDB lock on the space between index records, so nobody can insert into a range you scanned", "chapter": "postgres-vs-innodb" },
+  { "term": "next-key lock", "short": "an InnoDB record lock plus a gap lock on the gap before it, used by locking reads at REPEATABLE READ", "chapter": "postgres-vs-innodb" },
+  { "term": "rowid", "short": "sqlite's 64-bit row key. a rowid table is a b-tree keyed by it, and INTEGER PRIMARY KEY becomes it", "chapter": "sqlite-inside" },
+  { "term": "type affinity", "short": "sqlite's column type hint: values are converted if they can be and stored as given if not, unless the table is STRICT", "chapter": "sqlite-inside" },
+  { "term": "rollback journal", "short": "sqlite's default crash safety: copy the old pages aside, write new ones in place, delete the journal to commit", "chapter": "sqlite-inside" },
+  { "term": "columnar storage", "short": "storing each column's values together instead of each row's, so a scan reads only the columns it names", "chapter": "columnar-and-vectorized", "aka": ["column store"] },
+  { "term": "vectorized execution", "short": "operators pass batches of a few thousand values instead of one row per call", "chapter": "columnar-and-vectorized" },
+  { "term": "run-length encoding", "short": "compressing a column as (value, count) pairs, which shrinks sorted or repetitive columns to almost nothing", "chapter": "columnar-and-vectorized", "aka": ["RLE"] },
+  { "term": "dictionary encoding", "short": "replacing each value of a column with a small code into a list of its distinct values", "chapter": "columnar-and-vectorized" },
+  { "term": "query tuning", "short": "reading a slow query's real plan, finding the node doing the work, and changing one thing", "chapter": "tuning-casebook" },
+  { "term": "REPACK", "short": "postgres 19's command that rewrites a table to give space back; CONCURRENTLY does it without blocking writes", "chapter": "whats-next" },
+  { "term": "plan advice", "short": "postgres 19's pg_plan_advice: EXPLAIN (PLAN_ADVICE) prints a plan's choices, and a setting feeds them back", "chapter": "whats-next", "aka": ["pg_plan_advice"] },
+  { "term": "commitfest", "short": "a month-long round of reviewing postgres patches, tracked in the commitfest app", "chapter": "whats-next" }
+]

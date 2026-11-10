@@ -1,0 +1,173 @@
+import { RangeLine } from "@/components/figures/types/RangeLine";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/ranges.pgtrace.json";
+
+{/* the range lines and the free-days result read traces/ranges.scenario.sql, captured on PGlite.
+    bounds, members and the multirange are postgres's own output. */}
+
+export const forms = resultOf(trace, 0).rows;
+export const formRows = forms.map(([w, s, lo, hi, empty, members]) => ({
+  label: w,
+  note: `→ ${s}`,
+  lo: lo === null ? null : Number(lo),
+  hi: hi === null ? null : Number(hi),
+  loInc: true,
+  hiInc: false,
+  members: members ? members.slice(1, -1).split(",").map(Number) : [],
+  tone: s === "empty" ? "faint" : "ref",
+}));
+export const books = resultOf(trace, 3).rows;
+export const bookRows = [
+  ...books.map(([g, n, from, to, ov]) => ({ label: g, note: n.replace(/2026-03-0?/g, "").replace(/2026-03-/g, ""), lo: Number(from), hi: Number(to), loInc: true, hiInc: false, tone: ov === "t" ? "dead" : "ref" })),
+  { label: "edsger", note: "refused", lo: 3, hi: 5, loInc: true, hiInc: false, tone: "dead", dashed: true },
+];
+export const days = Array.from({ length: 4 }, (_, i) => ({ at: i * 3, label: `mar ${i * 3 + 1}` }));
+export const multi = resultOf(trace, 4);
+export const source = prov(trace);
+
+<InShort>
+a **range** is a start and an end stored as one value: `int4range`, `numrange`, `daterange`, `tstzrange`. each bound is **inclusive** `[` or **exclusive** `)`, and discrete ranges are stored in one **canonical form**, `[lower, upper)`. `&&` asks whether two ranges overlap, `@>` whether one contains a value or a range.
+
+an **exclusion constraint** with `&&` makes double bookings impossible, and **multiranges** (postgres 14) hold several ranges with gaps between them.
+</InShort>
+
+## the picture
+
+you know how every booking table has `starts_at` and `ends_at`, and every overlap query is four comparisons that somebody gets wrong at the edges? a range is that pair as one value, with the edges spelled out, and operators that already know the rules.
+
+think of a ruler with a highlighter stroke on it. the stroke has two ends, and each end is either drawn *over* the mark (inclusive) or stops just *before* it (exclusive). for whole numbers, "up to and including 5" and "up to but not including 6" cover exactly the same marks, so postgres writes them all the same way.
+
+<Figure caption={<>five int4ranges as typed, and the form postgres stores. a <C k="ref">solid end</C> is inclusive, a hollow one exclusive. the dots are the integers each range <C k="live">contains</C>: <code>[2,5]</code> and <code>[2,6)</code> hold the same four, so they're the same value. <code>[4,4)</code> holds nothing and becomes <code>empty</code>.</>}>
+<RangeLine min={0} max={8} dots ticks={Array.from({ length: 9 }, (_, i) => ({ at: i, label: String(i) }))} rows={formRows} legend={[["ref", "a range"], ["live", "a member"]]} trace={source} />
+</Figure>
+
+## bounds and canonical form
+
+the constructor functions take a bound spec as the third argument, `'[)'` by default. a literal writes the brackets itself:
+
+```sql run
+SELECT int4range(2, 5)         AS default_bounds,
+       int4range(2, 5, '[]')   AS both_inclusive,
+       '(2,5]'::int4range      AS literal,
+       int4range(2, 5, '[]') = int4range(2, 6) AS same_value,
+       numrange(2, 5, '[]')    AS continuous;
+```
+
+int4range, int8range and daterange are **discrete**: there's a next value after 5 (6) and after march 4 (march 5), so postgres can rewrite every range to `[lower, upper)`. numrange and tstzrange are continuous, there's no "next" number after 5.0, so `[2,5]` stays as typed. either way, `[)` is the shape to use for time: a stay from the 2nd to the 5th is `[2026-03-02,2026-03-05)`, checking out on the morning of the 5th, and the next guest's `[2026-03-05, ...)` doesn't overlap it. the same half-open rule as [filtering a month](/learn/basics/filtering-rows).
+
+a NULL bound means unbounded on that side, and an empty range is a real value, not NULL:
+
+```sql run
+SELECT int4range(1, NULL) AS from_one_on, 'empty'::int4range AS empty,
+       int4range(3, 3) = 'empty' AS equal_to_empty, 'empty'::int4range && int4range(1, 5) AS empty_overlaps;
+```
+
+an empty range overlaps nothing, and is contained in everything.
+
+## the operators
+
+| operator | asks | example |
+| --- | --- | --- |
+| `&&` | do they overlap? | `nights && daterange('2026-03-04', '2026-03-06')` |
+| `@>` | contains a value, or a whole range | `nights @> date '2026-03-03'` |
+| `<@` | is contained by | `date '2026-03-03' <@ nights` |
+| `-\|-` | adjacent: touching, no gap, no overlap | `[2,5) -\|- [5,8)` |
+| `+` `*` `-` | union, intersection, difference | `int4range(1,5) * int4range(3,8)` is `[3,5)` |
+
+here are a room's three bookings in march, against a stay from the 4th to the 6th. two of them overlap it:
+
+<Figure caption={<>march bookings for one room, a label every three days. ada and grace <C k="dead">overlap</C> the stay edsger wanted (dashed), so the exclusion constraint refused it. grace starts the day ada leaves: adjacent, not overlapping.</>}>
+<RangeLine min={0} max={11} ticks={days} rows={bookRows} trace={source} />
+</Figure>
+
+<Predict options={["true", "false"]} answer={1}>
+```sql
+SELECT daterange('2026-03-02', '2026-03-05') && daterange('2026-03-05', '2026-03-07');
+```
+<Explain>
+false. the first range is `[2026-03-02,2026-03-05)`: it stops just before the 5th. the second starts on the 5th. they touch, so `-|-` (adjacent) is true, but they share no day, so `&&` is false. that's exactly the checkout-and-checkin case, and why `[)` is the right default.
+</Explain>
+</Predict>
+
+## no double bookings
+
+a UNIQUE constraint checks that no two rows are *equal*. an exclusion constraint generalises it: no two rows may satisfy an operator, here `&&`, overlap. it's backed by a GiST index, which knows how to search ranges:
+
+```sql run expect=error
+CREATE TABLE bookings (
+  guest  text NOT NULL,
+  nights daterange NOT NULL,
+  EXCLUDE USING gist (nights WITH &&)
+);
+INSERT INTO bookings VALUES ('ada', '[2026-03-02,2026-03-05)'), ('grace', '[2026-03-05,2026-03-07)');
+INSERT INTO bookings VALUES ('edsger', '[2026-03-04,2026-03-06)');
+```
+
+the check happens in the database, under concurrency, so two sessions booking the same night at once can't both win (one waits for the other, then fails). no application-side "check, then insert" can promise that.
+
+a real hotel has more than one room: no overlap *in the same room*. that's `room WITH =, nights WITH &&`, and plain GiST has no `=` for integers:
+
+```sql run expect=error
+CREATE TABLE stays (room int, nights daterange, EXCLUDE USING gist (room WITH =, nights WITH &&));
+```
+
+the `btree_gist` extension adds those operator classes (`ext=btree_gist` creates it first):
+
+```sql run ext=btree_gist expect=error
+CREATE TABLE stays (room int, nights daterange, EXCLUDE USING gist (room WITH =, nights WITH &&));
+INSERT INTO stays VALUES (101, '[2026-03-02,2026-03-05)'), (102, '[2026-03-02,2026-03-05)');
+INSERT INTO stays VALUES (101, '[2026-03-04,2026-03-06)');
+```
+
+room 102 the same nights is fine, room 101 again isn't. postgres 18 also has a shorthand for this pattern, `PRIMARY KEY (room, nights WITHOUT OVERLAPS)`, covered with the rest of [time ranges and temporal keys](/learn/design/temporal-keys).
+
+## multiranges
+
+a range has no holes. ask for the union of two ranges with a gap between them and you get an error ("would not be contiguous"). postgres 14 <Since v={14} /> added multiranges: an ordered set of non-overlapping ranges, one per range type (`int4multirange`, `datemultirange`, ...). `range_agg` builds one from rows, and the usual operators work on them, so "which nights are free?" is one subtraction:
+
+```sql run
+SELECT range_agg(r) AS merged
+FROM (VALUES (int4range(1, 3)), (int4range(2, 5)), (int4range(7, 9))) AS t (r);
+```
+
+<Figure caption={<>march 1 to 11 as a datemultirange, minus every booked night: what's left are the free nights. postgres merged ada's and grace's touching stays into one booked range.</>}>
+<ResultTable columns={multi.columns.map((c) => c.name)} rows={multi.rows} />
+<Provenance trace={source} />
+</Figure>
+
+```sql run
+CREATE TABLE bookings (guest text, nights daterange);
+INSERT INTO bookings VALUES ('ada', '[2026-03-02,2026-03-05)'), ('grace', '[2026-03-05,2026-03-07)'), ('alan', '[2026-03-09,2026-03-11)');
+SELECT free
+FROM unnest(datemultirange(daterange('2026-03-01', '2026-03-11')) - (SELECT range_agg(nights) FROM bookings)) AS free
+ORDER BY free;
+```
+
+## the gotcha: indexes and queries
+
+a b-tree on a range column only serves `=` and sorting. overlap and containment want GiST (or SP-GiST), which is what the exclusion constraint built for you:
+
+```sql run
+SET TimeZone = 'UTC';
+CREATE TABLE slots AS
+SELECT i AS id, tstzrange(timestamptz '2026-03-01 00:00+00' + i * interval '30 minutes', timestamptz '2026-03-01 00:00+00' + (i + 1) * interval '30 minutes') AS during
+FROM generate_series(0, 9999) AS i;
+CREATE INDEX ON slots USING gist (during);
+ANALYZE slots;
+EXPLAIN (COSTS OFF) SELECT id FROM slots WHERE during && tstzrange('2026-03-02 10:00+00', '2026-03-02 11:00+00');
+```
+
+[index types](/learn/indexes/index-types) compares GiST with the others, and [GiST and SP-GiST](/learn/index-internals/gist-and-spgist) shows how it searches.
+
+<Interview q="how do you prevent overlapping bookings in postgres?">
+store the period as a range (daterange or tstzrange, half-open [)) and add an exclusion constraint: `EXCLUDE USING gist (room WITH =, during WITH &&)`, with the btree_gist extension for the `=` on a plain column. postgres then refuses any row that overlaps an existing one for the same room, enforced by a GiST index and safe under concurrency. bonus point: postgres 18 offers `PRIMARY KEY (room, during WITHOUT OVERLAPS)` for the same idea, and multiranges (14+) make "free slots" a single subtraction.
+</Interview>
+
+<Keylines>
+- a range is a start and an end as one value, each bound inclusive `[` or exclusive `)`.
+- discrete ranges (int, date) are stored canonically as `[lower, upper)`.
+- `&&` overlaps, `@>` contains, `-|-` touches. an empty range overlaps nothing.
+- `EXCLUDE USING gist (... WITH &&)` makes overlaps impossible, even under concurrency.
+- multiranges (14+) hold ranges with gaps; range_agg builds them.
+</Keylines>

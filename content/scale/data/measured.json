@@ -1,0 +1,16 @@
+{
+  "machine": "this mac (m4 pro), node-postgres 8, a throwaway postgres 18.6 with the shop dataset, client and server on the same machine",
+  "connect": {
+    "method": "2,000 SELECT 1 on one open connection vs 2,000 (unix socket) or 500 (tcp) rounds of connect, SELECT 1, disconnect. mean per round, two runs",
+    "reuse_unix_ms": [0.021, 0.022],
+    "new_unix_trust_ms": [1.74, 2.10],
+    "reuse_tcp_ms": [0.040, 0.043],
+    "new_tcp_scram_ms": [3.02, 3.31]
+  },
+  "page": {
+    "method": "the 100 latest orders and their item counts, 300 page loads each way over 127.0.0.1, named (prepared) statements, median per page load, two runs",
+    "n_plus_one_ms": [4.57, 4.52],
+    "join_ms": [1.41, 1.38],
+    "any_ms": [0.93, 0.90]
+  }
+}

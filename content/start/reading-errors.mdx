@@ -1,0 +1,195 @@
+import { ErrorAnatomy } from "@/components/figures/start/ErrorAnatomy";
+import { SqlstateDecoder } from "@/components/figures/start/SqlstateDecoder";
+
+<InShort>
+a postgres error is more than its first line. there's the **message**, a **caret** under the exact spot it gave up, often a **DETAIL** (the facts of this case) and a **HINT** (a guess at the fix), and always a five-character **SQLSTATE** whose first two characters say what kind of problem it is.
+
+read all of it. it's usually right, and it usually tells you the fix.
+</InShort>
+
+## the picture
+
+you know how an error message feels like being shouted at in red, so you skim the first line and start guessing?
+
+think of a lab report instead. there's a one-line result at the top (the message), a pointer to where in the sample it was found (the caret), the measurements (DETAIL), the doctor's suggestion (HINT), and a diagnosis code that means the same thing in every hospital (the SQLSTATE). you'd read the whole report. read the whole error.
+
+<Figure wide caption={<>pick an error, then a part. these are psql's printouts with <code>\set VERBOSITY verbose</code>, which shows every field the server sent. the run buttons on this site show the everyday ones: severity, SQLSTATE, message, caret, DETAIL and HINT.</>}>
+<ErrorAnatomy />
+</Figure>
+
+## the caret
+
+the caret points at the character where postgres stopped understanding you. it's a position in your statement, so it works across lines:
+
+```sql run db=shop expect=error
+SELECT nmae
+FROM customers
+WHERE id = 42;
+```
+
+column `nmae` doesn't exist, the caret sits under it, and the HINT guesses what you meant: postgres compares the name against every column in scope and suggests a close one. a value of the wrong type gets the caret too, under the literal that didn't fit:
+
+```sql run db=shop expect=error
+SELECT name FROM customers WHERE id = 'forty-two';
+```
+
+but "where postgres stopped understanding" isn't always "where you went wrong". the caret marks the first spot that made no sense, and sometimes the mistake is just before it:
+
+<Predict options={["under the comma after city", "under FROM", "under name"]} answer={1}>
+```sql
+SELECT name, city, FROM customers;
+```
+<Explain>
+after `city,` postgres expects another column. it gets `FROM`, a keyword that can't be a column, so the syntax error is reported "at or near FROM". the real mistake is the comma before it. when the caret points at something that looks fine, look one step to the left.
+</Explain>
+</Predict>
+
+```sql run db=shop expect=error
+SELECT name, city, FROM customers;
+```
+
+<Gotcha title="a missing comma isn't an error at all">
+leave out a comma and the next word becomes an alias, quietly:
+
+```sql run db=shop
+SELECT name email, city FROM customers WHERE id = 42;
+```
+
+there's a column called `email` in the result, and it holds Ada's name. postgres read `name email` as `name AS email`, which is perfectly legal. no error, no warning, wrong answer. if a column's values look like the column to its left, count your commas.
+</Gotcha>
+
+## DETAIL and HINT
+
+DETAIL is facts: which key, which row, which value. it turns "something about a foreign key" into "this exact value is missing from that exact table":
+
+```sql run db=shop expect=error
+INSERT INTO orders (customer_id, status, ordered_at)
+VALUES (99999, 'placed', '2026-10-28 09:00+00');
+```
+
+the same constraint from the other side: Ada has orders, so she can't be deleted while they point at her.
+
+```sql run db=shop expect=error
+DELETE FROM customers WHERE id = 42;
+```
+
+and for a `CHECK`, DETAIL prints the whole row that would have been written, so you can see which value broke it (here, a status that isn't on the list):
+
+```sql run db=shop expect=error
+UPDATE orders SET status = 'lost' WHERE id = 1;
+```
+
+HINT is a suggestion, and postgres's own style guide says hints are for advice that might not always apply. this one is half right: the fix isn't a cast, it's spelling `length` correctly.
+
+```sql run db=shop expect=error
+SELECT lenght(name) FROM customers WHERE id = 42;
+```
+
+some errors come with neither, because the message says it all. this one you'll meet a lot, and [GROUP BY](/learn/basics/group-by) explains why it's right:
+
+```sql run db=shop expect=error
+SELECT country, name, count(*) FROM customers GROUP BY country;
+```
+
+## SQLSTATE
+
+every error carries a five-character code. the first two characters are the **class**, the last three the exact condition: `23505` is class 23 (integrity constraint violation), condition 505 (unique violation). the scheme comes from the SQL standard, so other databases that follow it use the same classes; postgres added its own codes where the standard had none, and marks them with a `P` (`42P01`, `22P02`, `25P02`).
+
+<Figure caption={<>pick a code or type one. all 262 codes postgres 18.6 defines are in here, with the name pl/pgsql knows each one by, and who defined it: the <C k="live">standard</C>, <C k="meta">postgres</C>, or somebody else.</>}>
+<SqlstateDecoder />
+</Figure>
+
+why care about a code when there's a perfectly good message? because the message is for people and the code is for programs. the message can be translated (`lc_messages`) and can be reworded between versions; the code doesn't change. code that handles errors checks the code. pl/pgsql even lets you catch errors by name:
+
+```sql run db=shop
+DO $$
+BEGIN
+  INSERT INTO customers (name, email, country, created_at)
+  VALUES ('Ada Again', 'ada@example.com', 'GB', '2026-10-28 09:00+00');
+EXCEPTION WHEN unique_violation THEN
+  RAISE NOTICE 'caught %: %', SQLSTATE, SQLERRM;
+END $$;
+```
+
+`unique_violation` is `23505`'s condition name. your driver gives you the same code (`err.code` in node-postgres, `e.sqlstate` in psycopg, `getSQLState()` in JDBC), plus the constraint name as a separate field.
+
+## where errors come from
+
+the code doesn't say which part of postgres raised an error, but psql's verbose mode does: `LOCATION` is the C function and source line that gave up. here are five errors, one after another, on a real server:
+
+```psql nolines
+shop=# \set VERBOSITY verbose
+shop=# SELEC name FROM customers;
+ERROR:  42601: syntax error at or near "SELEC"
+LINE 1: SELEC name FROM customers;
+        ^
+LOCATION:  scanner_yyerror, scan.l:1240
+shop=# SELECT nmae FROM customers WHERE id = 42;
+ERROR:  42703: column "nmae" does not exist
+LINE 1: SELECT nmae FROM customers WHERE id = 42;
+               ^
+HINT:  Perhaps you meant to reference the column "customers.name".
+LOCATION:  errorMissingColumn, parse_relation.c:3870
+shop=# SELECT name FROM customers WHERE id = 'forty-two';
+ERROR:  22P02: invalid input syntax for type integer: "forty-two"
+LINE 1: SELECT name FROM customers WHERE id = 'forty-two';
+                                              ^
+LOCATION:  pg_strtoint32_safe, numutils.c:618
+shop=# INSERT INTO customers (name, email, country, created_at) VALUES ('Ada Again', 'ada@example.com', 'GB', '2026-10-28');
+ERROR:  23505: duplicate key value violates unique constraint "customers_email_key"
+DETAIL:  Key (email)=(ada@example.com) already exists.
+SCHEMA NAME:  public
+TABLE NAME:  customers
+CONSTRAINT NAME:  customers_email_key
+LOCATION:  _bt_check_unique, nbtinsert.c:673
+shop=# SELECT 1 / 0;
+ERROR:  22012: division by zero
+LOCATION:  int4div, int.c:872
+```
+
+<Figure caption="hover a stage. the same five errors, placed where postgres raised them (from their LOCATION lines). everything left of execute fails before a single row is read.">
+<Flow
+  stages={[
+    { label: "parse", sub: "42601 · scan.l", note: "SELEC isn't a keyword, so the grammar fails at the first word. nothing else was even looked at." },
+    { label: "analyze", sub: "42703 · parse_relation.c", note: "the grammar was fine, but no column called nmae exists in customers. names are checked against the catalog here." },
+    { label: "analyze", sub: "22P02 · numutils.c", note: "'forty-two' has to become an integer to be compared with id, and that conversion happens while the query is analysed, before any row is read." },
+    { label: "execute", sub: "23505 · nbtinsert.c", note: "the row was built and the b-tree index on email found Ada's address already in it, at the moment of insertion." },
+    { label: "execute", sub: "22012 · int.c", note: "integer division, found to be by zero only when it actually ran." },
+  ]}
+/>
+</Figure>
+
+an error during execution can come after real work was done. it doesn't matter: a statement that fails leaves nothing behind. this UPDATE divides every price by `100 - id`, so it gets through the products before 100, then hits zero:
+
+```sql run db=shop errors=continue
+UPDATE products SET price = price / (100 - id);
+SELECT id, price FROM products WHERE id IN (1, 99, 101) ORDER BY id;
+```
+
+product 1 still costs 49.00. every row the UPDATE had already changed was thrown away with it.
+
+## the error after the error
+
+inside a transaction, the first error breaks the whole transaction, and postgres refuses everything after it until you end it:
+
+```sql run db=shop errors=continue
+BEGIN;
+SELECT nmae FROM customers;
+SELECT name FROM customers WHERE id = 42;
+ROLLBACK;
+SELECT name FROM customers WHERE id = 42;
+```
+
+`25P02` (in failed sql transaction) is never the real problem. scroll up to the first error, fix that, and `ROLLBACK`. psql even tells you in the prompt (`shop=!#`, see [psql](/learn/start/psql)), and [BEGIN, COMMIT and ROLLBACK](/learn/transactions/begin-commit-rollback) covers savepoints, which let you recover from one error without losing the whole transaction.
+
+<Interview q="how should an application detect a duplicate key?">
+by its SQLSTATE: `23505`, and if there are several unique constraints, the constraint name field that comes with it. never by matching the message text: it's translated when `lc_messages` isn't English and can be reworded between versions. bonus point: often you don't need to catch it at all. `INSERT ... ON CONFLICT DO NOTHING` (or `DO UPDATE`) says what to do about a duplicate in the statement itself. see [INSERT ... ON CONFLICT](/learn/writes/upsert).
+</Interview>
+
+<Keylines>
+- read the whole error: message, caret, DETAIL, HINT, SQLSTATE.
+- the caret marks where postgres gave up. the mistake can be one step to its left.
+- DETAIL is facts, HINT is a guess.
+- the first two characters of a SQLSTATE are the class. programs should check the code, not the words.
+- a failed statement leaves nothing behind, and 25P02 means an earlier error. fix that one.
+</Keylines>

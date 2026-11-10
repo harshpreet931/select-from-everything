@@ -1,0 +1,99 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b1b9b5824ffadd49": {
+      "db": "empty",
+      "sql": "SHOW deadlock_timeout;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["deadlock_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "4a0f4011a12c77c3",
+          "rows": [
+            ["1s"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b1fad5f76e6a3c7e": {
+      "db": "bank",
+      "sql": "BEGIN;\nSELECT id, owner, balance FROM accounts\nWHERE id IN (2, 1)\nORDER BY id\nFOR UPDATE;\nUPDATE accounts SET balance = balance - 30.00 WHERE id = 2;\nUPDATE accounts SET balance = balance + 30.00 WHERE id = 1;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "1b5e877805124f4e",
+          "rows": [
+            ["1", "alice", "100.00"],
+            ["2", "bob", "100.00"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0b180bc9b96cf94b"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "982af26933a33534"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "753270741c360f16"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "625266ef1e9e6573": {
+      "db": "bank",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT id FROM accounts WHERE id IN (2, 1) ORDER BY id FOR UPDATE;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5d4909c5577919b9",
+          "rows": [
+            ["LockRows"],
+            ["  ->  Index Scan using accounts_pkey on accounts"],
+            ["        Index Cond: (id = ANY ('{2,1}'::integer[]))"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

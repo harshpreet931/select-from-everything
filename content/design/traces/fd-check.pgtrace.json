@@ -1,0 +1,245 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/fd-check.scenario.sql",
+ "title": "does X determine Y? four candidate dependencies, checked on the school data",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "instructors": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"dept","type":"text"},
+    {"name":"office","type":"text"},
+    {"name":"salary","type":"numeric"}
+   ]
+  },
+  "instructors_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"instructors"},
+  "students": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"year","type":"int2"},
+    {"name":"advisor_id","type":"int4"}
+   ]
+  },
+  "students_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"students"},
+  "students_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"students"},
+  "courses": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"code","type":"text"},
+    {"name":"title","type":"text"},
+    {"name":"dept","type":"text"},
+    {"name":"credits","type":"int2"},
+    {"name":"instructor_id","type":"int4"}
+   ]
+  },
+  "courses_pkey": {"kind":"index","am":"btree","columns":[{"name":"code","type":"text"}],"on":"courses"},
+  "enrollments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"student_id","type":"int4"},
+    {"name":"course_code","type":"text"},
+    {"name":"term","type":"text"},
+    {"name":"grade","type":"bpchar"}
+   ]
+  },
+  "enrollments_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"student_id","type":"int4"},{"name":"course_code","type":"text"},{"name":"term","type":"text"}],
+   "on": "enrollments"
+  },
+  "prerequisites": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"course_code","type":"text"},{"name":"requires_code","type":"text"}]
+  },
+  "prerequisites_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"course_code","type":"text"},{"name":"requires_code","type":"text"}],
+   "on": "prerequisites"
+  },
+  "enrollments_flat": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"student_name","type":"text"},
+    {"name":"student_email","type":"text"},
+    {"name":"course_code","type":"text"},
+    {"name":"course_title","type":"text"},
+    {"name":"instructor_name","type":"text"},
+    {"name":"instructor_office","type":"text"},
+    {"name":"term","type":"text"},
+    {"name":"grade","type":"bpchar"}
+   ]
+  }
+ },
+ "base": {"xid":798,"lsn":26653464},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT course_code, course_title, count(*) AS rows,\n       count(*) OVER (PARTITION BY course_code) = 1 AS agrees\nFROM enrollments_flat GROUP BY course_code, course_title ORDER BY course_code, course_title",
+   "note": "every course code has one title in these 30 rows. it's a rule, too: courses are keyed by code.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 11,
+    "columns": [
+     {"name":"course_code","type":"text"},
+     {"name":"course_title","type":"text"},
+     {"name":"rows","type":"int8"},
+     {"name":"agrees","type":"bool"}
+    ],
+    "data": [
+     ["CS101","Intro to Programming","2","t"],
+     ["CS201","Data Structures","4","t"],
+     ["CS301","Databases","3","t"],
+     ["CS350","Operating Systems","4","t"],
+     ["CS401","Database Internals","2","t"],
+     ["HIST101","History of Computing","2","t"],
+     ["MATH101","Calculus I","2","t"],
+     ["MATH201","Discrete Math","3","t"],
+     ["MATH301","Linear Algebra","2","t"],
+     ["PHYS101","Mechanics","3","t"],
+     ["PHYS201","Electromagnetism","3","t"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT instructor_name, instructor_office, count(*) AS rows,\n       count(*) OVER (PARTITION BY instructor_name) = 1 AS agrees\nFROM enrollments_flat GROUP BY instructor_name, instructor_office ORDER BY instructor_name, instructor_office",
+   "note": "Hannah Okoye has two offices. the 30 rows contradict instructor_name → instructor_office, and one counterexample is enough.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"instructor_name","type":"text"},
+     {"name":"instructor_office","type":"text"},
+     {"name":"rows","type":"int8"},
+     {"name":"agrees","type":"bool"}
+    ],
+    "data": [
+     ["Amara Diallo","D-301","6","t"],
+     ["Hannah Okoye","B-101","4","f"],
+     ["Hannah Okoye","B-199","1","f"],
+     ["Lena Fischer","B-103","2","t"],
+     ["Marco Rossi","B-102","8","t"],
+     ["Oliver Grant","E-110","2","t"],
+     ["Tomás Ortega","C-201","4","t"],
+     ["Yuki Tanaka","C-202","3","t"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT student_name, student_email, count(*) AS rows,\n       count(*) OVER (PARTITION BY student_name) = 1 AS agrees\nFROM enrollments_flat GROUP BY student_name, student_email ORDER BY student_name, student_email",
+   "note": "in these 30 rows every student name has one email. that's luck, not a rule.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"student_name","type":"text"},
+     {"name":"student_email","type":"text"},
+     {"name":"rows","type":"int8"},
+     {"name":"agrees","type":"bool"}
+    ],
+    "data": [
+     ["Aisha Bello","aisha.bello@uni.example","1","t"],
+     ["Emma Dubois","emma.dubois@uni.example","7","t"],
+     ["Kenji Watanabe","kenji.watanabe@uni.example","4","t"],
+     ["Liam Walsh","liam.walsh@uni.example","2","t"],
+     ["Lucas Costa","lucas.costa@uni.example","3","t"],
+     ["Maya Chen","maya.chen@uni.example","5","t"],
+     ["Noah Schmidt","noah.schmidt@uni.example","1","t"],
+     ["Priya Nair","priya.nair@uni.example","7","t"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT name, email, count(*) AS rows,\n       count(*) OVER (PARTITION BY name) = 1 AS agrees\nFROM students GROUP BY name, email ORDER BY count(*) OVER (PARTITION BY name) DESC, name, email",
+   "note": "all 40 students: there are two Alex Kims, with two emails. a name never determined an email; the sample just hadn't met both.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 40,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"email","type":"text"},
+     {"name":"rows","type":"int8"},
+     {"name":"agrees","type":"bool"}
+    ],
+    "data": [
+     ["Alex Kim","alex.kim2@uni.example","1","f"],
+     ["Alex Kim","alex.kim@uni.example","1","f"],
+     ["Aisha Bello","aisha.bello@uni.example","1","t"],
+     ["Ama Owusu","ama.owusu@uni.example","1","t"],
+     ["Ananya Rao","ananya.rao@uni.example","1","t"],
+     ["Arjun Mehta","arjun.mehta@uni.example","1","t"],
+     ["Bianca Ferri","bianca.ferri@uni.example","1","t"],
+     ["Clara Novak","clara.novak@uni.example","1","t"],
+     ["Diego Herrera","diego.herrera@uni.example","1","t"],
+     ["Elena Petrov","elena.petrov@uni.example","1","t"],
+     ["Emma Dubois","emma.dubois@uni.example","1","t"],
+     ["Fatima Zahra","fatima.zahra@uni.example","1","t"],
+     ["Felix Wagner","felix.wagner@uni.example","1","t"],
+     ["Hugo Martin","hugo.martin@uni.example","1","t"],
+     ["Ingrid Larsen","ingrid.larsen@uni.example","1","t"],
+     ["Ivan Sokolov","ivan.sokolov@uni.example","1","t"],
+     ["Jonas Berg","jonas.berg@uni.example","1","t"],
+     ["Kenji Watanabe","kenji.watanabe@uni.example","1","t"],
+     ["Kwame Mensah","kwame.mensah@uni.example","1","t"],
+     ["Lars Eriksson","lars.eriksson@uni.example","1","t"],
+     ["Leila Karimi","leila.karimi@uni.example","1","t"],
+     ["Liam Walsh","liam.walsh@uni.example","1","t"],
+     ["Lucas Costa","lucas.costa@uni.example","1","t"],
+     ["Mateo Garcia","mateo.garcia@uni.example","1","t"],
+     ["Mateus Lima","mateus.lima@uni.example","1","t"],
+     ["Maya Chen","maya.chen@uni.example","1","t"],
+     ["Mei Lin","mei.lin@uni.example","1","t"],
+     ["Noah Schmidt","noah.schmidt@uni.example","1","t"],
+     ["Nora Jensen","nora.jensen@uni.example","1","t"],
+     ["Omar Haddad","omar.haddad@uni.example","1","t"],
+     ["Priya Nair","priya.nair@uni.example","1","t"],
+     ["Ravi Shankar","ravi.shankar@uni.example","1","t"],
+     ["Robert'); DROP TABLE students;--","bobby.tables@uni.example","1","t"],
+     ["Sam Rivera","sam.rivera@uni.example","1","t"],
+     ["Sana Malik","sana.malik@uni.example","1","t"],
+     ["Sofia Romano","sofia.romano@uni.example","1","t"],
+     ["Tariq Aziz","tariq.aziz@uni.example","1","t"],
+     ["Valentina Cruz","valentina.cruz@uni.example","1","t"],
+     ["Yuna Park",null,"1","t"],
+     ["Zara Ahmed","zara.ahmed@uni.example","1","t"]
+    ]
+   }
+  }
+ ],
+ "db": "school"
+}

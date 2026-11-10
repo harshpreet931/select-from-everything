@@ -1,0 +1,505 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/page-fill.scenario.sql",
+ "title": "an empty page, filled one row at a time, then a delete, a vacuum and a reused slot",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"},
+  "slots": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"note","type":"text"}]}
+ },
+ "base": {"xid":754,"lsn":26147944},
+ "setup": "CREATE TABLE slots (id int, note text);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "",
+   "note": "an empty table has no pages at all. the first insert creates page 0.",
+   "status": "ok",
+   "heap": {"slots":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO slots VALUES (1, 'hi')",
+   "note": "one short row. line pointer 1 goes right after the 24-byte header, the tuple goes at the very end of the page.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "heap": {
+    "slots": [
+     {
+      "rel": "slots",
+      "block": 0,
+      "size": 8192,
+      "lower": 28,
+      "upper": 8160,
+      "special": 8192,
+      "lsn": 26148008,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 31,
+        "xmin": 754,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","note":"hi"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"754":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO slots VALUES (2, repeat('-', 200))",
+   "note": "a 200-character row. its line pointer is still 4 bytes, but the tuple takes 232, packed in right below the first one.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "heap": {
+    "slots": [
+     {
+      "rel": "slots",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 7928,
+      "special": 8192,
+      "lsn": 26148312,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 31,
+        "xmin": 754,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","note":"hi"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 7928,
+        "len": 232,
+        "xmin": 755,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","note":"--------------------------------…"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"754":"committed","755":"committed"}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "INSERT INTO slots VALUES (3, 'medium ' || repeat('=', 60))",
+   "note": "a medium row. pd_lower creeps right by 4, pd_upper jumps left by the tuple's size. the free space is whatever is between them.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "heap": {
+    "slots": [
+     {
+      "rel": "slots",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 7832,
+      "special": 8192,
+      "lsn": 26148480,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 31,
+        "xmin": 754,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","note":"hi"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 7928,
+        "len": 232,
+        "xmin": 755,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","note":"--------------------------------…"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 7832,
+        "len": 96,
+        "xmin": 756,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","note":"medium =========================…"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"754":"committed","755":"committed","756":"committed"}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO slots VALUES (4, 'yo')",
+   "note": "another short one. four slots, four tuples, in the order they arrived.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "heap": {
+    "slots": [
+     {
+      "rel": "slots",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 7800,
+      "special": 8192,
+      "lsn": 26148584,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 31,
+        "xmin": 754,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","note":"hi"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 7928,
+        "len": 232,
+        "xmin": 755,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","note":"--------------------------------…"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 7832,
+        "len": 96,
+        "xmin": 756,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","note":"medium =========================…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 7800,
+        "len": 31,
+        "xmin": 757,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","note":"yo"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"754":"committed","755":"committed","756":"committed","757":"committed"}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "DELETE FROM slots WHERE id = 2",
+   "note": "delete row 2. nothing moves: the tuple stays, stamped with xmax, and slot 2 still points at it.",
+   "status": "ok",
+   "result": {"command":"DELETE","rows":1,"columns":[],"data":[]},
+   "heap": {
+    "slots": [
+     {
+      "rel": "slots",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 7800,
+      "special": 8192,
+      "lsn": 26148680,
+      "pruneXid": 758,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 31,
+        "xmin": 754,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","note":"hi"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 7928,
+        "len": 232,
+        "xmin": 755,
+        "xmax": 758,
+        "ctid": [0,2],
+        "infomask": 258,
+        "infomask2": 8194,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_KEYS_UPDATED"],
+        "data": {"id":"2","note":"--------------------------------…"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 7832,
+        "len": 96,
+        "xmin": 756,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","note":"medium =========================…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 7800,
+        "len": 31,
+        "xmin": 757,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","note":"yo"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"754":"committed","755":"committed","756":"committed","757":"committed","758":"committed"}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "VACUUM slots",
+   "note": "VACUUM. the dead tuple is gone, and the tuples below it slid toward the end of the page to close the hole. slot 3 and slot 4 now point at new offsets, so their ctids didn't change.",
+   "status": "ok",
+   "result": {"command":"VACUUM","rows":null,"columns":[],"data":[]},
+   "heap": {
+    "slots": [
+     {
+      "rel": "slots",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8032,
+      "special": 8192,
+      "lsn": 26157056,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 31,
+        "xmin": 754,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","note":"hi"}
+       },
+       {"lp":2,"lpFlags":"unused"},
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8064,
+        "len": 96,
+        "xmin": 756,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","note":"medium =========================…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8032,
+        "len": 31,
+        "xmin": 757,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","note":"yo"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"754":"committed","756":"committed","757":"committed"}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "INSERT INTO slots VALUES (5, 'new')",
+   "note": "a new row takes the unused slot 2, so its ctid is (0,2). the slot number is reused, the bytes come from the free space.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "heap": {
+    "slots": [
+     {
+      "rel": "slots",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8000,
+      "special": 8192,
+      "lsn": 26182688,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8160,
+        "len": 31,
+        "xmin": 754,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","note":"hi"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8000,
+        "len": 32,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"5","note":"new"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8064,
+        "len": 96,
+        "xmin": 756,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","note":"medium =========================…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8032,
+        "len": 31,
+        "xmin": 757,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","note":"yo"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"754":"committed","756":"committed","757":"committed","759":"committed"}
+  }
+ ],
+ "db": "lab"
+}

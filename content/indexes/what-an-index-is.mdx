@@ -1,0 +1,121 @@
+import { IndexMap } from "@/components/figures/indexes/IndexMap";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { btreeFromPages } from "@/lib/db/fromTrace";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/index-map.pgtrace.json";
+
+{/* the figures read traces/index-map.scenario.sql, captured on PGlite: a btree probe of a
+    twelve-row index next to its table, the same index on all of customers, and one lookup with
+    and without it. */}
+
+export const tree = btreeFromPages(trace.steps[3].btree.customers_name);
+export const leaves = trace.steps[3].btree.customers_name.pages.filter((p) => p.level === 0).length;
+export const seqPages = trace.steps[2].explain.Plan["Shared Hit Blocks"] + trace.steps[2].explain.Plan["Shared Read Blocks"];
+export const idxPages = trace.steps[4].explain.Plan["Shared Hit Blocks"] + trace.steps[4].explain.Plan["Shared Read Blocks"];
+export const sizes = Object.fromEntries(trace.steps[5].result.data.map((r) => [r[0], r[2]]));
+
+<InShort>
+an index is a **separate, sorted copy** of one or a few columns, where every entry also carries the **address of its row** (the ctid: a page and a slot). to find a value, postgres searches the sorted copy, then follows the address. the table itself stays exactly as it was, in whatever order the rows went in.
+</InShort>
+
+## the picture
+
+you know the index at the back of a textbook? "saffron, 212". the words are sorted so you can find one fast, and each one tells you where to look. the book's pages aren't reordered to make that work. the index is extra pages at the back, and when the book gets a new edition, somebody has to update them too.
+
+a postgres index is exactly that. here's a real one: the first twelve customers in a table of their own, and an index on `name`.
+
+<Figure wide caption={<>an index on <code>name</code> next to its table. the index is sorted by name, the table is in the order the rows were inserted, and <C k="ref">every entry carries the address of its row</C>. pick an entry to follow it. 11 entries for 12 rows: the two Sam Lees share one entry with two addresses.</>}>
+<IndexMap trace={trace} index="few_name" at={0} rows={1} show={["id", "name"]} />
+</Figure>
+
+two things to notice. the lines cross: index order and table order have nothing to do with each other. and nothing in the index is a whole row. it's the key and an address, and to get the city of `Ana Lima` postgres still goes to `(0,11)` and reads it from the table.
+
+## read it yourself
+
+`pageinspect` reads index pages raw. here's the same twelve-row index, the way postgres stores it:
+
+```sql run db=shop ext=pageinspect
+CREATE TABLE few AS SELECT id, name, city FROM customers WHERE id <= 12 ORDER BY id;
+CREATE INDEX few_name ON few (name);
+SELECT itemoffset, ctid, htid, tids, left(data, 23) AS data_start
+FROM bt_page_items('few_name', 1)
+ORDER BY itemoffset;
+```
+
+`htid` is the heap address of the row, `(page, slot)`. the `Sam Lee` entry has a `tids` array: one key, two addresses (its `ctid` column isn't an address at all there, which is why pageinspect shows `htid` too), which is how a b-tree stores duplicates since postgres 13 ([deduplication](/learn/index-internals/dedup-and-bottom-up-deletion)). `data` is the key itself, as bytes: a length header, then the name's characters (`41 6e 61` is "Ana").
+
+and the order: `Zoe Martin` before `Zoë Martin`, `Null` after `Ming Li`. the browser's database uses the C collation, which sorts by bytes, and `ë` is two bytes that sort after every plain letter. on a server set up with a language collation, the same index can come out in a different order ([collations](/learn/types/text-and-collation)).
+
+## the table doesn't move
+
+<Predict question="after CREATE INDEX on customers (name), what order does SELECT * FROM customers come back in?" options={["sorted by name", "the same order as before", "a different order every time"]} answer={1}>
+```sql
+CREATE INDEX customers_name ON customers (name);
+SELECT * FROM customers LIMIT 3;
+```
+<Explain>
+the same as before: whatever order a seq scan reads the pages in, which is storage order. creating an index writes a new file and doesn't touch the table at all. and storage order is still not a promise. without ORDER BY, no order is guaranteed, index or no index ([ORDER BY](/learn/basics/order-by)).
+</Explain>
+</Predict>
+
+```sql run db=shop unordered
+CREATE INDEX customers_name ON customers (name);
+SELECT id, name FROM customers LIMIT 3;
+SELECT relname, relkind, pg_relation_size(oid) / 8192 AS pages
+FROM pg_class
+WHERE relname IN ('customers', 'customers_name')
+ORDER BY relname;
+```
+
+Maya, Grace, Sam: storage order, not name order (and this block is marked unordered on purpose, since a LIMIT without ORDER BY promises nothing). two relations, two files. `relkind` `r` is a table and `i` an index; the index on 2,000 names is {sizes.customers_name} pages next to the table's {sizes.customers}. ([the files behind a table](/learn/storage/files-and-forks) shows where they live on disk.)
+
+## why sorted helps
+
+twelve entries fit on one page. 2,000 don't, so the index grows a tree: leaf pages hold the entries in order, and a root page above them holds one separator key per leaf, saying where each leaf starts. a lookup reads the root, picks a leaf, reads the leaf, and has the address.
+
+<Figure wide caption={<>the real index on customers(name): a root over {leaves} leaf pages, each leaf holding about 200 names in order (the figure shows a few per page), and the <C k="ref">heap pages their addresses point into</C>. a lookup reads the root, one leaf, and then the heap page the address names.</>}>
+<BTree view={tree} heap />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+here's what that buys, for one row:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM customers WHERE name = 'Ada Lovelace';
+CREATE INDEX customers_name ON customers (name);
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM customers WHERE name = 'Ada Lovelace';
+```
+
+<Figure caption={<>pages read to find Ada Lovelace by name, from the same capture: every page of the table, or the index's way down plus one heap page.</>}>
+<Bars data={[
+  { label: "no index: Seq Scan", value: seqPages, tone: "hot" },
+  { label: "index on name", value: idxPages, tone: "live" },
+]} unit="pages" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+{seqPages} pages against {idxPages}. on 2,000 rows that's small change. on 20 million rows the seq scan is about 10,000 times bigger, and the index lookup gets a level or two deeper, because each level of the tree multiplies the number of pages it can tell apart by a few hundred. how the tree stays that shallow, splits and all, is [inside indexes](/learn/index-internals/b-plus-trees).
+
+## what it costs
+
+the index is a second copy, so it's paid for twice: once in space ({sizes.customers_name} pages here), and once on every write. an INSERT into `customers` now also inserts into `customers_name`; an UPDATE that changes a name writes a new index entry; and the old entries stay until VACUUM cleans them up. [what indexes cost](/learn/indexes/index-costs) measures it.
+
+and a copy only helps queries that can use its order. the next chapters are about which ones those are: [when postgres uses an index](/learn/indexes/index-or-scan) (few rows, yes; many rows, no) and [why isn't my index used?](/learn/indexes/index-not-used) (a function on the column, a cast, a leading wildcard).
+
+<Gotcha title="an index is not a sorted table">
+nothing about an index makes `SELECT *` come back sorted, and nothing about it changes which rows a query returns. it changes how postgres finds them, and that's all. (some databases store the whole table inside its primary key index, sorted. postgres doesn't: its table is a [heap](/learn/storage/the-page), and every index, primary key included, points into it. [postgres vs InnoDB](/learn/deep-dives/postgres-vs-innodb) compares the two.)
+</Gotcha>
+
+<Interview q="what is a database index?">
+a separate data structure, kept in sync with the table, that stores the values of one or more columns in an order that's fast to search (a b-tree, by default), each with a pointer back to the row. in postgres the pointer is the ctid, the row version's page and slot in the heap. a lookup searches the index, then fetches the rows it points to. the trade: faster reads for those columns, in exchange for space and extra work on every insert, update and delete. bonus point: duplicates share one entry with a list of addresses (deduplication, postgres 13+), and the index has no visibility information, so postgres still checks the heap (or the visibility map) for every match.
+</Interview>
+
+<Keylines>
+- an index is a sorted copy of a few columns, plus an address (ctid) per row.
+- a lookup searches the copy, then follows the address into the table.
+- the table never moves. indexes don't sort SELECT * for you.
+- a tree of pages keeps the search a few page reads deep, even for millions of rows.
+- every index is paid for in space and on every write.
+</Keylines>

@@ -1,0 +1,146 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* every number here is the run blocks' golden (PGlite). the structure figure is drawn from
+    the first block's output: page types and flags from gin_page_opaque_info, the posting list
+    sizes from the data the block inserts. */}
+
+<InShort>
+GIN is an **inverted index**: one entry per distinct key (a tag, a word, a jsonb path), each with the list of rows that contain it. the keys sit in a b-tree, the **entry tree**. a key's rows are stored as a compressed **posting list** right in the entry, or, when there are too many, as a **posting tree** of their own. since one row can add dozens of keys, writes are expensive, so new rows first go to a **pending list** and get merged in bulk later.
+</InShort>
+
+## the picture
+
+you know [what GIN serves](/learn/indexes/index-types): "contains" questions, `@>` on arrays and jsonb, `@@` for [text search](/learn/indexes/text-search). a b-tree can't answer those, because it has one entry per row, keyed on the whole value. GIN turns that inside out: one entry per *element*, pointing at every row that has it.
+
+it's the index at the back of a cookbook. "garlic: 12, 40, 41, 97, 213". one line per ingredient, a list of pages each. a recipe with nine ingredients appears in nine lines. and when a new recipe arrives, updating nine lines all over the index is a chore, so the publisher sticks it on an "addenda" page first (the pending list) and re-sorts the index properly at the next printing.
+
+here's a real one. 20,000 posts tagged `sql`, every tenth also `postgres`, every thousandth also `gin`:
+
+```sql run ext=pageinspect session=g
+CREATE TABLE posts (id int, tags text[]);
+INSERT INTO posts
+SELECT g, ARRAY['sql'] || CASE WHEN g % 10 = 0 THEN ARRAY['postgres'] ELSE ARRAY[]::text[] END
+          || CASE WHEN g % 1000 = 0 THEN ARRAY['gin'] ELSE ARRAY[]::text[] END
+FROM generate_series(1, 20000) AS g;
+CREATE INDEX posts_tags ON posts USING gin (tags);
+SELECT * FROM gin_metapage_info(get_raw_page('posts_tags', 0));
+SELECT b AS blkno, o.flags, o.rightlink, o.maxoff
+FROM generate_series(1, pg_relation_size('posts_tags') / 8192 - 1) AS b,
+     gin_page_opaque_info(get_raw_page('posts_tags', b)) AS o
+ORDER BY b;
+```
+
+<Figure caption={<>the index above, page by page. three keys in one entry page. two keys keep their rows inline as <C k="ref">posting lists</C>; <code>sql</code>, in every row, got a <C k="ref">posting tree</C> of its own: a root over three compressed leaves, linked left to right.</>}>
+<Tree>{`
+page 0: metapage // 3 entries
+page 1: entry leaf {leaf}
+    gin: 20 rows, inline
+    postgres: 2,000 rows, inline
+    sql: a posting tree
+        page 2: root {data}
+            pages 4 → 3 → 5 // compressed leaves
+`}</Tree>
+<Provenance drawn="from gin_metapage_info and gin_page_opaque_info in the run block above" />
+</Figure>
+
+`n_entries` is 3: three distinct tags for 20,000 rows. the flags tell the page types apart. `{leaf}` without `data` is an entry-tree leaf: here the only entry page, so it's also the root. `{data}` is a posting tree's inner page, and `{data,leaf,compressed}` its leaves, chained by `rightlink` (4 → 3 → 5, same as a b-tree's sibling links). a key with few rows keeps its posting list inline in the entry tuple; once the list won't fit in a fraction of a page, it moves out into a posting tree, which is just a b-tree of heap addresses.
+
+## compressed posting lists
+
+```sql run session=g
+SELECT first_tid, nbytes, cardinality(tids) AS rows
+FROM gin_leafpage_items(get_raw_page('posts_tags', 3))
+ORDER BY first_tid LIMIT 5;
+```
+
+each item on a posting tree leaf is a run of addresses: the first one, then the gaps between them, varbyte-encoded (small gaps take one byte). 247 row addresses in 248 bytes: about one byte per row. a b-tree's [posting list](/learn/index-internals/dedup-and-bottom-up-deletion) spends 6 bytes on each (an 808-byte tuple: a 16-byte key and header, then 132 addresses).
+
+<Figure caption={<>bytes per row address: a GIN posting tree leaf from the block above, and a b-tree posting list tuple from <a href="/learn/index-internals/dedup-and-bottom-up-deletion">the deduplication chapter</a> ((808 − 16) / 132).</>}>
+<Bars data={[
+  { label: "GIN, compressed", value: 1.0, tone: "live" },
+  { label: "b-tree posting list", value: 6.0, tone: "ref" },
+  { label: "b-tree, no posting list", value: 20, tone: "hot" },
+]} unit="bytes" />
+</Figure>
+
+(the last bar is a plain b-tree entry: a 16-byte tuple plus its 4-byte line pointer, for every row.) that's why GIN copes with keys that match half the table, like a common word in text search.
+
+<Predict question="a GIN index on a text[] column. you insert one row with 10 distinct tags. how many entries can that touch in the index?" options={["1", "10", "it depends on the tags"]} answer={1}>
+```sql
+INSERT INTO posts VALUES (1, ARRAY['a','b','c','d','e','f','g','h','i','j']);
+```
+<Explain>
+10: one per distinct tag, each in its own place in the entry tree, each with its own posting list or posting tree to update. a b-tree insert touches one leaf. that's the whole reason GIN writes are slow, and why the pending list exists.
+</Explain>
+</Predict>
+
+## the pending list
+
+with `fastupdate` on (the default), an INSERT doesn't touch the entry tree at all. it appends its keys to the **pending list**, a plain unsorted chain of pages hanging off the metapage. searches read the whole pending list on top of the tree. the list is merged into the tree in one sorted batch when it grows past `gin_pending_list_limit` (4 MB by default), when VACUUM or autovacuum runs, or when you call `gin_clean_pending_list()`:
+
+```sql run session=g
+INSERT INTO posts SELECT g, ARRAY['sql', 'new'] FROM generate_series(20001, 20500) AS g;
+SELECT pending_head, pending_tail, n_pending_pages, n_pending_tuples, n_entries
+FROM gin_metapage_info(get_raw_page('posts_tags', 0));
+SELECT gin_clean_pending_list('posts_tags') AS pages_cleaned;
+SELECT pending_head, pending_tail, n_pending_pages, n_pending_tuples, n_entries
+FROM gin_metapage_info(get_raw_page('posts_tags', 0));
+```
+
+500 new rows went to 3 pending pages (6 to 8). the cleanup merged them and emptied the list. merging in bulk is cheaper because the keys arrive sorted and each posting list is rewritten once for many rows, not once per row. here's the difference in WAL, the cleanest measure of work done, for 5,000 rows with 3 tags each:
+
+```sql run ext=pageinspect
+CREATE TABLE fu (id int, tags text[]);
+CREATE INDEX fu_on ON fu USING gin (tags);
+CREATE TABLE fo (id int, tags text[]);
+CREATE INDEX fo_off ON fo USING gin (tags) WITH (fastupdate = off);
+SELECT 1 AS marked FROM set_config('my.a', pg_current_wal_insert_lsn()::text, false);
+INSERT INTO fu SELECT g, ARRAY['t' || g % 50, 't' || g % 7, 'x'] FROM generate_series(1, 5000) AS g;
+SELECT 1 AS marked FROM set_config('my.b', pg_current_wal_insert_lsn()::text, false);
+INSERT INTO fo SELECT g, ARRAY['t' || g % 50, 't' || g % 7, 'x'] FROM generate_series(1, 5000) AS g;
+SELECT 1 AS marked FROM set_config('my.c', pg_current_wal_insert_lsn()::text, false);
+SELECT n_pending_pages, n_pending_tuples FROM gin_metapage_info(get_raw_page('fu_on', 0));
+SELECT gin_clean_pending_list('fu_on') AS pages_cleaned;
+SELECT 1 AS marked FROM set_config('my.d', pg_current_wal_insert_lsn()::text, false);
+SELECT pg_size_pretty(pg_wal_lsn_diff(current_setting('my.b')::pg_lsn, current_setting('my.a')::pg_lsn)) AS on_inserts,
+       pg_size_pretty(pg_wal_lsn_diff(current_setting('my.d')::pg_lsn, current_setting('my.c')::pg_lsn)) AS on_cleanup,
+       pg_size_pretty(pg_wal_lsn_diff(current_setting('my.c')::pg_lsn, current_setting('my.b')::pg_lsn)) AS off_inserts;
+SELECT pg_relation_size('fu_on') / 8192 AS pages_on, pg_relation_size('fo_off') / 8192 AS pages_off;
+```
+
+<Figure caption={<>WAL written by 5,000 inserts of three tags each into a GIN index, from the run block above. with fastupdate, the inserts and the later merge together; without it, each insert updates the tree itself.</>}>
+<Bars data={[
+  { label: "fastupdate on: inserts", value: 1450, tone: "live" },
+  { label: "fastupdate on: merge", value: 62, tone: "live" },
+  { label: "fastupdate off", value: 7847, tone: "hot" },
+]} unit="kB" />
+</Figure>
+
+about 1.5 MB against 7.8 MB: five times less WAL. (the index file kept the 37 pending pages after the merge, empty and marked for reuse, so `pages_on` is bigger. pending pages are recycled, not returned.)
+
+## why updates are slow anyway
+
+the pending list moves the cost; it doesn't remove it:
+
+- **the merge has to happen sometime.** if it happens in a foreground insert (the list hit its limit), that one insert pays for everyone's, and its latency spikes. a smaller `gin_pending_list_limit`, or autovacuum keeping up, evens that out.
+- **reads pay while the list is long.** every search scans the whole pending list, unsorted, on top of the tree. a list near 4 MB makes every query slower.
+- **an UPDATE is a delete plus an insert.** GIN has no HOT shortcut for a changed array: every key of the new version goes in again (and [HOT](/learn/mvcc/hot-updates) only applies when no indexed column changed at all).
+- **deletes do nothing until VACUUM.** dead rows stay in every posting list they're in, and VACUUM has to visit each one.
+
+so a GIN index on a write-heavy table is a deliberate trade: much faster "contains" reads, for writes that cost several times a b-tree's.
+
+<Gotcha title="fastupdate = off for predictable latency">
+if a few inserts a minute take seconds, it's often the pending list being merged by whichever insert crossed the limit. `ALTER INDEX … SET (fastupdate = off)` makes every insert pay its own way (more WAL, steadier latency), and a lower `gin_pending_list_limit` makes the merges smaller. pick based on whether you care about throughput or the slowest insert.
+</Gotcha>
+
+<Deep title="what else is in the box">
+GIN is a framework: an operator class says how to pull keys out of a value (`extractValue`), out of a query (`extractQuery`), and whether a row with some of the keys matches (`consistent`). `array_ops`, `jsonb_ops`, `jsonb_path_ops` (one hashed key per path, smaller, `@>` only) and `tsvector_ops` are built in; `pg_trgm` adds trigrams, and `btree_gin` plain scalars. a search for several keys reads each key's posting list and intersects or unions them, without visiting the heap until the end. the result is a bitmap, so GIN only ever feeds a [bitmap heap scan](/learn/execution/scans), never a plain index scan.
+</Deep>
+
+<Keylines>
+- GIN keeps one entry per distinct key in a b-tree, each with the rows that contain it.
+- short row lists are compressed posting lists inline; long ones become posting trees. about a byte per row.
+- one row can add many keys, so inserts are expensive.
+- fastupdate puts new rows in a pending list and merges them in bulk: five times less WAL here.
+- the merge still has to happen, searches read the pending list, and VACUUM cleans the dead.
+</Keylines>

@@ -1,0 +1,146 @@
+{
+ "v": 1,
+ "scenario": "content/locking/traces/buffer-pin.scenario.sql",
+ "title": "a buffer pin: an open cursor keeps a page pinned, and VACUUM has to work around it",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":760,"lsn":23210208},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;\nUPDATE accounts SET balance = 90.00 WHERE id = 2;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nDECLARE c CURSOR FOR SELECT id, owner FROM accounts;\nFETCH 1 FROM c",
+   "note": "T1 opens a cursor over accounts and fetches one row. the scan stops there, holding a pin on page 0 until the cursor moves on or closes.",
+   "status": "ok",
+   "result": {
+    "command": "FETCH",
+    "rows": 1,
+    "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"}],
+    "data": [["1","alice"]]
+   },
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":4,"pins":1},
+     {"id":372,"rel":"accounts_pkey","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":373,"rel":"accounts_pkey","fork":"main","block":1,"dirty":true,"usage":2,"pins":0},
+     {"id":374,"rel":"accounts","fork":"vm","block":0,"dirty":true,"usage":3,"pins":0},
+     {"id":375,"rel":"accounts","fork":"fsm","block":0,"dirty":true,"usage":2,"pins":0},
+     {"id":376,"rel":"accounts","fork":"fsm","block":1,"dirty":true,"usage":2,"pins":0},
+     {"id":377,"rel":"accounts","fork":"fsm","block":2,"dirty":true,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 785,
+    "summary": {"used":793,"dirty":171}
+   }
+  },
+  {
+   "i": 1,
+   "session": "obs",
+   "sql": "SELECT relblocknumber AS block, pinning_backends\nFROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('accounts')\n  AND relforknumber = 0\n  AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database())\nORDER BY relblocknumber",
+   "note": "pg_buffercache counts the pin: one backend is pinning the table's page 0.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"block","type":"int8"},{"name":"pinning_backends","type":"int4"}],
+    "data": [["0","1"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "UPDATE accounts SET balance = 110.00 WHERE id = 1",
+   "note": "a pin doesn't stop writers. T2 updates alice on the pinned page: it only needs the page's content lock, for a moment.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "obs",
+   "sql": "VACUUM (VERBOSE, PROCESS_TOAST false) accounts",
+   "note": "VACUUM needs more than a content lock to remove dead tuples: a cleanup lock, which means nobody else has the page pinned. it can't get one, so it leaves the dead version of bob where it is.",
+   "status": "ok",
+   "result": {"command":"VACUUM","rows":null,"columns":[],"data":[]},
+   "log": [
+    "INFO:  vacuuming \"postgres.public.accounts\"",
+    "INFO:  finished vacuuming \"postgres.public.accounts\": index scans: 0",
+    "\tpages: 0 removed, 1 remain, 1 scanned (100.00% of total), 0 eagerly scanned",
+    "\ttuples: 0 removed, 4 remain, 1 are dead but not yet removable",
+    "\ttuples missed: 1 dead from 1 pages not removed due to cleanup lock contention",
+    "\tremovable cutoff: 760, which was 1 XIDs old when operation ended",
+    "\tfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen",
+    "\tvisibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)",
+    "\tindex scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed",
+    "\tavg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s",
+    "\tbuffer usage: 42 hits, 0 reads, 0 dirtied",
+    "\tWAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full",
+    "\tsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: <t> s"
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 closes the cursor and ends. the pin is gone.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "obs",
+   "sql": "VACUUM (VERBOSE, PROCESS_TOAST false) accounts",
+   "note": "a second VACUUM gets its cleanup lock and removes the dead versions.",
+   "status": "ok",
+   "result": {"command":"VACUUM","rows":null,"columns":[],"data":[]},
+   "log": [
+    "INFO:  vacuuming \"postgres.public.accounts\"",
+    "INFO:  finished vacuuming \"postgres.public.accounts\": index scans: 0",
+    "\tpages: 0 removed, 1 remain, 1 scanned (100.00% of total), 0 eagerly scanned",
+    "\ttuples: 2 removed, 2 remain, 0 are dead but not yet removable",
+    "\tremovable cutoff: 761, which was 0 XIDs old when operation ended",
+    "\tnew relfrozenxid: 759, which is 1 XIDs ahead of previous value",
+    "\tfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen",
+    "\tvisibility map: 1 pages set all-visible, 0 pages set all-frozen (0 were all-visible)",
+    "\tindex scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed",
+    "\tavg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s",
+    "\tbuffer usage: 23 hits, 0 reads, 0 dirtied",
+    "\tWAL usage: 3 records, 0 full page images, 379 bytes, 0 buffers full",
+    "\tsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: <t> s"
+   ]
+  }
+ ]
+}

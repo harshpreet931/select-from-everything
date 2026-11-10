@@ -1,0 +1,70 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f0aed09ffc23ea76": {
+      "db": "empty",
+      "sql": "CREATE TABLE jobs (id int PRIMARY KEY, task text NOT NULL, done_by text);\nINSERT INTO jobs SELECT g, 'email #' || g, NULL FROM generate_series(1, 7) AS g;\nEXPLAIN (COSTS OFF)\nSELECT id FROM jobs WHERE done_by IS NULL ORDER BY id LIMIT 2 FOR UPDATE SKIP LOCKED;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 7",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 7,
+          "digest": "45663eddbdad55b0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "4467691720dd7e04",
+          "rows": [
+            ["Limit"],
+            ["  ->  LockRows"],
+            ["        ->  Sort"],
+            ["              Sort Key: id"],
+            ["              ->  Seq Scan on jobs"],
+            ["                    Filter: (done_by IS NULL)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9e01b13fc998453a": {
+      "db": "bank",
+      "sql": "SELECT count(*) FROM accounts WHERE balance > 1000 FOR UPDATE;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "0A000",
+            "message": "FOR UPDATE is not allowed with aggregate functions"
+          },
+          "digest": "fcaaeaebe803a97f"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "0A000",
+        "message": "FOR UPDATE is not allowed with aggregate functions",
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,110 @@
+{
+ "v": 1,
+ "scenario": "content/scale/traces/processes.scenario.sql",
+ "title": "three clients, three backend processes, and the server's own helpers",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["A","B","C"],
+ "rels": {},
+ "base": {"xid":757,"lsn":23121704},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "A",
+   "sql": "SELECT backend_type, count(*) AS processes\nFROM pg_stat_activity\nGROUP BY backend_type\nORDER BY backend_type",
+   "note": "client A connects. its backend asks what else is running on the server.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [{"name":"backend_type","type":"text"},{"name":"processes","type":"int8"}],
+    "data": [
+     ["background writer","1"],
+     ["checkpointer","1"],
+     ["client backend","4"],
+     ["io worker","3"],
+     ["logical replication launcher","1"],
+     ["walwriter","1"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "B",
+   "sql": "SELECT pid = pg_backend_pid() AS mine, application_name, backend_type, state\nFROM pg_stat_activity\nWHERE backend_type = 'client backend'\nORDER BY application_name",
+   "note": "client B asks which backend it is talking to.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"mine","type":"bool"},
+     {"name":"application_name","type":"text"},
+     {"name":"backend_type","type":"text"},
+     {"name":"state","type":"text"}
+    ],
+    "data": [
+     ["f","A","client backend","idle"],
+     ["t","B","client backend","active"],
+     ["f","C","client backend","idle"],
+     ["f","pgtrace","client backend","idle"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "C",
+   "sql": "SELECT count(*) AS contexts,\n       round(sum(total_bytes) / 1024.0 / 1024.0, 1) AS allocated_mb,\n       round(sum(used_bytes) / 1024.0 / 1024.0, 1) AS used_mb\nFROM pg_backend_memory_contexts",
+   "note": "client C asks how much private memory its brand-new backend has allocated.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"contexts","type":"int8"},
+     {"name":"allocated_mb","type":"numeric"},
+     {"name":"used_mb","type":"numeric"}
+    ],
+    "data": [["126","2.0","1.1"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "A",
+   "sql": "SELECT name, setting FROM pg_settings\nWHERE name IN ('max_connections', 'superuser_reserved_connections', 'reserved_connections')\nORDER BY name",
+   "note": "the limit, and how many slots are kept back for superusers.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"name","type":"text"},{"name":"setting","type":"text"}],
+    "data": [["max_connections","100"],["reserved_connections","0"],["superuser_reserved_connections","3"]]
+   }
+  }
+ ]
+}

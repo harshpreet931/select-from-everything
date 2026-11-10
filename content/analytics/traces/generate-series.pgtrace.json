@@ -1,0 +1,174 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/generate-series.scenario.sql",
+ "title": "april's purchases per day, with and without a generate_series calendar, and fake data from a hash",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT occurred_at::date AS day, count(*) AS purchases\nFROM events\nWHERE kind = 'purchase' AND occurred_at >= '2026-04-01' AND occurred_at < '2026-05-01'\nGROUP BY 1\nORDER BY 1",
+   "note": "GROUP BY the day: one row per day that has purchases. 29 rows for a 30-day month, and nothing says which one is missing.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 29,
+    "columns": [{"name":"day","type":"date"},{"name":"purchases","type":"int8"}],
+    "data": [
+     ["2026-04-01","19"],
+     ["2026-04-02","16"],
+     ["2026-04-03","18"],
+     ["2026-04-04","24"],
+     ["2026-04-05","15"],
+     ["2026-04-06","22"],
+     ["2026-04-07","24"],
+     ["2026-04-08","25"],
+     ["2026-04-09","20"],
+     ["2026-04-10","31"],
+     ["2026-04-11","16"],
+     ["2026-04-12","17"],
+     ["2026-04-13","24"],
+     ["2026-04-15","22"],
+     ["2026-04-16","16"],
+     ["2026-04-17","16"],
+     ["2026-04-18","20"],
+     ["2026-04-19","21"],
+     ["2026-04-20","26"],
+     ["2026-04-21","23"],
+     ["2026-04-22","23"],
+     ["2026-04-23","19"],
+     ["2026-04-24","20"],
+     ["2026-04-25","22"],
+     ["2026-04-26","22"],
+     ["2026-04-27","16"],
+     ["2026-04-28","21"],
+     ["2026-04-29","21"],
+     ["2026-04-30","17"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT d::date AS day, extract(isodow FROM d)::int AS dow, count(e.id) AS purchases\nFROM generate_series(date '2026-04-01', date '2026-04-30', interval '1 day') AS d\nLEFT JOIN events AS e\n       ON e.occurred_at::date = d::date AND e.kind = 'purchase'\nGROUP BY d\nORDER BY d",
+   "note": "a calendar first, then the events: one row per day, whether anything happened or not. the 14th is there, with 0.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 30,
+    "columns": [{"name":"day","type":"date"},{"name":"dow","type":"int4"},{"name":"purchases","type":"int8"}],
+    "data": [
+     ["2026-04-01","3","19"],
+     ["2026-04-02","4","16"],
+     ["2026-04-03","5","18"],
+     ["2026-04-04","6","24"],
+     ["2026-04-05","7","15"],
+     ["2026-04-06","1","22"],
+     ["2026-04-07","2","24"],
+     ["2026-04-08","3","25"],
+     ["2026-04-09","4","20"],
+     ["2026-04-10","5","31"],
+     ["2026-04-11","6","16"],
+     ["2026-04-12","7","17"],
+     ["2026-04-13","1","24"],
+     ["2026-04-14","2","0"],
+     ["2026-04-15","3","22"],
+     ["2026-04-16","4","16"],
+     ["2026-04-17","5","16"],
+     ["2026-04-18","6","20"],
+     ["2026-04-19","7","21"],
+     ["2026-04-20","1","26"],
+     ["2026-04-21","2","23"],
+     ["2026-04-22","3","23"],
+     ["2026-04-23","4","19"],
+     ["2026-04-24","5","20"],
+     ["2026-04-25","6","22"],
+     ["2026-04-26","7","22"],
+     ["2026-04-27","1","16"],
+     ["2026-04-28","2","21"],
+     ["2026-04-29","3","21"],
+     ["2026-04-30","4","17"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT d::date AS day, count(*) AS purchases\nFROM generate_series(date '2026-04-12', date '2026-04-16', interval '1 day') AS d\nLEFT JOIN events AS e\n       ON e.occurred_at::date = d::date AND e.kind = 'purchase'\nGROUP BY d\nORDER BY d",
+   "note": "count(*) counts rows, and the LEFT JOIN made one row for the 14th: the calendar day, padded with NULLs. so the empty day counts 1.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"day","type":"date"},{"name":"purchases","type":"int8"}],
+    "data": [["2026-04-12","17"],["2026-04-13","24"],["2026-04-14","1"],["2026-04-15","22"],["2026-04-16","16"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT d::date AS day, count(e.id) AS purchases\nFROM generate_series(date '2026-04-12', date '2026-04-16', interval '1 day') AS d\nLEFT JOIN events AS e\n       ON e.occurred_at::date = d::date AND e.kind = 'purchase'\nGROUP BY d\nORDER BY d",
+   "note": "count(e.id) counts only rows where an event matched. the padded row has e.id NULL, so the 14th counts 0.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"day","type":"date"},{"name":"purchases","type":"int8"}],
+    "data": [["2026-04-12","17"],["2026-04-13","24"],["2026-04-14","0"],["2026-04-15","22"],["2026-04-16","16"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT width_bucket(total, 0, 200, 10) AS bucket, count(*) AS orders\nFROM (\n  SELECT round(200 * power((hashint4(i)::bigint + 2147483648) / 4294967296.0, 2), 2) AS total\n  FROM generate_series(1, 1000) AS i\n) AS fake\nGROUP BY 1\nORDER BY 1",
+   "note": "1,000 fake order totals from a hash of the row number, squared so small totals are common, in buckets of 20.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 10,
+    "columns": [{"name":"bucket","type":"int4"},{"name":"orders","type":"int8"}],
+    "data": [
+     ["1","306"],
+     ["2","149"],
+     ["3","104"],
+     ["4","78"],
+     ["5","73"],
+     ["6","59"],
+     ["7","54"],
+     ["8","61"],
+     ["9","54"],
+     ["10","62"]
+    ]
+   }
+  }
+ ],
+ "db": "events"
+}

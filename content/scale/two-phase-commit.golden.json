@@ -1,0 +1,59 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "3c26df5d073fdee5": {
+      "db": "empty",
+      "sql": "SHOW max_prepared_transactions;\nBEGIN;\nCREATE TABLE t (id int);\nPREPARE TRANSACTION 'transfer-7';",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["max_prepared_transactions", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ba0a7f611e773086",
+          "rows": [
+            ["0"]
+          ]
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5693d3fc01d98245"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "55000",
+            "message": "prepared transactions are disabled",
+            "hint": "Set \"max_prepared_transactions\" to a nonzero value."
+          },
+          "digest": "0c585a204bc292bc"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "55000",
+        "message": "prepared transactions are disabled",
+        "hint": "Set \"max_prepared_transactions\" to a nonzero value.",
+        "statement": 3
+      },
+      "txn": "I"
+    }
+  }
+}

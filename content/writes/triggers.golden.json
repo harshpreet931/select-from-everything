@@ -1,0 +1,223 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "31297880debab146": {
+      "db": "bank",
+      "sql": "CREATE TABLE accounts_audit (\n  id          int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  account_id  int NOT NULL,\n  op          text NOT NULL,\n  old_balance numeric(12,2),\n  new_balance numeric(12,2)\n);\n\nCREATE FUNCTION audit_accounts() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  IF TG_OP = 'DELETE' THEN\n    INSERT INTO accounts_audit (account_id, op, old_balance) VALUES (OLD.id, TG_OP, OLD.balance);\n  ELSIF TG_OP = 'INSERT' THEN\n    INSERT INTO accounts_audit (account_id, op, new_balance) VALUES (NEW.id, TG_OP, NEW.balance);\n  ELSE\n    INSERT INTO accounts_audit (account_id, op, old_balance, new_balance) VALUES (NEW.id, TG_OP, OLD.balance, NEW.balance);\n  END IF;\n  RETURN NULL;\nEND $$;\n\nCREATE TRIGGER audit AFTER INSERT OR UPDATE OR DELETE ON accounts\nFOR EACH ROW EXECUTE FUNCTION audit_accounts();",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e913721f0f0ddd54"
+        },
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "90afa601847ba7c5"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7eae5f9b57475bec": {
+      "db": "bank",
+      "sql": "UPDATE accounts SET balance = balance + CASE id WHEN 1 THEN -50.00 ELSE 50.00 END\nWHERE id IN (1, 2);\n\nSELECT * FROM accounts_audit ORDER BY id;",
+      "statements": [
+        {
+          "tag": "UPDATE 2",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "d4149b3cbcb8a7d4"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["account_id", "int4", 23],
+            ["op", "text", 25],
+            ["old_balance", "numeric", 1700],
+            ["new_balance", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "d780bdc42500bb81",
+          "rows": [
+            ["1", "1", "UPDATE", "100.00", "50.00"],
+            ["2", "2", "UPDATE", "100.00", "150.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6c90a601ccfca7f5": {
+      "db": "bank",
+      "sql": "CREATE FUNCTION bump_version() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  NEW.version := OLD.version + 1;\n  RETURN NEW;\nEND $$;\n\nCREATE TRIGGER bump BEFORE UPDATE ON accounts\nFOR EACH ROW WHEN (OLD.balance IS DISTINCT FROM NEW.balance)\nEXECUTE FUNCTION bump_version();\n\nUPDATE accounts SET balance = balance - 10 WHERE id = 1 RETURNING id, balance, version;\nUPDATE accounts SET owner = 'Alice' WHERE id = 1 RETURNING id, owner, version;",
+      "statements": [
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "38334b4e88d620d5"
+        },
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "411cc1f0d8355b30"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": [
+            ["id", "int4", 23],
+            ["balance", "numeric", 1700],
+            ["version", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "c57b341e3717270b",
+          "rows": [
+            ["1", "90.00", "1"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": [
+            ["id", "int4", 23],
+            ["owner", "text", 25],
+            ["version", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "24a99d3650066796",
+          "rows": [
+            ["1", "Alice", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "90a007b5343e3d05": {
+      "db": "bank",
+      "sql": "CREATE FUNCTION keep_funded() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  IF OLD.balance <> 0 THEN\n    RAISE EXCEPTION 'account % still holds %', OLD.id, OLD.balance;\n  END IF;\n  RETURN OLD;\nEND $$;\n\nCREATE TRIGGER keep_funded BEFORE DELETE ON accounts\nFOR EACH ROW EXECUTE FUNCTION keep_funded();\n\nDELETE FROM accounts WHERE id = 1;",
+      "statements": [
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "38334b4e88d620d5"
+        },
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "411cc1f0d8355b30"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "P0001",
+            "message": "account 1 still holds 100.00",
+            "where": "PL/pgSQL function keep_funded() line 4 at RAISE"
+          },
+          "digest": "7b4db2e000a3861b"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "P0001",
+        "message": "account 1 still holds 100.00",
+        "where": "PL/pgSQL function keep_funded() line 4 at RAISE",
+        "statement": 2
+      },
+      "txn": "I"
+    },
+    "03222263d31021b5": {
+      "db": "bank",
+      "sql": "CREATE TABLE transfers_audit (transfer_id bigint, old_amount numeric(12,2), new_amount numeric(12,2));\nCREATE FUNCTION audit_transfer_row() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  INSERT INTO transfers_audit VALUES (OLD.id, OLD.amount, NEW.amount);\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER audit_transfers AFTER UPDATE ON transfers\nFOR EACH ROW EXECUTE FUNCTION audit_transfer_row();\n\nEXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, COSTS OFF, BUFFERS OFF)\nUPDATE transfers SET amount = amount + 1;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e913721f0f0ddd54"
+        },
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "90afa601847ba7c5"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c88abc46621482d8",
+          "rows": [
+            ["Update on transfers (actual rows=0.00 loops=1)"],
+            ["  ->  Seq Scan on transfers (actual rows=20000.00 loops=1)"],
+            ["Trigger audit_transfers: calls=20000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "29de27c9717a485b": {
+      "db": "bank",
+      "sql": "CREATE TRIGGER skip_noop BEFORE UPDATE ON accounts\nFOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger();\n\nUPDATE accounts SET currency = currency;",
+      "statements": [
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "93fbee9051b50557"
+        },
+        {
+          "tag": "UPDATE 0",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 0,
+          "digest": "0bc04fe54866ad79"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

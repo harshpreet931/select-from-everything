@@ -1,0 +1,151 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "71d43d6eeb4e0940": {
+      "db": "bank",
+      "sql": "SELECT count(*) AS accounts,\n       count(*) FILTER (WHERE a.balance <> a.opening_balance + coalesce(i.total, 0) - coalesce(o.total, 0)) AS wrong\nFROM accounts AS a\nLEFT JOIN (SELECT to_id, sum(amount) AS total FROM transfers GROUP BY to_id) AS i ON i.to_id = a.id\nLEFT JOIN (SELECT from_id, sum(amount) AS total FROM transfers GROUP BY from_id) AS o ON o.from_id = a.id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["accounts", "int8", 20],
+            ["wrong", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "de1d37c01ff58de9",
+          "rows": [
+            ["1000", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9f62697cfc425f84": {
+      "db": "bank",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT a.opening_balance\n       + coalesce((SELECT sum(amount) FROM transfers WHERE to_id = a.id), 0)\n       - coalesce((SELECT sum(amount) FROM transfers WHERE from_id = a.id), 0)\nFROM accounts AS a WHERE a.id = 500;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "94fcfa4697c8799e",
+          "rows": [
+            ["Index Scan using accounts_pkey on accounts a (actual rows=1.00 loops=1)"],
+            ["  Index Cond: (id = 500)"],
+            ["  Index Searches: 1"],
+            ["  SubPlan 1"],
+            ["    ->  Aggregate (actual rows=1.00 loops=1)"],
+            ["          ->  Seq Scan on transfers (actual rows=13.00 loops=1)"],
+            ["                Filter: (to_id = a.id)"],
+            ["                Rows Removed by Filter: 19987"],
+            ["  SubPlan 2"],
+            ["    ->  Aggregate (actual rows=1.00 loops=1)"],
+            ["          ->  Seq Scan on transfers transfers_1 (actual rows=18.00 loops=1)"],
+            ["                Filter: (from_id = a.id)"],
+            ["                Rows Removed by Filter: 19982"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c8da0ab2b6a7aa03": {
+      "db": "empty",
+      "sql": "CREATE TABLE posts (id int PRIMARY KEY, title text NOT NULL, comment_count int NOT NULL DEFAULT 0);\nCREATE TABLE comments (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, post_id int NOT NULL REFERENCES posts, body text NOT NULL);\nINSERT INTO posts (id, title) VALUES (1, 'why pages are 8 KB');\nCREATE FUNCTION bump_comment_count() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  IF TG_OP = 'INSERT' THEN\n    UPDATE posts SET comment_count = comment_count + 1 WHERE id = NEW.post_id;\n  ELSE\n    UPDATE posts SET comment_count = comment_count - 1 WHERE id = OLD.post_id;\n  END IF;\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER comments_count AFTER INSERT OR DELETE ON comments\nFOR EACH ROW EXECUTE FUNCTION bump_comment_count();",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c1bc3c4899a392aa"
+        },
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a6f2c72b2db91b23"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f52670acd7a832e1": {
+      "db": "empty",
+      "sql": "BEGIN;\nINSERT INTO comments (post_id, body) VALUES (1, 'a'), (1, 'b');\nROLLBACK;\nINSERT INTO comments (post_id, body) VALUES (1, 'c');\nSELECT comment_count, (SELECT count(*) FROM comments) AS real_count FROM posts WHERE id = 1;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "efebd36c5a6763a9"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["comment_count", "int4", 23],
+            ["real_count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b90d37f0e097ac2a",
+          "rows": [
+            ["1", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

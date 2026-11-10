@@ -1,0 +1,345 @@
+{
+ "v": 1,
+ "scenario": "content/writes/traces/insert.scenario.sql",
+ "title": "a teas table, filled one INSERT at a time, then three kinds of id column",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "teas": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"origin","type":"text"},
+    {"name":"grams","type":"int4"}
+   ]
+  },
+  "teas_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"teas"},
+  "kinds": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"name","type":"text"}]},
+  "kinds_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"kinds"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE teas (\n  id     int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  name   text NOT NULL,\n  origin text,\n  grams  int NOT NULL DEFAULT 100\n)",
+   "note": "a brand new table: four columns, no rows.",
+   "status": "ok",
+   "result": {"command":"CREATE TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "empty. a table is just its columns until something goes in.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 0,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": []
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO teas (name, origin, grams) VALUES ('assam', 'india', 250)",
+   "note": "one row. you named three columns; id came from the identity column's sequence.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "the table after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": [["1","assam","india","250"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO teas (name, origin) VALUES\n  ('sencha', 'japan'),\n  ('darjeeling', 'india'),\n  ('rooibos', 'south africa')",
+   "note": "three rows in one statement. nobody said grams, so each got the default, 100.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":3,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "the table after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": [
+     ["1","assam","india","250"],
+     ["2","sencha","japan","100"],
+     ["3","darjeeling","india","100"],
+     ["4","rooibos","south africa","100"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "INSERT INTO teas (name, origin, grams) VALUES ('house blend', DEFAULT, DEFAULT)",
+   "note": "DEFAULT asks for the default by name. origin has none, so NULL is its default.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "the table after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": [
+     ["1","assam","india","250"],
+     ["2","sencha","japan","100"],
+     ["3","darjeeling","india","100"],
+     ["4","rooibos","south africa","100"],
+     ["5","house blend",null,"100"]
+    ]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "INSERT INTO teas (origin) VALUES ('china')",
+   "note": "no name, and name is NOT NULL. the whole statement fails and nothing is written.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23502",
+    "message": "null value in column \"name\" of relation \"teas\" violates not-null constraint",
+    "detail": "Failing row contains (6, null, china, 100)."
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "the table after it: unchanged.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": [
+     ["1","assam","india","250"],
+     ["2","sencha","japan","100"],
+     ["3","darjeeling","india","100"],
+     ["4","rooibos","south africa","100"],
+     ["5","house blend",null,"100"]
+    ]
+   }
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction. nothing inside it is real until COMMIT.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "INSERT INTO teas (name, origin, grams) VALUES ('pu-erh', 'china', 357)",
+   "note": "pu-erh goes in, and takes the next id from the sequence.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "inside the transaction, the row is there.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": [
+     ["1","assam","india","250"],
+     ["2","sencha","japan","100"],
+     ["3","darjeeling","india","100"],
+     ["4","rooibos","south africa","100"],
+     ["5","house blend",null,"100"],
+     ["7","pu-erh","china","357"]
+    ]
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "ROLLBACK. the row goes, but the sequence never gives a number back.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "the table after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": [
+     ["1","assam","india","250"],
+     ["2","sencha","japan","100"],
+     ["3","darjeeling","india","100"],
+     ["4","rooibos","south africa","100"],
+     ["5","house blend",null,"100"]
+    ]
+   }
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "INSERT INTO teas (name, origin, grams) VALUES ('oolong', 'taiwan', 50)",
+   "note": "the next insert gets 8. 6 went to the insert that failed, 7 to the one rolled back.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "SELECT id, name, origin, grams FROM teas ORDER BY id",
+   "note": "the table after it: a gap at 6 and 7, for good.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"origin","type":"text"},
+     {"name":"grams","type":"int4"}
+    ],
+    "data": [
+     ["1","assam","india","250"],
+     ["2","sencha","japan","100"],
+     ["3","darjeeling","india","100"],
+     ["4","rooibos","south africa","100"],
+     ["5","house blend",null,"100"],
+     ["8","oolong","taiwan","50"]
+    ]
+   }
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "CREATE TABLE kinds (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text);\nINSERT INTO kinds (id, name) VALUES (1, 'typed by hand');\nINSERT INTO kinds (name) VALUES ('from the sequence')",
+   "note": "GENERATED ALWAYS: the identity column refuses a value you typed. the mistake is caught on the spot.",
+   "status": "error",
+   "error": {
+    "sqlstate": "428C9",
+    "message": "cannot insert a non-DEFAULT value into column \"id\"",
+    "detail": "Column \"id\" is an identity column defined as GENERATED ALWAYS."
+   }
+  },
+  {
+   "i": 18,
+   "session": "T1",
+   "sql": "DROP TABLE kinds",
+   "note": "clean up for the next kind.",
+   "status": "ok",
+   "result": {"command":"DROP TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 19,
+   "session": "T1",
+   "sql": "CREATE TABLE kinds (id int GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, name text);\nINSERT INTO kinds (id, name) VALUES (1, 'typed by hand');\nINSERT INTO kinds (name) VALUES ('from the sequence')",
+   "note": "GENERATED BY DEFAULT takes the typed 1. the sequence doesn't know, hands out 1 next, and the second insert hits the primary key.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"kinds_pkey\"",
+    "detail": "Key (id)=(1) already exists."
+   }
+  },
+  {
+   "i": 20,
+   "session": "T1",
+   "sql": "DROP TABLE kinds",
+   "note": "clean up for the next kind.",
+   "status": "ok",
+   "result": {"command":"DROP TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 21,
+   "session": "T1",
+   "sql": "CREATE TABLE kinds (id serial PRIMARY KEY, name text);\nINSERT INTO kinds (id, name) VALUES (1, 'typed by hand');\nINSERT INTO kinds (name) VALUES ('from the sequence')",
+   "note": "serial does the same: a plain DEFAULT nextval(...), which a typed value simply skips.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"kinds_pkey\"",
+    "detail": "Key (id)=(1) already exists."
+   }
+  }
+ ]
+}

@@ -1,0 +1,96 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "fbc72ff282758343": {
+      "db": "school",
+      "sql": "SELECT c.code, c.title, e.term, e.grade\nFROM students AS s\nJOIN enrollments AS e ON e.student_id = s.id\nJOIN courses AS c ON c.code = e.course_code\nWHERE s.name = 'Priya Nair'\nORDER BY e.term, c.code;",
+      "statements": [
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25],
+            ["title", "text", 25],
+            ["term", "text", 25],
+            ["grade", "bpchar", 1042]
+          ],
+          "rowCount": 7,
+          "digest": "cd5e786e4af353c1",
+          "rows": [
+            ["CS101", "Intro to Programming", "2025-fall", "C"],
+            ["CS301", "Databases", "2026-fall", null],
+            ["CS350", "Operating Systems", "2026-fall", null],
+            ["CS401", "Database Internals", "2026-fall", null],
+            ["MATH301", "Linear Algebra", "2026-fall", null],
+            ["CS201", "Data Structures", "2026-spring", "B"],
+            ["PHYS201", "Electromagnetism", "2026-spring", "B"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7196ed2df87de688": {
+      "db": "empty",
+      "sql": "CREATE TABLE customers (id int PRIMARY KEY, name text NOT NULL);\nCREATE TABLE loyalty_cards (\n  customer_id int PRIMARY KEY REFERENCES customers,\n  points      int NOT NULL DEFAULT 0\n);\nINSERT INTO customers VALUES (42, 'Ada Lovelace');\nINSERT INTO loyalty_cards VALUES (42, 120);\nINSERT INTO loyalty_cards VALUES (42, 0);",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"loyalty_cards_pkey\"",
+            "detail": "Key (customer_id)=(42) already exists.",
+            "schema": "public",
+            "table": "loyalty_cards",
+            "constraint": "loyalty_cards_pkey"
+          },
+          "digest": "e6397b871ee5db62"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"loyalty_cards_pkey\"",
+        "detail": "Key (customer_id)=(42) already exists.",
+        "schema": "public",
+        "table": "loyalty_cards",
+        "constraint": "loyalty_cards_pkey",
+        "statement": 4
+      },
+      "txn": "I"
+    }
+  }
+}

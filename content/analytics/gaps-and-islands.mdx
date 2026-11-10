@@ -1,0 +1,167 @@
+import { IslandSteps } from "@/components/figures/analytics/IslandSteps";
+import { resultOf, runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/gaps-and-islands.pgtrace.json";
+
+{/* the island stepper, the streak bars and the session switch read
+    traces/gaps-and-islands.scenario.sql, captured on PGlite against the events dataset. */}
+
+export const calendar = resultOf(trace, 0).rows;
+export const numbered = resultOf(trace, 1);
+export const islands = resultOf(trace, 2);
+export const streaks = resultOf(trace, 3).rows.map(([u, a, b, n]) => ({ label: `user ${u}, ${a.slice(5)} to ${b.slice(5)}`, value: Number(n) }));
+export const sessions = runsOf(trace, ["30 minutes", "90 minutes"], 4);
+
+<InShort>
+an **island** is a run of consecutive values (days in a row, ids with no hole), and a **gap** is what's between two islands. the trick: number the rows with `row_number()`, and subtract the number from the value. inside an island both go up by one per row, so the difference **stays constant**. GROUP BY the difference, and each group is an island.
+
+for gaps that aren't "exactly one apart" (sessions with a timeout), flag each row that starts something new with `lag()`, and number the islands with a running sum of the flags.
+</InShort>
+
+## the picture
+
+you know how "longest daily streak" sounds like it needs a loop: walk the days, count, reset when you miss one? SQL doesn't loop, and it doesn't have to. the problem has a name, gaps and islands, and an old trick that turns streaks into a GROUP BY.
+
+think of a ruler laid next to a staircase. on the steps that are all there, the ruler and the stairs climb together, so the height minus the ruler mark doesn't change. where a step is missing, the stairs jump and the ruler doesn't, so from there on the difference is bigger. each stretch with one difference is a flight of stairs with no hole: an island.
+
+<Figure wide caption={<>user 54's first nineteen days. step through: number the active days, subtract, group. after step 3, every day of an island shows the <C k="hot">same difference</C>, and the difference only moves at a gap (<span className="text-faint">dashed</span>: no row that day).</>}>
+<IslandSteps
+  sql={islands.sql}
+  calendar={calendar}
+  rows={numbered}
+  islands={islands}
+  notes={[
+    "user 54 was active on 11 of the first 19 days of march. the dashed days have no row at all, and nothing below can see them directly.",
+    "row_number numbers the active days 1 to 11, in day order. it doesn't know about the calendar: the 5th is number 4, because the 4th has no row.",
+    "subtract. march 1, 2 and 3 are numbered 1, 2, 3, so each gives february 28. march 5 to 7 give march 1. a gap pushes the day ahead of the number, so the difference jumps, and then holds still again.",
+    "GROUP BY the difference: five groups, five islands. three runs of three days, and two lonely days.",
+  ]}
+  trace={prov(trace)}
+/>
+</Figure>
+
+the difference itself is meaningless as a date. it's a label. any value works as a label as long as it's the same within an island and different between islands, and "value minus position" is exactly that.
+
+## the query
+
+as one query, numbered in a subquery and grouped outside (a window function can't be nested inside GROUP BY's aggregates, and it can't go in WHERE either, [window functions](/learn/analytics/window-functions) has why):
+
+```sql run db=events
+WITH days AS (
+  SELECT DISTINCT occurred_at::date AS day
+  FROM events
+  WHERE user_id = 54 AND occurred_at < '2026-03-20'
+)
+SELECT min(day) AS first, max(day) AS last, count(*) AS days
+FROM (
+  SELECT day,
+         day - row_number() OVER (ORDER BY day)::int AS grp
+  FROM days
+) AS numbered
+GROUP BY grp
+ORDER BY first;
+```
+
+three things make it work, and each one is a way to break it:
+
+- **DISTINCT first.** a user with two events on one day has two rows for that day, the numbers run ahead of the days, and an island splits in two. the trick needs one row per value.
+- **`::int`.** `row_number()` is a bigint, and `date - bigint` doesn't exist; `date - int` gives a date.
+- **the same ORDER BY** as the thing you're measuring: number the days in day order, or the differences are noise.
+
+<Predict options={["3", "2", "7"]} answer={0}>
+```sql
+SELECT count(DISTINCT grp)
+FROM (SELECT v - row_number() OVER (ORDER BY v) AS grp
+      FROM unnest(ARRAY[1, 2, 3, 5, 6, 9, 10]) AS v) AS t;
+```
+<Explain>
+3. 1, 2, 3 are numbered 1, 2, 3 and give 0, 0, 0. 5 and 6 are numbered 4 and 5 and give 1, 1. 9 and 10 are numbered 6 and 7 and give 3, 3. three different differences, three islands: {1, 2, 3}, {5, 6}, {9, 10}.
+</Explain>
+</Predict>
+
+```sql run
+SELECT v, row_number() OVER (ORDER BY v) AS rn, v - row_number() OVER (ORDER BY v) AS grp
+FROM unnest(ARRAY[1, 2, 3, 5, 6, 9, 10]) AS v
+ORDER BY v;
+```
+
+## the longest streak
+
+partition by user, and every user's days get their own numbering, so one query finds every streak of every user. sort by length:
+
+<Figure caption={<>the six longest streaks in the events table, from the query below. every top streak starts on april 15 or ends on april 13: 2026-04-14 has no events at all, so it cuts every user's streak in two.</>}>
+<Bars data={streaks} unit="days" />
+</Figure>
+
+```sql run db=events
+WITH days AS (SELECT DISTINCT user_id, occurred_at::date AS day FROM events),
+islands AS (
+  SELECT user_id, day,
+         day - row_number() OVER (PARTITION BY user_id ORDER BY day)::int AS grp
+  FROM days
+)
+SELECT user_id, min(day) AS first, max(day) AS last, count(*) AS days
+FROM islands
+GROUP BY user_id, grp
+ORDER BY days DESC, user_id
+LIMIT 6;
+```
+
+nobody beats 47 days, because nobody was active on the 14th. that's the gap side of the problem, and the same subtraction finds it. user 17 has a famous streak in this dataset, 30 days with one day missed; ask for the islands and the miss appears as the space between them:
+
+```sql run db=events
+WITH days AS (SELECT DISTINCT occurred_at::date AS day FROM events WHERE user_id = 17),
+islands AS (
+  SELECT min(day) AS first, max(day) AS last
+  FROM (SELECT day, day - row_number() OVER (ORDER BY day)::int AS grp FROM days) AS d
+  GROUP BY grp
+)
+SELECT last + 1 AS gap_from,
+       lead(first) OVER (ORDER BY first) - 1 AS gap_to
+FROM islands
+ORDER BY first;
+```
+
+one gap, 2026-05-05 to 2026-05-05: the missed day. the second row is the streak's end on the 20th; there's no island after it, so `gap_to` is NULL. (for gaps across the whole calendar, not between someone's islands, a [generate_series calendar](/learn/analytics/generate-series) with a LEFT JOIN is often clearer.)
+
+## islands with a timeout: sessions
+
+the subtraction needs values that are exactly one apart inside an island. web sessions aren't like that: "a session ends after 30 minutes of nothing" means any gap under 30 minutes keeps you in it. a different trick, two windows:
+
+1. `lag()` gives each event's gap since the previous one ([the previous row](/learn/analytics/lag-and-lead)).
+2. a row starts a new session if the gap is over the timeout (or there's no previous row). flag it 1, else 0.
+3. a running `sum()` of the flags numbers the sessions: it goes up by one at every start.
+
+windows can't be nested, so steps 1 and 2 go in a subquery:
+
+<Figure wide caption={<>user 1's fourteen events on 2 march 2026. switch the timeout: at 30 minutes the day is 11 sessions, at 90 minutes it's 5. the shaded runs are the sessions, numbered by the running sum.</>}>
+<RunPick options={[{ key: "timeout", values: ["30 minutes", "90 minutes"] }]} runs={sessions} hot={["interval '30 minutes'", "interval '90 minutes'", "sum(new) OVER (ORDER BY at, id)"]} group="session" maxRows={14} trace={prov(trace)} />
+</Figure>
+
+try the one-step version and postgres tells you why it's two steps:
+
+```sql run db=events expect=error
+SELECT id,
+       sum(CASE WHEN occurred_at - lag(occurred_at) OVER w <= interval '30 minutes'
+                THEN 0 ELSE 1 END) OVER w AS session
+FROM events
+WHERE user_id = 1
+WINDOW w AS (ORDER BY occurred_at, id);
+```
+
+this "flag the starts, then running-sum" pattern is the general one. the subtraction trick is the special case for values that step by exactly one, and it's shorter there, so it's worth knowing both.
+
+<Gotcha title="islands need a total order">
+both tricks number rows in an order, so the order has to be total. two events with the same `occurred_at` and an ORDER BY of just `occurred_at` can swap places between runs, and with them which one carries the "new session" flag. end the ORDER BY with the id, as above.
+</Gotcha>
+
+<Interview q="find each user's longest streak of consecutive active days.">
+reduce to one row per user per day (DISTINCT), then `day - row_number() OVER (PARTITION BY user_id ORDER BY day)` gives a value that's constant within each run of consecutive days. GROUP BY user_id and that value to get each streak's first day, last day and length, then take the max per user. bonus point: explain why it works (both sides go up by one per row inside a run, so the difference only changes at a gap), and mention the lag-plus-running-sum version for gaps that aren't exactly one (sessions with a timeout).
+</Interview>
+
+<Keylines>
+- an island is a run of consecutive values. value minus row_number is constant inside one.
+- one row per value first (DISTINCT), and number in the same order you measure.
+- GROUP BY the difference: one group per island, with min, max and count.
+- for timeouts, flag the rows that start something (lag), then running-sum the flags.
+- window functions can't be nested: compute the flag in a subquery.
+</Keylines>

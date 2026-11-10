@@ -1,0 +1,179 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "a516a565fa6ab5d6": {
+      "db": "shop",
+      "sql": "CREATE VIEW monthly AS\nSELECT date_trunc('month', o.ordered_at)::date AS month,\n       sum(oi.qty * oi.unit_price) AS revenue\nFROM orders AS o\nJOIN order_items AS oi ON oi.order_id = o.id\nWHERE o.status NOT IN ('cancelled', 'refunded')\nGROUP BY 1;\n\nSELECT month, revenue,\n       revenue - lag(revenue) OVER w AS change,\n       round(100 * (revenue / lag(revenue) OVER w - 1), 1) AS pct\nFROM monthly\nWINDOW w AS (ORDER BY month)\nORDER BY month;",
+      "statements": [
+        {
+          "tag": "CREATE VIEW",
+          "command": "CREATE VIEW",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9b07abe7a60de54c"
+        },
+        {
+          "tag": "SELECT 12",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["revenue", "numeric", 1700],
+            ["change", "numeric", 1700],
+            ["pct", "numeric", 1700]
+          ],
+          "rowCount": 12,
+          "digest": "7cb8babe0266c45c",
+          "rows": [
+            ["2025-07-01", "348021.73", null, null],
+            ["2025-08-01", "360384.79", "12363.06", "3.6"],
+            ["2025-09-01", "342888.77", "-17496.02", "-4.9"],
+            ["2025-10-01", "358400.90", "15512.13", "4.5"],
+            ["2025-11-01", "354606.47", "-3794.43", "-1.1"],
+            ["2025-12-01", "346452.85", "-8153.62", "-2.3"],
+            ["2026-01-01", "352732.50", "6279.65", "1.8"],
+            ["2026-02-01", "331476.19", "-21256.31", "-6.0"],
+            ["2026-03-01", "355904.75", "24428.56", "7.4"],
+            ["2026-04-01", "355887.10", "-17.65", "0.0"],
+            ["2026-05-01", "353582.15", "-2304.95", "-0.6"],
+            ["2026-06-01", "306277.84", "-47304.31", "-13.4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a3b3580fa3598500": {
+      "db": "shop",
+      "sql": "SELECT month,\n       lag(revenue, 1, 0) OVER (ORDER BY month) AS prev_or_zero,\n       lead(month)        OVER (ORDER BY month) AS next_month\nFROM monthly\nORDER BY month\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["prev_or_zero", "numeric", 1700],
+            ["next_month", "date", 1082]
+          ],
+          "rowCount": 3,
+          "digest": "82258649ffc5b1f2",
+          "rows": [
+            ["2025-07-01", "0", "2025-08-01"],
+            ["2025-08-01", "348021.73", "2025-09-01"],
+            ["2025-09-01", "360384.79", "2025-10-01"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "518b5fbf5366c356": {
+      "db": "shop",
+      "sql": "SELECT month, revenue,\n       sum(revenue) OVER (ORDER BY month) AS running_total,\n       sum(revenue) OVER (PARTITION BY extract(year FROM month) ORDER BY month) AS year_to_date\nFROM monthly\nORDER BY month;",
+      "statements": [
+        {
+          "tag": "SELECT 12",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["revenue", "numeric", 1700],
+            ["running_total", "numeric", 1700],
+            ["year_to_date", "numeric", 1700]
+          ],
+          "rowCount": 12,
+          "digest": "62fab1799c54774d",
+          "rows": [
+            ["2025-07-01", "348021.73", "348021.73", "348021.73"],
+            ["2025-08-01", "360384.79", "708406.52", "708406.52"],
+            ["2025-09-01", "342888.77", "1051295.29", "1051295.29"],
+            ["2025-10-01", "358400.90", "1409696.19", "1409696.19"],
+            ["2025-11-01", "354606.47", "1764302.66", "1764302.66"],
+            ["2025-12-01", "346452.85", "2110755.51", "2110755.51"],
+            ["2026-01-01", "352732.50", "2463488.01", "352732.50"],
+            ["2026-02-01", "331476.19", "2794964.20", "684208.69"],
+            ["2026-03-01", "355904.75", "3150868.95", "1040113.44"],
+            ["2026-04-01", "355887.10", "3506756.05", "1396000.54"],
+            ["2026-05-01", "353582.15", "3860338.20", "1749582.69"],
+            ["2026-06-01", "306277.84", "4166616.04", "2055860.53"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "98eb9c1ef0ab526b": {
+      "db": "shop",
+      "sql": "SELECT month,\n       round(avg(revenue) OVER (ORDER BY month ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)) AS avg_3_months\nFROM monthly\nORDER BY month\nLIMIT 4;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["avg_3_months", "numeric", 1700]
+          ],
+          "rowCount": 4,
+          "digest": "8a198ac81dfb1a18",
+          "rows": [
+            ["2025-07-01", "348022"],
+            ["2025-08-01", "354203"],
+            ["2025-09-01", "350432"],
+            ["2025-10-01", "353891"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aadbbc3e7ce6b140": {
+      "db": "shop",
+      "sql": "SELECT id, ordered_at::date AS day,\n       count(*) OVER (ORDER BY ordered_at::date) AS by_day,\n       count(*) OVER (ORDER BY ordered_at::date, id\n                      ROWS UNBOUNDED PRECEDING) AS by_row\nFROM orders\nORDER BY id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["day", "date", 1082],
+            ["by_day", "int8", 20],
+            ["by_row", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "9817f8ef6d871869",
+          "rows": [
+            ["1", "2025-07-01", "27", "1"],
+            ["2", "2025-07-01", "27", "2"],
+            ["3", "2025-07-01", "27", "3"],
+            ["4", "2025-07-01", "27", "4"],
+            ["5", "2025-07-01", "27", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7553d8bb540c0efe": {
+      "db": "events",
+      "sql": "SELECT day, day - lag(day) OVER (ORDER BY day) AS gap\nFROM (SELECT DISTINCT occurred_at::date AS day FROM events) AS d\nORDER BY gap DESC NULLS LAST, day\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["day", "date", 1082],
+            ["gap", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "72dab8e159e7010b",
+          "rows": [
+            ["2026-04-15", "2"],
+            ["2026-03-02", "1"],
+            ["2026-03-03", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

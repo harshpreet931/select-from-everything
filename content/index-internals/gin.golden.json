@@ -1,0 +1,310 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "07d43354e601aaaa": {
+      "db": "empty",
+      "sql": "CREATE TABLE posts (id int, tags text[]);\nINSERT INTO posts\nSELECT g, ARRAY['sql'] || CASE WHEN g % 10 = 0 THEN ARRAY['postgres'] ELSE ARRAY[]::text[] END\n          || CASE WHEN g % 1000 = 0 THEN ARRAY['gin'] ELSE ARRAY[]::text[] END\nFROM generate_series(1, 20000) AS g;\nCREATE INDEX posts_tags ON posts USING gin (tags);\nSELECT * FROM gin_metapage_info(get_raw_page('posts_tags', 0));\nSELECT b AS blkno, o.flags, o.rightlink, o.maxoff\nFROM generate_series(1, pg_relation_size('posts_tags') / 8192 - 1) AS b,\n     gin_page_opaque_info(get_raw_page('posts_tags', b)) AS o\nORDER BY b;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 20000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 20000,
+          "digest": "fd5ccf5e58c66eff"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pending_head", "int8", 20],
+            ["pending_tail", "int8", 20],
+            ["tail_free_size", "int4", 23],
+            ["n_pending_pages", "int8", 20],
+            ["n_pending_tuples", "int8", 20],
+            ["n_total_pages", "int8", 20],
+            ["n_entry_pages", "int8", 20],
+            ["n_data_pages", "int8", 20],
+            ["n_entries", "int8", 20],
+            ["version", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "7cd2e35b6217f9b3",
+          "rows": [
+            ["4294967295", "4294967295", "0", "0", "0", "6", "1", "4", "3", "2"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["flags", "text[]", 1009],
+            ["rightlink", "int8", 20],
+            ["maxoff", "int4", 23]
+          ],
+          "rowCount": 5,
+          "digest": "586f35ca02c047c5",
+          "rows": [
+            ["1", "{leaf}", "4294967295", "0"],
+            ["2", "{data}", "4294967295", "3"],
+            ["3", "{data,leaf,compressed}", "5", "0"],
+            ["4", "{data,leaf,compressed}", "3", "0"],
+            ["5", "{data,leaf,compressed}", "4294967295", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0575ad8fd576c580": {
+      "db": "empty",
+      "sql": "SELECT first_tid, nbytes, cardinality(tids) AS rows\nFROM gin_leafpage_items(get_raw_page('posts_tags', 3))\nORDER BY first_tid LIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["first_tid", "tid", 27],
+            ["nbytes", "int2", 21],
+            ["rows", "int4", 23]
+          ],
+          "rowCount": 5,
+          "digest": "613bfecc6189ac6a",
+          "rows": [
+            ["(66,64)", "248", "247"],
+            ["(68,75)", "248", "247"],
+            ["(70,86)", "248", "247"],
+            ["(72,97)", "248", "247"],
+            ["(74,108)", "248", "247"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "587d4eddaa6e6a02": {
+      "db": "empty",
+      "sql": "INSERT INTO posts SELECT g, ARRAY['sql', 'new'] FROM generate_series(20001, 20500) AS g;\nSELECT pending_head, pending_tail, n_pending_pages, n_pending_tuples, n_entries\nFROM gin_metapage_info(get_raw_page('posts_tags', 0));\nSELECT gin_clean_pending_list('posts_tags') AS pages_cleaned;\nSELECT pending_head, pending_tail, n_pending_pages, n_pending_tuples, n_entries\nFROM gin_metapage_info(get_raw_page('posts_tags', 0));",
+      "statements": [
+        {
+          "tag": "INSERT 0 500",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 500,
+          "digest": "7e9df5b671e3e559"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pending_head", "int8", 20],
+            ["pending_tail", "int8", 20],
+            ["n_pending_pages", "int8", 20],
+            ["n_pending_tuples", "int8", 20],
+            ["n_entries", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "5f0371057462fbac",
+          "rows": [
+            ["6", "8", "3", "500", "3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pages_cleaned", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "d5bca08ab5db6ed8",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pending_head", "int8", 20],
+            ["pending_tail", "int8", 20],
+            ["n_pending_pages", "int8", 20],
+            ["n_pending_tuples", "int8", 20],
+            ["n_entries", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "52e0d11cc7e3e004",
+          "rows": [
+            ["4294967295", "4294967295", "0", "0", "3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f95972f73ae4cb97": {
+      "db": "empty",
+      "sql": "CREATE TABLE fu (id int, tags text[]);\nCREATE INDEX fu_on ON fu USING gin (tags);\nCREATE TABLE fo (id int, tags text[]);\nCREATE INDEX fo_off ON fo USING gin (tags) WITH (fastupdate = off);\nSELECT 1 AS marked FROM set_config('my.a', pg_current_wal_insert_lsn()::text, false);\nINSERT INTO fu SELECT g, ARRAY['t' || g % 50, 't' || g % 7, 'x'] FROM generate_series(1, 5000) AS g;\nSELECT 1 AS marked FROM set_config('my.b', pg_current_wal_insert_lsn()::text, false);\nINSERT INTO fo SELECT g, ARRAY['t' || g % 50, 't' || g % 7, 'x'] FROM generate_series(1, 5000) AS g;\nSELECT 1 AS marked FROM set_config('my.c', pg_current_wal_insert_lsn()::text, false);\nSELECT n_pending_pages, n_pending_tuples FROM gin_metapage_info(get_raw_page('fu_on', 0));\nSELECT gin_clean_pending_list('fu_on') AS pages_cleaned;\nSELECT 1 AS marked FROM set_config('my.d', pg_current_wal_insert_lsn()::text, false);\nSELECT pg_size_pretty(pg_wal_lsn_diff(current_setting('my.b')::pg_lsn, current_setting('my.a')::pg_lsn)) AS on_inserts,\n       pg_size_pretty(pg_wal_lsn_diff(current_setting('my.d')::pg_lsn, current_setting('my.c')::pg_lsn)) AS on_cleanup,\n       pg_size_pretty(pg_wal_lsn_diff(current_setting('my.c')::pg_lsn, current_setting('my.b')::pg_lsn)) AS off_inserts;\nSELECT pg_relation_size('fu_on') / 8192 AS pages_on, pg_relation_size('fo_off') / 8192 AS pages_off;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "0c8a86381b380a4f",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 5000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 5000,
+          "digest": "bd46f2e754a56ebe"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "8aae7cbb3b1dcf61",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 5000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 5000,
+          "digest": "3681aaf37d452b84"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "34fb9029926042a3",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_pending_pages", "int8", 20],
+            ["n_pending_tuples", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "a419fb338e02b3d3",
+          "rows": [
+            ["37", "5000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pages_cleaned", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "d7cf00fe72df44e4",
+          "rows": [
+            ["37"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "b9919b66d1f9f883",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["on_inserts", "text", 25],
+            ["on_cleanup", "text", 25],
+            ["off_inserts", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "630b7b351426e25c",
+          "rows": [
+            ["1450 kB", "62 kB", "7847 kB"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pages_on", "int8", 20],
+            ["pages_off", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "db1c56a7f21224e2",
+          "rows": [
+            ["43", "6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

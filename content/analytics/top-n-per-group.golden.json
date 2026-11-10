@@ -1,0 +1,189 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "e8c838872c56a794": {
+      "db": "shop",
+      "sql": "CREATE TABLE product_sales AS\nSELECT p.id, p.name, p.category, sum(oi.qty)::int AS units\nFROM products AS p\nJOIN order_items AS oi ON oi.product_id = p.id\nGROUP BY p.id;\nANALYZE product_sales;\n\nSELECT category, name, units\nFROM product_sales\nORDER BY units DESC, id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 199",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 199,
+          "digest": "dd157770acd4d856"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["name", "text", 25],
+            ["units", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "b49a37a2ef9cd353",
+          "rows": [
+            ["kitchen", "chef's knife", "3476"],
+            ["kitchen", "cast iron pan", "1386"],
+            ["books", "the art of sql", "1046"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1273cb12305f6fb1": {
+      "db": "shop",
+      "sql": "SELECT category, name, units, n\nFROM (\n  SELECT *, row_number() OVER (PARTITION BY category ORDER BY units DESC, id) AS n\n  FROM product_sales\n) AS ranked\nWHERE n <= 3\nORDER BY category, n\nLIMIT 6;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["name", "text", 25],
+            ["units", "int4", 23],
+            ["n", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "e65d7d05716c6d5a",
+          "rows": [
+            ["audio", "studio headphones", "773", "1"],
+            ["audio", "folding earbuds", "627", "2"],
+            ["audio", "basic earbuds", "351", "3"],
+            ["bath", "classic shower caddy", "379", "1"],
+            ["bath", "small shower caddy", "298", "2"],
+            ["bath", "mini bath mat", "232", "3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8d5bddf523a1120d": {
+      "db": "shop",
+      "sql": "SELECT c.category, s.name, s.units\nFROM (SELECT DISTINCT category FROM product_sales) AS c\nCROSS JOIN LATERAL (\n  SELECT id, name, units FROM product_sales AS s\n  WHERE s.category = c.category\n  ORDER BY units DESC, id\n  LIMIT 3\n) AS s\nORDER BY c.category, s.units DESC, s.id\nLIMIT 6;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["name", "text", 25],
+            ["units", "int4", 23]
+          ],
+          "rowCount": 6,
+          "digest": "d4014b8e777e9c3d",
+          "rows": [
+            ["audio", "studio headphones", "773"],
+            ["audio", "folding earbuds", "627"],
+            ["audio", "basic earbuds", "351"],
+            ["bath", "classic shower caddy", "379"],
+            ["bath", "small shower caddy", "298"],
+            ["bath", "mini bath mat", "232"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "852da31f40948de7": {
+      "db": "shop",
+      "sql": "SELECT DISTINCT ON (category) category, name, units\nFROM product_sales\nORDER BY category, units DESC, id;",
+      "statements": [
+        {
+          "tag": "SELECT 11",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["name", "text", 25],
+            ["units", "int4", 23]
+          ],
+          "rowCount": 11,
+          "digest": "e0222a9c609274b7",
+          "rows": [
+            ["audio", "studio headphones", "773"],
+            ["bath", "classic shower caddy", "379"],
+            ["books", "the art of sql", "1046"],
+            ["games", "travel dice tower", "317"],
+            ["garden", "hose reel", "735"],
+            ["kitchen", "chef's knife", "3476"],
+            ["office", "paper clips, free sample", "968"],
+            ["outdoor", "linen hammock", "514"],
+            ["pets", "cat tree", "621"],
+            ["toys", "linen yo-yo", "511"],
+            [null, "wooden train", "665"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "43792205cd287e1c": {
+      "db": "shop",
+      "sql": "SELECT c.category, s.name, s.units\nFROM (SELECT DISTINCT category FROM product_sales) AS c\nCROSS JOIN LATERAL (\n  SELECT name, units FROM product_sales AS s\n  WHERE s.category IS NOT DISTINCT FROM c.category\n  ORDER BY units DESC, id\n  LIMIT 1\n) AS s\nORDER BY c.category NULLS FIRST\nLIMIT 2;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["name", "text", 25],
+            ["units", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "78213588178c1b4c",
+          "rows": [
+            [null, "wooden train", "665"],
+            ["audio", "studio headphones", "773"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "45a4a207ff0744e3": {
+      "db": "shop",
+      "sql": "CREATE INDEX ON product_sales (category, units DESC, id);\n\nEXPLAIN (COSTS OFF)\nSELECT c.category, s.name, s.units\nFROM (SELECT DISTINCT category FROM product_sales) AS c\nCROSS JOIN LATERAL (\n  SELECT name, units FROM product_sales AS s\n  WHERE s.category = c.category\n  ORDER BY units DESC, id\n  LIMIT 3\n) AS s\nORDER BY c.category;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c1a7f1b6ddc83760",
+          "rows": [
+            ["Sort"],
+            ["  Sort Key: product_sales.category"],
+            ["  ->  Nested Loop"],
+            ["        ->  HashAggregate"],
+            ["              Group Key: product_sales.category"],
+            ["              ->  Seq Scan on product_sales"],
+            ["        ->  Limit"],
+            ["              ->  Index Scan using product_sales_category_units_id_idx on product_sales s"],
+            ["                    Index Cond: (category = product_sales.category)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

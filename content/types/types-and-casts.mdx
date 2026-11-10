@@ -1,0 +1,223 @@
+import { TypeSteps } from "@/components/figures/types/TypeSteps";
+import { CastGrid } from "@/components/figures/types/CastGrid";
+import { prov, resultOf, runsOf } from "@/lib/db/captured";
+import trace from "./traces/types-and-casts.pgtrace.json";
+
+{/* the type stepper, the cast grid and the insert switch read traces/types-and-casts.scenario.sql,
+    captured on PGlite: pg_typeof, the pg_operator candidates, pg_cast and every result or error
+    are postgres's own. only which candidate gets lit is chosen here, by the rule in the docs. */}
+
+export const lit = resultOf(trace, 0);
+export const plus = resultOf(trace, 1);
+export const bars = resultOf(trace, 2);
+export const at = (r, l, rt) => r.rows.findIndex((x) => x[0] === l && x[1] === rt);
+export const cases = {
+  "'1' + 1": {
+    left: { text: "'1'", type: lit.rows[0][0], becomes: "integer" }, op: "+", right: { text: "1", type: lit.rows[0][1] },
+    candidates: plus, pick: at(plus, "integer", "integer"), run: resultOf(trace, 3),
+    notes: [
+      "'1' is in quotes, so it's a string of characters with no type yet: unknown. 1 has no quotes and no dot, so it's an integer.",
+      "postgres lists every + that takes an integer on the right. an unknown side is assumed to have the other side's type first, and integer + integer is an exact match.",
+      "so '1' is read by integer's input function, as an integer. it is one.",
+      "2, an integer. no string was ever added to anything.",
+    ],
+  },
+  "'1.5' + 1": {
+    left: { text: "'1.5'", type: lit.rows[0][2], becomes: "integer" }, op: "+", right: { text: "1", type: lit.rows[0][1] },
+    candidates: plus, pick: at(plus, "integer", "integer"), run: resultOf(trace, 4),
+    notes: [
+      "the same shape: an unknown literal and an integer.",
+      "the same lookup, the same exact match: integer + integer. postgres never looks inside the quotes to choose.",
+      "so '1.5' has to be read as an integer.",
+      "and it isn't one. the error comes from integer's input function, when the literal is finally read.",
+    ],
+  },
+  "'1' || 1": {
+    left: { text: "'1'", type: lit.rows[0][0], becomes: "text" }, op: "||", right: { text: "1", type: lit.rows[0][1] },
+    candidates: bars, pick: at(bars, "text", "anynonarray"), run: resultOf(trace, 5),
+    notes: [
+      "an unknown literal and an integer again.",
+      "there's no integer || integer. with an unknown in play, postgres prefers a string type for it, and text || anynonarray takes anything on the right that isn't an array.",
+      "'1' becomes text. the integer goes in as anynonarray, and the operator turns it into text itself.",
+      "'11', a text.",
+    ],
+  },
+  "1 || 1": {
+    left: { text: "1", type: lit.rows[0][1] }, op: "||", right: { text: "1", type: lit.rows[0][1] },
+    candidates: bars, pick: null, run: resultOf(trace, 6),
+    notes: [
+      "two integers, and no unknown to bend.",
+      "no || takes two integers, and integer doesn't turn into text on its own (that conversion is allowed only when storing into a text column). nothing fits.",
+      "nothing to settle: both types were fixed before the lookup started.",
+      "operator does not exist. postgres won't guess that you meant text.",
+    ],
+  },
+};
+export const grid = resultOf(trace, 7);
+export const stores = runsOf(trace, ["3.7", "'3.7'", "' 42 '", "4000000000", "true"], 9);
+export const source = prov(trace);
+
+<InShort>
+every value has a **type**, fixed before the query runs. a **cast** turns one type into another: `CAST(x AS int)` or `x::int`. postgres casts on its own only where the catalog says it may: **implicit** casts anywhere, **assignment** casts when storing into a column, **explicit** ones only when you ask.
+
+a quoted literal starts out as **unknown** and takes the type the context wants. that's why `'1' + 1` is 2 and `1 || 1` is an error.
+</InShort>
+
+## the picture
+
+you know how `'1' + 1` gives you 2 in postgres, no complaints, but `1 || 1` refuses to glue two ones together? it looks backwards. the first one adds a string to a number. the second one just wants a string out of two numbers.
+
+think of a quoted literal as a blank name tag (the type **unknown**). it walks up to an operator, the operator decides which seat is free, and the tag gets the name on the seat. `1` without quotes arrives with its name already printed: integer. two printed tags and no seat for them, and nobody gets in.
+
+<Figure wide caption={<>pick an expression and step through what the parser does with it. a dashed type is still open, a type that just got settled turns <C k="hot">hot</C>, and the operator postgres takes is <C k="live">lit</C>. the types, the candidate lists and the last step are real postgres output.</>}>
+<TypeSteps cases={cases} trace={source} />
+</Figure>
+
+notice that postgres decides everything from the *types*, never from what's inside the quotes. `'1.5' + 1` fails for exactly the reason `'1' + 1` works: the operator is picked first, then the string has to fit it.
+
+## every value has a type
+
+`pg_typeof` tells you what postgres thinks something is:
+
+```sql run
+SELECT pg_typeof('hello')   AS quoted,
+       pg_typeof(1)         AS small_number,
+       pg_typeof(3000000000) AS big_number,
+       pg_typeof(1.5)       AS with_a_dot,
+       pg_typeof(true)      AS bool;
+```
+
+a quoted string is `unknown` until something needs it to be more. a number without a dot is an `integer`, unless it's too big for one (then `bigint`). a dot makes it `numeric`, not a float. that last one matters, and [integers, numeric and floats](/learn/types/numbers) is about why.
+
+and the type is fixed per column, not per row. a column of a result has exactly one type, decided before the first row is read, which is why a CASE that returns a number in one branch and a word in another [fails](/learn/basics/case-expressions) instead of mixing them.
+
+## three ways to cast
+
+the standard spelling is `CAST(x AS type)`. postgres also has `x::type`, which is shorter and postgres only <Since only />, and a typed literal, `type 'string'`, which the standard has for a few types (`DATE '2026-01-31'`) and postgres allows for any:
+
+```sql run
+SELECT CAST('42' AS integer) AS cast_fn,
+       '42'::integer         AS colons,
+       integer '42'          AS typed_literal;
+```
+
+all three call the same thing: integer's input function, on the string `42`. a cast from a string is a parse, and it fails like one:
+
+```sql run expect=error
+SELECT '12abc'::integer;
+```
+
+(`' 42 '::integer` is fine, by the way. integer input skips spaces around the digits.)
+
+## implicit, assignment, explicit
+
+so who decides when postgres may cast without being asked? a catalog table, `pg_cast`. every row is a cast from one type to another, and its `castcontext` says where it's allowed: `i` anywhere, `a` when assigning to a column, `e` only when you write it.
+
+```sql run
+SELECT castcontext AS context, count(*) AS casts
+FROM pg_cast
+GROUP BY castcontext
+ORDER BY castcontext;
+```
+
+<Figure caption={<>eight types from pg_cast, the type you have down the side, the one you want across the top. click a cell. widening (integer to bigint) is implicit, narrowing (bigint to integer) is assignment, booleans and numbers only meet when you say so, and an empty cell has no cast at all.</>}>
+<CastGrid
+  types={[
+    { name: "smallint", label: "int2" },
+    { name: "integer", label: "int4" },
+    { name: "bigint", label: "int8" },
+    { name: "numeric", label: "num" },
+    { name: "double precision", label: "flt8" },
+    { name: "date", label: "date" },
+    { name: "timestamp with time zone", label: "tstz" },
+    { name: "boolean", label: "bool" },
+  ]}
+  rows={grid.rows}
+  trace={source}
+/>
+</Figure>
+
+the pattern is about losing information. a cast that can't lose anything (integer to bigint, date to timestamptz) is implicit. one that can (numeric to integer drops the fraction, bigint to integer can overflow) is only done when you store into a column of that type, because then you clearly meant it. one that changes the meaning (boolean to integer) waits for you to ask.
+
+text isn't on the grid because it isn't in pg_cast. every type can be written as text and read from text through its input and output functions, and postgres treats those as casts too: into text at assignment level, out of text explicit only. so storing 42 into a text column works, and adding a text to a number doesn't.
+
+the assignment level is easiest to see on an INSERT:
+
+<Figure caption={<>five values into one <code>int</code> column. pick a value: the same column, but what happens depends on the type the value arrives with, not on what it looks like.</>}>
+<RunPick options={[{ key: "VALUES", values: ["3.7", "'3.7'", "' 42 '", "4000000000", "true"] }]} runs={stores} file="store.sql" trace={source} />
+</Figure>
+
+`3.7` and `'3.7'` look the same and behave in opposite ways. `3.7` is a numeric, and numeric to integer is an assignment cast that rounds, so you get 4 and no warning. `'3.7'` is an unknown literal, so it's read *directly* as an integer, and it isn't one.
+
+<Gotcha title="a cast rounds, and which way depends on the type">
+numeric rounds halves away from zero. float8 rounds halves to even, like the CPU does. the same 2.5 comes out as 3 or 2:
+
+```sql run
+SELECT 3.7::int AS numeric_37, 2.5::int AS numeric_25, 2.5::float8::int AS float_25, (-2.5)::float8::int AS float_neg_25;
+```
+
+if a report rounds money through a float somewhere along the way, this is the cent that goes missing.
+</Gotcha>
+
+## why '1' + 1 works
+
+when postgres meets `x + y`, it looks up every operator called `+` and keeps the ones that could take these types. the manual has the whole algorithm (it's a page of numbered steps); the part that matters here is short:
+
+1. if one side is unknown, first assume it has the other side's type. `'1' + 1` becomes a search for `integer + integer`, which exists. done.
+2. otherwise, keep the candidates the arguments can reach through implicit casts, and prefer the ones that need the fewest.
+3. if an unknown is still open, prefer a candidate that treats it as a string.
+
+<Predict options={["2", "'11'", "an error"]} answer={2}>
+```sql
+SELECT '1' + '1';
+```
+<Explain>
+both sides are unknown, so step 1 has nothing to copy from. there are dozens of `+` operators (integer, numeric, date, interval, money, inet...) and nothing to choose between them with: `operator is not unique: unknown + unknown`. postgres won't guess. say what you mean: `'1'::int + '1'`, or just `1 + 1`.
+</Explain>
+</Predict>
+
+```sql run expect=error
+SELECT '1' + '1';
+```
+
+postgres even says what it's missing: a type for one side.
+
+## why 1 || 1 doesn't
+
+`||` is concatenation. there's a text version, an array version, a jsonb version, a bytea one, but none for two integers, and integer doesn't become text on its own:
+
+```sql run expect=error
+SELECT 1 || 1;
+```
+
+give it one text side and it's happy. there's a `text || anynonarray` (and the mirror image), which takes any value and turns it into text inside the operator:
+
+```sql run
+SELECT 1 || 'x' AS mixed, 1::text || 1 AS cast_one, '1' || 1 AS literal;
+```
+
+and storing a number into a text column is an assignment, so that works without any cast at all:
+
+```sql run
+CREATE TABLE notes (body text);
+INSERT INTO notes (body) VALUES (42);
+SELECT body, pg_typeof(body) FROM notes;
+```
+
+<Gotcha title="the cast lands on the column, and the index stops working">
+an index on `customer_id` (an integer) is for `customer_id = <an integer>`. compare it with `42.0`, a numeric, and postgres has no `integer = numeric` the index can use, so it casts the *column* up to numeric for every row, and the index is out. a quoted `'42'` is fine: the unknown takes integer from the column. [why isn't my index used?](/learn/indexes/index-not-used) shows both plans. the same thing happens when a driver binds every number as numeric, or a bigint key meets a text parameter.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/typeconv-oper.html" title="operators: type conversion">the full operator resolution algorithm, with the unknown-literal rule and the preference for string types. its sibling pages cover functions, stored values, UNION and CASE, and pg_cast's three contexts are described under CREATE CAST.</Docs>
+
+<Interview q="what's the difference between CAST(x AS int) and x::int?">
+nothing at run time: both call the same cast. `CAST` is standard SQL and portable, `::` is postgres's shorthand. the interesting part is the casts you *don't* write: postgres adds implicit ones on its own (integer to bigint, date to timestamptz), assignment ones when storing into a column (numeric to integer, which rounds), and never adds explicit-only ones (boolean to integer). bonus point: a quoted literal has type unknown and takes the type of whatever it meets, which is why `'1' + 1` is 2, `'1.5' + 1` is an error, and `1 || 1` is an error too.
+</Interview>
+
+<Keylines>
+- every value and every result column has one type, decided before any row is read.
+- `CAST(x AS t)` is the standard, `x::t` is postgres's shorthand, and both do the same thing.
+- pg_cast says where postgres may cast on its own: implicit anywhere, assignment when storing, explicit never.
+- a quoted literal is unknown until an operator or a column gives it a type.
+- postgres picks the operator from the types first, then reads the string to fit it.
+</Keylines>

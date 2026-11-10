@@ -1,0 +1,297 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "55c2093d07c63b89": {
+      "db": "lab",
+      "sql": "CREATE TABLE docs (id int PRIMARY KEY, title text, body text);\nINSERT INTO docs VALUES (1, 'one', repeat('a', 1000)),\n                        (2, 'two', repeat('a', 3000)),\n                        (3, 'three', repeat('a', 1000000));\nINSERT INTO docs SELECT 4, 'four', string_agg(md5(g::text), '' ORDER BY g)\nFROM generate_series(1, 100) AS g;\nINSERT INTO docs SELECT 5, 'five', string_agg(md5(g::text), '' ORDER BY g)\nFROM generate_series(1, 31250) AS g;\nSELECT d.id, octet_length(d.body) AS bytes, pg_column_size(d.body) AS stored,\n       pg_column_compression(d.body) AS method, h.lp_len AS row_bytes\nFROM docs d JOIN heap_page_items(get_raw_page('docs', 0)) h ON h.t_ctid = d.ctid\nORDER BY d.id;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "456642ddbdad5c7c"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["bytes", "int4", 23],
+            ["stored", "int4", 23],
+            ["method", "text", 25],
+            ["row_bytes", "int2", 21]
+          ],
+          "rowCount": 5,
+          "digest": "450357f25bbcfcbe",
+          "rows": [
+            ["1", "1000", "1004", null, "1036"],
+            ["2", "3000", "44", "pglz", "76"],
+            ["3", "1000000", "11452", "pglz", "52"],
+            ["4", "3200", "3200", null, "51"],
+            ["5", "1000000", "1000000", null, "51"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "fd161ca2ad2d979d": {
+      "db": "lab",
+      "sql": "SELECT reltoastrelid::regclass AS toast_table,\n       pg_relation_size('docs') AS heap_bytes,\n       pg_relation_size(reltoastrelid) AS toast_bytes\nFROM pg_class WHERE relname = 'docs';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["toast_table", "regclass", 2205],
+            ["heap_bytes", "int8", 20],
+            ["toast_bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "4af6b347d9f6e898",
+          "rows": [
+            ["pg_toast.pg_toast_24576", "8192", "1048576"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4005b40825547ab0": {
+      "db": "lab",
+      "sql": "SELECT chunk_id, count(*) AS chunks, sum(length(chunk_data)) AS bytes,\n       max(length(chunk_data)) AS biggest_chunk\nFROM pg_toast.pg_toast_24576\nGROUP BY chunk_id ORDER BY chunk_id;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["chunk_id", "oid", 26],
+            ["chunks", "int8", 20],
+            ["bytes", "int8", 20],
+            ["biggest_chunk", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "d4eb1815b172dd04",
+          "rows": [
+            ["24584", "6", "11452", "1996"],
+            ["24585", "2", "3200", "1996"],
+            ["24586", "502", "1000000", "1996"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bbf7a195b132c4cc": {
+      "db": "lab",
+      "sql": "SELECT ctid, pg_column_toast_chunk_id(body) AS chunk_id,\n       pg_relation_size('pg_toast.pg_toast_24576') AS toast_bytes\nFROM docs WHERE id = 5;\nUPDATE docs SET title = 'five, renamed' WHERE id = 5;\nSELECT ctid, pg_column_toast_chunk_id(body) AS chunk_id,\n       pg_relation_size('pg_toast.pg_toast_24576') AS toast_bytes\nFROM docs WHERE id = 5;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27],
+            ["chunk_id", "oid", 26],
+            ["toast_bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "9578a3a49ab43a4d",
+          "rows": [
+            ["(0,5)", "24586", "1048576"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27],
+            ["chunk_id", "oid", 26],
+            ["toast_bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "d0db9da0cab81170",
+          "rows": [
+            ["(0,6)", "24586", "1048576"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7e43cd278ef6ea32": {
+      "db": "lab",
+      "sql": "SELECT attname, atttypid::regtype AS type, attstorage\nFROM pg_attribute\nWHERE attrelid = 'docs'::regclass AND attnum > 0\nORDER BY attnum;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["attname", "name", 19],
+            ["type", "regtype", 2206],
+            ["attstorage", "char", 18]
+          ],
+          "rowCount": 3,
+          "digest": "82eacae57ae69965",
+          "rows": [
+            ["id", "integer", "p"],
+            ["title", "text", "x"],
+            ["body", "text", "x"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d66741392c1e3a08": {
+      "db": "lab",
+      "sql": "ALTER TABLE docs ALTER COLUMN body SET STORAGE EXTERNAL;\nINSERT INTO docs VALUES (6, 'six', repeat('a', 1000000));\nSELECT id, pg_column_size(body) AS stored, pg_column_compression(body) AS method,\n       pg_column_toast_chunk_id(body) IS NOT NULL AS out_of_line\nFROM docs WHERE id IN (3, 6) ORDER BY id;",
+      "statements": [
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "629b316cd6a106b5"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["stored", "int4", 23],
+            ["method", "text", 25],
+            ["out_of_line", "bool", 16]
+          ],
+          "rowCount": 2,
+          "digest": "21d5072dd1cc3555",
+          "rows": [
+            ["3", "11452", "pglz", "t"],
+            ["6", "1000000", null, "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c5b563383825be48": {
+      "db": "lab",
+      "sql": "SHOW default_toast_compression;\nSELECT enumvals FROM pg_settings WHERE name = 'default_toast_compression';",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["default_toast_compression", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "87fd941d69587367",
+          "rows": [
+            ["pglz"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["enumvals", "text[]", 1009]
+          ],
+          "rowCount": 1,
+          "digest": "22358df211be0921",
+          "rows": [
+            ["{pglz}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "72d7cb941296aa26": {
+      "db": "lab",
+      "sql": "CREATE TABLE z (body text);\nINSERT INTO z VALUES (repeat('a', 1000000));\nALTER TABLE z ALTER COLUMN body SET COMPRESSION lz4;\nINSERT INTO z VALUES (repeat('a', 1000000));\nSELECT pg_column_compression(body) AS method, pg_column_size(body) AS stored\nFROM z ORDER BY 1;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "473cf6d7179df0b7"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["method", "text", 25],
+            ["stored", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "c1b68a8e098313d5",
+          "rows": [
+            ["lz4", "3936"],
+            ["pglz", "11452"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    }
+  }
+}

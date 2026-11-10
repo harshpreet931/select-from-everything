@@ -1,0 +1,153 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov, resultOf, runsOf } from "@/lib/db/captured";
+import trace from "./traces/jsonb.pgtrace.json";
+
+{/* every figure reads traces/jsonb.scenario.sql, captured on PGlite with the events dataset
+    (events.props is jsonb). the index switch's plans are real EXPLAIN ANALYZE runs. */}
+
+export const both = resultOf(trace, 0);
+export const ops = runsOf(trace, ["->", "->>", "#>", "#>>", "@>", "@?"], 1);
+export const sizes = resultOf(trace, 7).rows.map(([what, pages]) => ({ label: what, value: Number(pages), tone: what === "table" ? undefined : "ref" }));
+export const idx = {
+  "jsonb_ops | @>": { ...resultOf(trace, 9), note: trace.steps[10].note, plan: planOf(trace, 10) },
+  "jsonb_ops | ?": { ...resultOf(trace, 11), note: trace.steps[12].note, plan: planOf(trace, 12) },
+  "jsonb_path_ops | @>": { ...resultOf(trace, 14), note: trace.steps[15].note, plan: planOf(trace, 15) },
+  "jsonb_path_ops | ?": { ...resultOf(trace, 16), note: trace.steps[17].note, plan: planOf(trace, 17) },
+};
+export const jt = resultOf(trace, 18);
+export const source = prov(trace);
+
+<InShort>
+**json** stores the text you gave it; **jsonb** parses it into a binary tree: keys sorted, duplicates gone, whitespace dropped, and every operator available. use jsonb.
+
+`->` gets a value as jsonb, `->>` as text, `#>` follows a path. `@>` asks "does it contain this", **jsonpath** (`@?`, `jsonb_path_query`) asks anything. a GIN index makes containment fast. and a key you filter on every day is a column that hasn't been promoted yet.
+</InShort>
+
+## the picture
+
+you know how an API hands you a blob of json, and the fastest thing is to store it as it came? postgres lets you, twice over. `json` keeps the exact text, like a photocopy. `jsonb` reads it and files it, like a clerk who retypes the form into a neat card index: tidier, searchable, and the original handwriting is gone.
+
+<Figure caption={<>the same text into both types. json keeps <C k="hot">the spaces, the order and both "a" keys</C>. jsonb keeps one "a", the last one, sorts the keys, and takes more bytes for this small document, because it stores offsets that make lookups fast.</>}>
+<ResultTable columns={both.columns.map((c) => c.name)} rows={both.rows} />
+<Provenance trace={source} />
+</Figure>
+
+json has to reparse the text for every operation, and it has no equality operator at all (`json = json` is an error). jsonb has equality, containment, indexing and the rest. the only reasons left for json are keeping duplicate keys or the exact key order, which is a promise the json standard never made anyway.
+
+```sql run
+SELECT '{"a": 1, "b": 2}'::jsonb = '{"b": 2, "a": 1}'::jsonb AS same_object,
+       '{"price": 1.50}'::jsonb ->> 'price'                AS keeps_digits;
+```
+
+(numbers are stored as numeric, so 1.50 stays 1.50.)
+
+## getting values out
+
+the events table has a `props jsonb` column. event 26 is one of the ones with a nested `utm` object:
+
+```sql run db=events
+SELECT props FROM events WHERE id = 26;
+```
+
+<Figure wide caption={<>six operators on that one row. pick one and watch the result type. arrows return jsonb (single) or text (double); <code>@&gt;</code> and <code>@?</code> return a boolean.</>}>
+<RunPick options={[{ key: "operator", values: ["->", "->>", "#>", "#>>", "@>", "@?"] }]} runs={ops} hot={["->", "->>", "#>", "#>>", "@>", "@?"]} file="props.sql" trace={source} />
+</Figure>
+
+the type matters as soon as you compare or compute. `->>` gives text, so a number has to be cast before arithmetic, and a json `null` and a missing key both come back as SQL NULL:
+
+<Predict options={["the same count", "different counts", "an error"]} answer={1}>
+```sql
+SELECT count(*) FILTER (WHERE props -> 'device' IS NULL)  AS arrow_null,
+       count(*) FILTER (WHERE props ->> 'device' IS NULL) AS text_null
+FROM events;
+```
+<Explain>
+different. some events have `"device": null` and some have no device key at all. `->` returns the jsonb value `null` for the first kind, which isn't SQL NULL, and SQL NULL only for a missing key. `->>` turns json null into SQL NULL too, so it counts both kinds.
+</Explain>
+</Predict>
+
+```sql run db=events
+SELECT count(*) FILTER (WHERE props -> 'device' IS NULL)   AS missing_key,
+       count(*) FILTER (WHERE props -> 'device' = 'null')  AS json_null,
+       count(*) FILTER (WHERE props ->> 'device' IS NULL)  AS either
+FROM events;
+```
+
+## containment and jsonpath
+
+`@>` is the workhorse: does the left document contain the right one, at any depth? and there's **jsonpath**, a small query language for json: `@?` asks whether a path finds anything, `jsonb_path_query` returns what it finds:
+
+```sql run db=events
+SELECT count(*) FILTER (WHERE props @> '{"utm": {"source": "newsletter"}}')     AS contains,
+       count(*) FILTER (WHERE props @? '$.utm ? (@.source == "newsletter")')   AS jsonpath
+FROM events;
+SELECT jsonb_path_query_array('{"items": [{"sku": "A", "qty": 2}, {"sku": "B", "qty": 5}]}', '$.items[*] ? (@.qty > 3).sku') AS big_orders;
+```
+
+GIN indexes both. there are two operator classes, and they trade size for reach. the default, `jsonb_ops`, indexes every key and every value as separate entries; `jsonb_path_ops` indexes a hash of each path-to-a-value, which is smaller and more selective but can only answer containment:
+
+<Figure caption={<>pages for the events table and two GIN indexes on its props, built on 25,000 rows. the <C k="ref">path_ops</C> index is about two thirds the size of the default.</>}>
+<Bars data={sizes} unit="pages" />
+<Provenance trace={source} />
+</Figure>
+
+<Figure wide caption={<>two indexes, two questions, four real plans. pick an index and an operator. the default index serves <code>@&gt;</code> and <code>?</code>; jsonb_path_ops serves <code>@&gt;</code> and falls back to a <C k="dead">seq scan</C> for <code>?</code>.</>}>
+<RunPick options={[{ key: "index", values: ["jsonb_ops", "jsonb_path_ops"] }, { key: "WHERE", values: ["@>", "?"] }]} runs={idx} hot={["@>", "?"]} show={["actual"]} file="indexed.sql" trace={source} />
+</Figure>
+
+neither helps `props ->> 'device' = 'ios'`: that's an expression, and it wants an [expression index](/learn/indexes/partial-and-expression) on `(props ->> 'device')`, or a rewrite to `props @> '{"device": "ios"}'`. [GIN](/learn/index-internals/gin) has the inside story, and [index types](/learn/indexes/index-types) the overview.
+
+## building json, and taking it apart
+
+the SQL standard caught up with json in two steps. postgres 16 <Since v={16} /> added the SQL/JSON constructors, `JSON_OBJECT`, `JSON_ARRAY` and their aggregates, with standard NULL handling:
+
+```sql run
+SELECT JSON_OBJECT('id': 42, 'name': 'Ada', 'email': NULL)               AS with_nulls,
+       JSON_OBJECT('id': 42, 'email': NULL ABSENT ON NULL)                AS absent_on_null,
+       JSON_ARRAY(1, 'two', NULL, true)                                   AS array_skips_null;
+```
+
+(the older postgres functions, `jsonb_build_object` and friends, still work and return jsonb.) and postgres 17 <Since v={17} /> added `JSON_TABLE`, which goes the other way: a path picks the rows, and each column gets a path and a type.
+
+<Figure caption={<>an order document's items array, turned into rows by JSON_TABLE. each column is typed, <code>line</code> numbers the rows, and the missing <code>gift</code> key falls back to its DEFAULT.</>}>
+<ResultTable columns={jt.columns.map((c) => c.name)} rows={jt.rows} />
+<Provenance trace={source} />
+</Figure>
+
+```sql run
+SELECT jt.*
+FROM JSON_TABLE(
+  '{"order": 1042, "items": [{"sku": "KIT-0001", "qty": 2, "price": 49.00},
+                             {"sku": "AUD-0005", "qty": 1, "price": 129.99, "gift": true}]}',
+  '$.items[*]'
+  COLUMNS (line FOR ORDINALITY, sku text PATH '$.sku', qty int PATH '$.qty',
+           price numeric(10,2) PATH '$.price', gift boolean PATH '$.gift' DEFAULT false ON EMPTY)
+) AS jt
+ORDER BY jt.line;
+```
+
+## when a key should be a column
+
+jsonb is right for data whose shape you don't control or that varies per row: an API payload, event properties, per-category product attributes. it's wrong for data you query the same way every day. signs that a key wants to be a column:
+
+- it's in a WHERE or a join on every hot query;
+- you need a constraint on it (NOT NULL, a foreign key, a CHECK);
+- you need statistics on it: the planner has none for a key inside jsonb, so its row estimates are guesses ([pg_stats](/learn/optimizer/statistics)).
+
+the halfway house is a [generated column](/learn/types/generated-columns): `device text GENERATED ALWAYS AS (props ->> 'device')` keeps the document as the source of truth and gives the key a name and a type. a STORED one can be indexed and constrained like any column.
+
+<Gotcha title="updating one key rewrites the whole document">
+`UPDATE ... SET props = jsonb_set(props, '{device}', '"web"')` looks like a small change. jsonb is one value, so the whole document is written again as a new row version, and a document over about 2 KB is [TOASTed](/learn/storage/toast) and rewritten in full too. a counter inside a big jsonb that gets bumped constantly is a column that's costing you.
+</Gotcha>
+
+<Interview q="json or jsonb, and how do you index it?">
+jsonb, almost always. json stores the raw text (keeping whitespace, key order and duplicate keys) and reparses it on every access, with no equality or indexing. jsonb stores a parsed binary form with sorted, deduplicated keys. index it with GIN: the default jsonb_ops supports @>, ?, ?| and ?&; jsonb_path_ops is smaller and supports only containment and jsonpath matches. bonus point: for one key compared with =, an expression b-tree on (props ->> 'key') beats both, and a key queried everywhere should be promoted to a real or generated column.
+</Interview>
+
+<Keylines>
+- jsonb parses and normalises; json keeps the text. use jsonb.
+- `->` returns jsonb, `->>` returns text; `#>` and `#>>` take a path.
+- `@>` and jsonpath (`@?`) search documents; GIN indexes them, path_ops smaller but containment only.
+- JSON_OBJECT and JSON_ARRAY are in 16, JSON_TABLE in 17.
+- a key you filter, constrain or join on every day wants to be a column.
+</Keylines>

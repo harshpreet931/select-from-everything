@@ -1,0 +1,178 @@
+import { GridAnatomy } from "@/components/figures/start/GridAnatomy";
+
+<InShort>
+a query is a question, and the answer is always a table. `SELECT` says which columns you want, `FROM` says which table, `WHERE` (optional) says which rows, and a **semicolon** ends it.
+
+you describe **what** you want. postgres decides **how** to get it.
+</InShort>
+
+## the picture
+
+you know how in most programming languages you tell the computer every step: open this, loop over that, if this then that? SQL doesn't work that way, and it's the first thing that feels strange.
+
+think of ordering at a restaurant. the menu is the schema (what tables and columns exist). your order is the query ("the soup, no onions"). the kitchen is the planner and executor: they decide which pot, which burner, in what order. you never walk into the kitchen. you get a plate, and the plate is always the same shape: a table.
+
+here's a whole query. step through its parts:
+
+<Figure caption="step through it (or click the figure and use ← →). four parts and a semicolon. the order you write them in isn't the order they run in, but that's a later chapter.">
+<Slides>
+<Slide note="SELECT starts the question. it says what to bring back.">
+<SqlPanel code={"SELECT name, city\nFROM customers\nWHERE id = 42;"} marks={[{ line: 1, from: 0, to: 6, tone: "hot" }]} file="query.sql" />
+</Slide>
+<Slide note="the select list: which columns, in which order. here, two of the six that customers has.">
+<SqlPanel code={"SELECT name, city\nFROM customers\nWHERE id = 42;"} marks={[{ line: 1, from: 7, to: 17, tone: "hot" }]} file="query.sql" />
+</Slide>
+<Slide note="FROM: which table to look in. here, the shop's 2,000 customers.">
+<SqlPanel code={"SELECT name, city\nFROM customers\nWHERE id = 42;"} marks={[{ line: 2, from: 0, to: 14, tone: "hot" }]} file="query.sql" />
+</Slide>
+<Slide note="WHERE: which rows. leave it out and every row comes back. this one keeps the customer whose id is 42.">
+<SqlPanel code={"SELECT name, city\nFROM customers\nWHERE id = 42;"} marks={[{ line: 3, from: 0, to: 13, tone: "hot" }]} file="query.sql" />
+</Slide>
+<Slide note="the semicolon ends the statement. without it, psql would sit and wait for more.">
+<SqlPanel code={"SELECT name, city\nFROM customers\nWHERE id = 42;"} marks={[{ line: 3, from: 13, to: 14, tone: "hot" }]} file="query.sql" />
+</Slide>
+</Slides>
+</Figure>
+
+now run it. this is a real postgres, in your browser, on the shop's real data:
+
+```sql run db=shop
+SELECT name, city
+FROM customers
+WHERE id = 42;
+```
+
+that's Ada. she's customer 42 on every page of this book.
+
+## smaller than that
+
+a `SELECT` doesn't even need a table. this is the smallest query there is, and it's a fine way to check that a connection works:
+
+```sql run
+SELECT 1;
+```
+
+the select list can hold any expression, and `AS` names the column it makes:
+
+```sql run
+SELECT 'hello' AS greeting, 6 * 7 AS answer, upper('ada') AS shouting;
+```
+
+and `*` means every column, in the order the table declares them. `ORDER BY id` sorts the rows and `LIMIT 5` keeps the first five; both get their own chapters later.
+
+```sql run db=shop
+SELECT *
+FROM customers
+ORDER BY id
+LIMIT 5;
+```
+
+`*` is handy for looking around. in a program, name the columns: it's clearer, and it doesn't change under you when someone adds one. [picking columns](/learn/basics/select-and-expressions) has the rest.
+
+## reading the result grid
+
+the answer comes back as a grid, drawn the way psql draws one (more on psql in [psql and a real server](/learn/start/psql)). there's more in it than it looks:
+
+<Figure caption={<>pick a part. these four customers are the shop's awkward ones on purpose: a missing email, a person actually named Null, and an empty city. the grid draws <code>null</code> faint and italic so it can't pass for text.</>}>
+<GridAnatomy />
+</Figure>
+
+the same query, for real (press run and check the figure didn't lie):
+
+```sql run db=shop
+SELECT id, name, email, city
+FROM customers
+WHERE id IN (2, 10, 11, 42)
+ORDER BY id;
+```
+
+NULL means "no value". `''` is a value that happens to be empty. `'Null'` is four letters. postgres keeps all three apart, and so should you: [NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) is the chapter about the first one, and you'll want it sooner than you think.
+
+## the semicolon
+
+a semicolon ends one statement, so a block can hold several. each one runs on its own and gets its own result, numbered:
+
+```sql run db=shop
+SELECT count(*) AS customers FROM customers;
+SELECT count(*) AS orders FROM orders;
+SELECT name FROM products WHERE id = 200;
+```
+
+(product 200 is the left-handed teapot. nobody has ever ordered it.) the semicolon after the last statement is optional here and in most tools. in psql it isn't: psql sends nothing until it sees one.
+
+## what, not how
+
+<Figure wide caption={<>the same request two ways. on the left, the how: a loop you'd write by hand. on the right, the what: the loop is postgres's problem now.</>}>
+<div className="grid gap-3 sm:grid-cols-2">
+<SqlPanel lang="text" file="how" nolines code={"for row in read_all('customers'):\n    if row.id == 42:\n        print(row.name, row.city)\n        break"} />
+<SqlPanel file="what" nolines code={"SELECT name, city\nFROM customers\nWHERE id = 42;"} />
+</div>
+</Figure>
+
+you can ask postgres how it decided to answer. `EXPLAIN` shows the plan instead of running the query:
+
+```sql run db=shop
+EXPLAIN SELECT name, city FROM customers WHERE id = 42;
+EXPLAIN SELECT name, city FROM customers WHERE city = 'London';
+```
+
+two questions with the same shape, two different hows. for `id = 42`, postgres walks the index that came with the primary key straight to one row (`Index Scan using customers_pkey`). for London there's no index on `city`, and 159 customers live there, so it reads the whole table and filters (`Seq Scan`). you didn't choose either one. tomorrow, with an index on `city` or ten times the data, it might choose differently, and your query wouldn't change. [reading EXPLAIN](/learn/execution/reading-explain) teaches the rest of those lines.
+
+<Figure caption="hover a stage. what happens between pressing run and getting rows back. the life of a query has the details.">
+<Flow
+  stages={[
+    { label: "parse", sub: "text → tree", note: "checks the grammar. a typo like SELEC dies here." },
+    { label: "analyze", sub: "names → objects", note: "looks up customers and city in the catalog. a misspelled column dies here." },
+    { label: "plan", sub: "what → how", note: "picks a scan for each table, and join methods and their order, from statistics." },
+    { label: "execute", sub: "rows", note: "runs the plan and hands rows back as they're produced." },
+  ]}
+/>
+</Figure>
+
+## spelling
+
+keywords don't care about case, and neither do unquoted names: postgres folds them to lowercase before it looks them up. so this works:
+
+```sql run db=shop
+select NAME from CUSTOMERS where ID = 42;
+```
+
+this book writes keywords in capitals and names in lowercase, because it's easier to read, not because postgres minds. double quotes, though, turn folding off, so `"Customers"` means a table with a capital C, and there isn't one:
+
+```sql run db=shop expect=error
+SELECT name FROM "Customers";
+```
+
+which brings up the one rule that bites everybody once: **single quotes are for text, double quotes are for names**.
+
+<Predict options={["customer 10, named Null", "customers with no name", "an error"]} answer={2}>
+```sql
+SELECT id, name FROM customers WHERE name = "Null";
+```
+<Explain>
+`"Null"` in double quotes is a name, so postgres goes looking for a column called `Null`, doesn't find one, and stops. you wanted `'Null'`, in single quotes, which is a string. it's the same mistake as `WHERE name = "Ada Lovelace"`, and most people make it in their first week.
+</Explain>
+</Predict>
+
+```sql run db=shop expect=error
+SELECT id, name FROM customers WHERE name = "Null";
+```
+
+with single quotes it's a string, and customer 10 comes back. a single quote inside a string is written twice, which is how Sean O'Neil gets found:
+
+```sql run db=shop
+SELECT id, name FROM customers WHERE name = 'Null';
+SELECT id, name FROM customers WHERE name = 'Sean O''Neil';
+```
+
+<Gotcha title="no ORDER BY, no promised order">
+`SELECT name FROM customers LIMIT 3` gives you three customers, but which three is up to postgres. today it's the first three it stored. after an update, a vacuum, or a parallel scan on a big server, it can be any three. if the order matters, say `ORDER BY`. [LIMIT, OFFSET and FETCH FIRST](/learn/basics/limit-and-offset) shows how it goes wrong.
+</Gotcha>
+
+<Keylines>
+- SELECT picks columns, FROM picks the table, WHERE picks rows, a semicolon ends it.
+- the answer is always a table, with typed columns and a row count.
+- NULL, '' and 'Null' are three different things, and the grid draws them differently.
+- you say what. EXPLAIN shows the how postgres picked.
+- single quotes for text, double quotes for names. unquoted names fold to lowercase.
+</Keylines>

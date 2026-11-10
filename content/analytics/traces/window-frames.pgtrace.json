@@ -1,0 +1,564 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/window-frames.scenario.sql",
+ "title": "window frames over the nine leads under director 5: every mode, four frames, and EXCLUDE",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "departments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"budget","type":"numeric"}]
+  },
+  "departments_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"departments"},
+  "departments_name_key": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"departments"},
+  "employees": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"manager_id","type":"int4"},
+    {"name":"dept_id","type":"int4"},
+    {"name":"title","type":"text"},
+    {"name":"salary","type":"numeric"},
+    {"name":"hired_on","type":"date"}
+   ]
+  },
+  "employees_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"employees"},
+  "oncall": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"},{"name":"on_call","type":"bool"}]
+  },
+  "oncall_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"}],
+   "on": "oncall"
+  },
+  "leads": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"salary","type":"numeric"}]
+  }
+ },
+ "base": {"xid":797,"lsn":26744296},
+ "setup": "CREATE TABLE leads AS\nSELECT id, name, salary FROM employees WHERE manager_id IN (14, 15, 16) ORDER BY salary, id;\nVACUUM ANALYZE leads;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT id, name, salary FROM leads ORDER BY salary, id",
+   "note": "the nine leads, in salary order. three pairs of ties and one three-way tie at the top.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"salary","type":"numeric"}],
+    "data": [
+     ["41","Olivia Nguyen","95000.00"],
+     ["44","Rahul Haddad","95000.00"],
+     ["48","Omar Kim","95000.00"],
+     ["45","Chen Ahmed","97000.00"],
+     ["46","Lucas Ahmed","98000.00"],
+     ["47","Emma Smith","98000.00"],
+     ["42","Ananya Smith","99000.00"],
+     ["43","Lucas Novak","99000.00"],
+     ["49","Lucas Haddad","99000.00"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\nORDER BY salary, id",
+   "note": "ROWS counts physical rows: from the first row of the window down to this one, and not one row further, even when the next row has the same salary.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41}","95000.00","Olivia Nguyen"],
+     ["44","Rahul Haddad","95000.00","{41,44}","190000.00","Rahul Haddad"],
+     ["48","Omar Kim","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45}","382000.00","Chen Ahmed"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46}","480000.00","Lucas Ahmed"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,47}","578000.00","Emma Smith"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42}","677000.00","Ananya Smith"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,43}","776000.00","Lucas Novak"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\nORDER BY salary, id",
+   "note": "RANGE goes by value: down to this row and every row with the same salary. this is the default frame, the one you get by writing only ORDER BY.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["44","Rahul Haddad","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["48","Omar Kim","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45}","382000.00","Chen Ahmed"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46,47}","578000.00","Emma Smith"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,47}","578000.00","Emma Smith"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\nORDER BY salary, id",
+   "note": "GROUPS counts peer groups: every group up to and including this row's group. with UNBOUNDED and CURRENT ROW it lands where RANGE does.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["44","Rahul Haddad","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["48","Omar Kim","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45}","382000.00","Chen Ahmed"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46,47}","578000.00","Emma Smith"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,47}","578000.00","Emma Smith"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)\nORDER BY salary, id",
+   "note": "ROWS 1 PRECEDING AND 1 FOLLOWING: the row above and the row below, whatever their salaries. which tied row counts as above is up to the sort.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44}","190000.00","Rahul Haddad"],
+     ["44","Rahul Haddad","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["48","Omar Kim","95000.00","{44,48,45}","287000.00","Chen Ahmed"],
+     ["45","Chen Ahmed","97000.00","{48,45,46}","290000.00","Lucas Ahmed"],
+     ["46","Lucas Ahmed","98000.00","{45,46,47}","293000.00","Emma Smith"],
+     ["47","Emma Smith","98000.00","{46,47,42}","295000.00","Ananya Smith"],
+     ["42","Ananya Smith","99000.00","{47,42,43}","296000.00","Lucas Novak"],
+     ["43","Lucas Novak","99000.00","{42,43,49}","297000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{43,49}","198000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             RANGE BETWEEN 1000 PRECEDING AND 1000 FOLLOWING)\nORDER BY salary, id",
+   "note": "RANGE 1000 PRECEDING AND 1000 FOLLOWING: every row whose salary is within 1,000 of this row's. the offset is in salary units, not rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["44","Rahul Haddad","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["48","Omar Kim","95000.00","{41,44,48}","285000.00","Omar Kim"],
+     ["45","Chen Ahmed","97000.00","{45,46,47}","293000.00","Emma Smith"],
+     ["46","Lucas Ahmed","98000.00","{45,46,47,42,43,49}","590000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{45,46,47,42,43,49}","590000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING)\nORDER BY salary, id",
+   "note": "GROUPS 1 PRECEDING AND 1 FOLLOWING: this row's peer group, plus the whole group just below it and the whole group just above it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45}","382000.00","Chen Ahmed"],
+     ["44","Rahul Haddad","95000.00","{41,44,48,45}","382000.00","Chen Ahmed"],
+     ["48","Omar Kim","95000.00","{41,44,48,45}","382000.00","Chen Ahmed"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45,46,47}","578000.00","Emma Smith"],
+     ["46","Lucas Ahmed","98000.00","{45,46,47,42,43,49}","590000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{45,46,47,42,43,49}","590000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)\nORDER BY salary, id",
+   "note": "ROWS from this row to the last one. the rows above it are out, even its own peers.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["44","Rahul Haddad","95000.00","{44,48,45,46,47,42,43,49}","780000.00","Lucas Haddad"],
+     ["48","Omar Kim","95000.00","{48,45,46,47,42,43,49}","685000.00","Lucas Haddad"],
+     ["45","Chen Ahmed","97000.00","{45,46,47,42,43,49}","590000.00","Lucas Haddad"],
+     ["46","Lucas Ahmed","98000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{47,42,43,49}","395000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{42,43,49}","297000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{43,49}","198000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{49}","99000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)\nORDER BY salary, id",
+   "note": "RANGE from this row's first peer to the end. peers above this row are back in.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["44","Rahul Haddad","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["48","Omar Kim","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["45","Chen Ahmed","97000.00","{45,46,47,42,43,49}","590000.00","Lucas Haddad"],
+     ["46","Lucas Ahmed","98000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{42,43,49}","297000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{42,43,49}","297000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{42,43,49}","297000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             GROUPS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)\nORDER BY salary, id",
+   "note": "GROUPS from this row's group to the last group. same rows as RANGE here.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["44","Rahul Haddad","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["48","Omar Kim","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["45","Chen Ahmed","97000.00","{45,46,47,42,43,49}","590000.00","Lucas Haddad"],
+     ["46","Lucas Ahmed","98000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{46,47,42,43,49}","493000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{42,43,49}","297000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{42,43,49}","297000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{42,43,49}","297000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)\nORDER BY salary, id",
+   "note": "UNBOUNDED both ways: the whole partition, for every row, in every mode. this is the frame last_value needs.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["44","Rahul Haddad","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["48","Omar Kim","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)\nORDER BY salary, id",
+   "note": "UNBOUNDED both ways: the whole partition, for every row, in every mode. this is the frame last_value needs.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["44","Rahul Haddad","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["48","Omar Kim","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id)    OVER w AS frame,\n       sum(salary)      OVER w AS sum,\n       last_value(name) OVER w AS last_value\nFROM leads\nWINDOW w AS (ORDER BY salary\n             GROUPS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)\nORDER BY salary, id",
+   "note": "UNBOUNDED both ways: the whole partition, for every row, in every mode. this is the frame last_value needs.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"sum","type":"numeric"},
+     {"name":"last_value","type":"text"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["44","Rahul Haddad","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["48","Omar Kim","95000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43,49}","875000.00","Lucas Haddad"]
+    ]
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id) OVER w AS frame,\n       count(*)      OVER w AS n,\n       round(avg(salary) OVER w) AS avg\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n             EXCLUDE NO OTHERS)\nORDER BY salary, id",
+   "note": "EXCLUDE NO OTHERS is the default: the whole frame, the current row included.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"n","type":"int8"},
+     {"name":"avg","type":"numeric"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["44","Rahul Haddad","95000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["48","Omar Kim","95000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43,49}","9","97222"]
+    ]
+   }
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id) OVER w AS frame,\n       count(*)      OVER w AS n,\n       round(avg(salary) OVER w) AS avg\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n             EXCLUDE CURRENT ROW)\nORDER BY salary, id",
+   "note": "EXCLUDE CURRENT ROW: everyone but this row. the average of everybody else.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"n","type":"int8"},
+     {"name":"avg","type":"numeric"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{44,48,45,46,47,42,43,49}","8","97500"],
+     ["44","Rahul Haddad","95000.00","{41,48,45,46,47,42,43,49}","8","97500"],
+     ["48","Omar Kim","95000.00","{41,44,45,46,47,42,43,49}","8","97500"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,46,47,42,43,49}","8","97250"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,47,42,43,49}","8","97125"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,46,42,43,49}","8","97125"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,43,49}","8","97000"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,42,49}","8","97000"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,42,43}","8","97000"]
+    ]
+   }
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id) OVER w AS frame,\n       count(*)      OVER w AS n,\n       round(avg(salary) OVER w) AS avg\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n             EXCLUDE GROUP)\nORDER BY salary, id",
+   "note": "EXCLUDE GROUP: this row and all its peers are out. the average of everyone paid differently.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"n","type":"int8"},
+     {"name":"avg","type":"numeric"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{45,46,47,42,43,49}","6","98333"],
+     ["44","Rahul Haddad","95000.00","{45,46,47,42,43,49}","6","98333"],
+     ["48","Omar Kim","95000.00","{45,46,47,42,43,49}","6","98333"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,46,47,42,43,49}","8","97250"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,42,43,49}","7","97000"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,42,43,49}","7","97000"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47}","6","96333"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47}","6","96333"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47}","6","96333"]
+    ]
+   }
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "SELECT id, name, salary,\n       array_agg(id) OVER w AS frame,\n       count(*)      OVER w AS n,\n       round(avg(salary) OVER w) AS avg\nFROM leads\nWINDOW w AS (ORDER BY salary\n             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n             EXCLUDE TIES)\nORDER BY salary, id",
+   "note": "EXCLUDE TIES: the peers are out, but the current row stays in.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"salary","type":"numeric"},
+     {"name":"frame","type":"_int4"},
+     {"name":"n","type":"int8"},
+     {"name":"avg","type":"numeric"}
+    ],
+    "data": [
+     ["41","Olivia Nguyen","95000.00","{41,45,46,47,42,43,49}","7","97857"],
+     ["44","Rahul Haddad","95000.00","{44,45,46,47,42,43,49}","7","97857"],
+     ["48","Omar Kim","95000.00","{48,45,46,47,42,43,49}","7","97857"],
+     ["45","Chen Ahmed","97000.00","{41,44,48,45,46,47,42,43,49}","9","97222"],
+     ["46","Lucas Ahmed","98000.00","{41,44,48,45,46,42,43,49}","8","97125"],
+     ["47","Emma Smith","98000.00","{41,44,48,45,47,42,43,49}","8","97125"],
+     ["42","Ananya Smith","99000.00","{41,44,48,45,46,47,42}","7","96714"],
+     ["43","Lucas Novak","99000.00","{41,44,48,45,46,47,43}","7","96714"],
+     ["49","Lucas Haddad","99000.00","{41,44,48,45,46,47,49}","7","96714"]
+    ]
+   }
+  }
+ ],
+ "db": "org"
+}

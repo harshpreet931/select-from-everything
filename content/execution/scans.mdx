@@ -1,0 +1,163 @@
+import { ReadOrder } from "@/components/figures/execution/ReadOrder";
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import { topBuffers } from "@/components/figures/execution/source";
+import trace from "./traces/scans.pgtrace.json";
+
+{/* every plan here comes from traces/scans.scenario.sql, captured on PGlite with the events
+    dataset plus two indexes: the planner's bitmap scan (step 1), the forced index scan (2) and
+    seq scan (3), the heap page of every matching row in index order (4), BitmapAnd and
+    BitmapOr (5, 6), and a 1,728-page table whose bitmap goes lossy at 64kB of work_mem (8, 9). */}
+
+
+<InShort>
+there are three ways to read a table. a **seq scan** reads every page, in order. an **index scan** walks an index and jumps to the table once per matching row. a **bitmap scan** collects every matching row's address from the index first, sorts them by page, and then reads each page once, in order.
+
+that last one exists to turn the index scan's random reads back into a sequential sweep. and when it runs out of memory, it doesn't spill: it forgets which rows matched and rechecks whole pages.
+</InShort>
+
+## the picture
+
+you know how postgres sometimes ignores your index, and sometimes uses it in a way EXPLAIN calls "bitmap"? it's choosing between three ways of walking a library.
+
+walk every shelf and look at every book (a seq scan). or look each book up in the catalogue and walk to its shelf, one trip per book, back and forth across the building (an index scan). or look up every book first, write down the shelf numbers, sort the list, and then walk the aisles once, front to back (a bitmap scan).
+
+here are all three, finding the 599 events of users 7, 8 and 9 in the events table, 335 pages:
+
+<Figure wide caption={<>switch the scan, and press <em>play</em> to watch it. x is the heap page, time runs down, and each dot is one visit to a page. the index scan sweeps the table three times, once per user. the bitmap scan sweeps once and skips pages with nothing on them. the page numbers are real; the order is the index's.</>}>
+<ReadOrder trace={trace} step={4} pages={335} buffers={{ index: topBuffers(trace, 2), bitmap: topBuffers(trace, 1), seq: topBuffers(trace, 3) }} />
+</Figure>
+
+an index scan visits 448 pages for 281 different ones, because the index keeps rows in user_id order and the table keeps them in the order they arrived. a b-tree keeps equal keys in address order, so within one user it moves forward; at the next user it jumps back to the start. on a disk that hates seeking, every jump costs, and that's what the bitmap avoids.
+
+## what postgres picks
+
+```sql run db=events session=scan
+CREATE INDEX ON events (user_id);
+CREATE INDEX ON events (kind);
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, kind FROM events WHERE user_id BETWEEN 7 AND 9;
+```
+
+two nodes. the **Bitmap Index Scan** walks the index and fills a bitmap with one entry per matching row, without touching the table. the **Bitmap Heap Scan** above it then reads the table in page order (`Heap Blocks: exact=281`) and rechecks the condition on each row it finds (`Recheck Cond`). the price of the bitmap: rows come out in table order, not index order, so it can't hand an ORDER BY its sort for free. now all three, side by side:
+
+<Figure wide caption={<>the same query, with the planner's other choices switched off one by one (enable_bitmapscan, enable_seqscan, enable_indexscan). the bar is the top node's buffers, hit + read: every page access, index pages included.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "scan", values: ["bitmap (its pick)", "index scan", "seq scan"] }]}
+  runs={{
+    "bitmap (its pick)": 1,
+    "index scan": 2,
+    "seq scan": { step: 3, sql: "SET enable_bitmapscan = off;\nSET enable_indexscan = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, kind FROM events WHERE user_id BETWEEN 7 AND 9;" },
+  }}
+  hot={["Buffers:", "Heap Blocks", "Rows Removed"]}
+  metric={{ label: "pages touched (Buffers: shared hit + read)", re: /Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?/, unit: "pages" }}
+/>
+</Figure>
+
+450 for the index scan: the 448 heap visits from the first figure, plus 2 index pages. 283 for the bitmap: 281 heap pages and 2 index pages. 335 for the seq scan, which tests all 25,000 rows to keep 599 (`Rows Removed by Filter: 24401`). here the bitmap wins. ask for a single row and the index scan wins; ask for a third of the table and the seq scan does. where those lines cross, and how the planner knows, is [when postgres uses an index](/learn/indexes/index-or-scan).
+
+<Quiz question="which scan can hand rows to an ORDER BY user_id already sorted?" options={["Index Scan", "Bitmap Heap Scan", "Seq Scan"]} answer={0}>
+<Explain>
+only the index scan. it returns rows in the order the index keeps them. a bitmap heap scan returns them in the order it reads pages, and a seq scan in the order they're stored. that's why an `ORDER BY ... LIMIT 10` often picks a plain index scan even when a bitmap would read fewer pages ([indexes for ORDER BY](/learn/indexes/indexes-and-order-by)).
+</Explain>
+</Quiz>
+
+## index only scans
+
+if every column the query needs is in the index, postgres can skip the table altogether... almost. an index entry doesn't know whether its row version is visible to you; only the table's row header does. so an **Index Only Scan** checks the [visibility map](/learn/storage/fsm-and-vm) first: a page marked all-visible means every row on it is visible to everyone, and the table can be skipped. otherwise it fetches the row anyway, and counts it:
+
+```sql run session=scan
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM events WHERE user_id BETWEEN 7 AND 9;
+
+UPDATE events SET amount = amount WHERE user_id = 8;
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM events WHERE user_id BETWEEN 7 AND 9;
+
+VACUUM events;
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM events WHERE user_id BETWEEN 7 AND 9;
+```
+
+`Heap Fetches: 0`, 3 pages. then an UPDATE touches user 8's rows, which clears the all-visible bit of every page they're on, and the same scan does 500 heap fetches and 258 page accesses. VACUUM sets the bits again, and it's back to 0. the details, and INCLUDE columns, are [index-only scans](/learn/indexes/index-only-scans).
+
+## combining indexes
+
+two conditions on two indexed columns don't need a two-column index. each index builds its own bitmap, and the bitmaps are combined, bit by bit, before the table is touched:
+
+<Figure wide caption={<>switch between AND and OR. each Bitmap Index Scan reports how many rows its condition matched; the combined bitmap decides which pages get read. AND reads 10 pages for 24 rows, out of 3,831 matches between the two indexes.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "combine", values: ["AND", "OR"] }]}
+  runs={{ AND: 5, OR: 6 }}
+  hot={["BitmapAnd", "BitmapOr", "Heap Blocks"]}
+/>
+</Figure>
+
+a BitmapAnd keeps the rows both bitmaps have; a BitmapOr keeps rows either has, and it's how postgres answers an OR across two different columns with indexes at all. a plain index scan can only follow one index.
+
+## when the bitmap doesn't fit
+
+the bitmap lives in memory, and it gets `work_mem`, 4MB by default. one entry per page with a bit per row on it. on a big table with matches on most pages, that runs out. postgres doesn't spill the bitmap to disk. it makes it **lossy**: some pages stop remembering which rows matched and just say "something on this page matched".
+
+<Predict question="work_mem drops to 64kB. what does the bitmap scan do?" options={["it errors out", "it spills to a temp file", "it forgets which rows matched"]} answer={2}>
+```sql
+SET work_mem = '64kB';
+EXPLAIN ANALYZE
+SELECT sum(value) FROM readings WHERE sensor = 7;
+-- 1,500 matching rows spread over 1,728 pages
+```
+<Explain>
+it forgets. pages that no longer fit as exact entries become lossy: the bitmap keeps "page 812, something matched" and drops which rows. the heap scan then has to recheck every row on those pages, which shows up as Rows Removed by Index Recheck. nothing is written to disk.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>a 1,728-page table where sensor 7 has a row on almost every page. at 4MB every page is <em>exact</em>. at 64kB, 592 of them are <em>lossy</em>, and the recheck reads and throws away 10,064 rows it would never have looked at.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "work_mem", values: ["4MB", "64kB"] }]}
+  runs={{ "4MB": 8, "64kB": 9 }}
+  hot={["Heap Blocks", "Rows Removed by Index Recheck"]}
+  metric={{ label: "rows rechecked and thrown away", re: /Rows Removed by Index Recheck: (\d+)/, unit: "rows" }}
+/>
+</Figure>
+
+run it:
+
+```sql run
+CREATE TABLE readings AS
+SELECT g AS id, g % 20 AS sensor, (g * 7919) % 1000 AS value, repeat('x', 400) AS note
+FROM generate_series(1, 30000) AS g
+ORDER BY g;
+CREATE INDEX ON readings (sensor);
+VACUUM ANALYZE readings;
+
+SET work_mem = '64kB';
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT sum(value) FROM readings WHERE sensor = 7;
+```
+
+the answer is the same either way: the recheck is what keeps a lossy bitmap correct. it just costs CPU, for rows that were never going to match.
+
+## the seq scan is not the villain
+
+the seq scan reads every page, but it reads them in order, which is the cheapest way to read anything: the OS reads ahead, and since postgres 18 so can postgres itself ([asynchronous I/O](/learn/storage/async-io)). a big seq scan also goes through a small [ring buffer](/learn/storage/ring-buffers), so it doesn't flush everyone else's pages out of the cache. and it's the one scan that can be split between several processes ([parallel query](/learn/execution/parallel-query)).
+
+<Gotcha title="an index on a small table is often ignored, correctly">
+events is 335 pages. a seq scan of it is 335 page reads in order. an index scan that ends up visiting most of those pages anyway, out of order, plus the index, is strictly worse. "postgres isn't using my index" is usually postgres being right; the checklist for when it isn't is [why isn't my index used?](/learn/indexes/index-not-used)
+</Gotcha>
+
+<Interview q="what's the difference between an index scan and a bitmap heap scan?">
+an index scan walks the index and fetches each matching row from the table as it goes, so it returns rows in index order but may visit the same table page many times, in random order. a bitmap scan first collects every matching row's address from the index into an in-memory bitmap, sorted by page, then reads each table page once in physical order. it can combine several indexes with AND and OR, but loses the index order. bonus points: if the bitmap exceeds work_mem it becomes lossy (page-level, with a recheck), and an index-only scan skips the table for pages the visibility map marks all-visible.
+</Interview>
+
+<Keylines>
+- seq scan: every page, in order. cheap per page, and nothing to look up.
+- index scan: follows the index, so it returns sorted rows but jumps around the table.
+- bitmap scan: addresses first, sorted by page, then one sweep. no order, but no revisits.
+- bitmaps combine: BitmapAnd and BitmapOr use two indexes for one query.
+- out of work_mem, a bitmap goes lossy (whole pages, rechecked), never to disk.
+</Keylines>

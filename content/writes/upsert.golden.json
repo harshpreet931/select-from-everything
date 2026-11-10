@@ -1,0 +1,196 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "7ba90e499a1f3a04": {
+      "db": "empty",
+      "sql": "CREATE TABLE stock (\n  sku  text PRIMARY KEY,\n  qty  int  NOT NULL,\n  seen date NOT NULL\n);\nINSERT INTO stock VALUES ('TEA-01', 10, '2026-03-01'), ('TEA-02', 5, '2026-03-01');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1b2189bd3cd1698d": {
+      "db": "empty",
+      "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-02'), ('TEA-03', 7, '2026-03-02')\nON CONFLICT (sku) DO NOTHING;",
+      "statements": [
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "eaea7cec8f5af4bd"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a7959bcbd0477a01": {
+      "db": "empty",
+      "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-03'), ('TEA-04', 12, '2026-03-03')\nON CONFLICT (sku) DO UPDATE\nSET qty = stock.qty + EXCLUDED.qty, seen = EXCLUDED.seen;\n\nSELECT * FROM stock ORDER BY sku;",
+      "statements": [
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "eaea79ec8f5aefa4"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["sku", "text", 25],
+            ["qty", "int4", 23],
+            ["seen", "date", 1082]
+          ],
+          "rowCount": 4,
+          "digest": "33840ccbcbe28e5b",
+          "rows": [
+            ["TEA-01", "13", "2026-03-03"],
+            ["TEA-02", "5", "2026-03-01"],
+            ["TEA-03", "7", "2026-03-02"],
+            ["TEA-04", "12", "2026-03-03"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e3d82369bb98736e": {
+      "db": "empty",
+      "sql": "INSERT INTO stock VALUES ('TEA-02', 99, '2026-02-01')\nON CONFLICT (sku) DO UPDATE\nSET qty = EXCLUDED.qty, seen = EXCLUDED.seen\nWHERE EXCLUDED.seen > stock.seen;",
+      "statements": [
+        {
+          "tag": "INSERT 0 0",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 0,
+          "digest": "eaea7bec8f5af30a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "432ec5e8b2eee665": {
+      "db": "empty",
+      "sql": "INSERT INTO stock VALUES ('TEA-02', 1, '2026-03-04'), ('TEA-02', 2, '2026-03-04')\nON CONFLICT (sku) DO UPDATE\nSET qty = stock.qty + EXCLUDED.qty;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "21000",
+            "message": "ON CONFLICT DO UPDATE command cannot affect row a second time",
+            "hint": "Ensure that no rows proposed for insertion within the same command have duplicate constrained values."
+          },
+          "digest": "3c569d7650cc3341"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "21000",
+        "message": "ON CONFLICT DO UPDATE command cannot affect row a second time",
+        "hint": "Ensure that no rows proposed for insertion within the same command have duplicate constrained values.",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "c35a88dbd3572fbb": {
+      "db": "shop",
+      "sql": "INSERT INTO products (sku, name, price) VALUES ('BOO-0300', 'the art of sql', 30.00)\nON CONFLICT (name) DO NOTHING;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P10",
+            "message": "there is no unique or exclusion constraint matching the ON CONFLICT specification"
+          },
+          "digest": "a4429eb5eab06bd0"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P10",
+        "message": "there is no unique or exclusion constraint matching the ON CONFLICT specification",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "d6f1d20f7dd6f417": {
+      "db": "shop",
+      "sql": "INSERT INTO products (sku, name, price) VALUES ('BOO-0003', 'the art of sql', 30.00)\nON CONFLICT (sku) DO UPDATE SET price = EXCLUDED.price\nRETURNING id, sku, price;\n\nINSERT INTO products (sku, name, price) VALUES ('BOO-0300', 'sql antipatterns', 38.00)\nRETURNING id, sku, price;",
+      "statements": [
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["id", "int4", 23],
+            ["sku", "text", 25],
+            ["price", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "38b305af92e289c2",
+          "rows": [
+            ["3", "BOO-0003", "30.00"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["id", "int4", 23],
+            ["sku", "text", 25],
+            ["price", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "23c7c42fa26088a2",
+          "rows": [
+            ["202", "BOO-0300", "38.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "88d6560a41bed460": {
+      "db": "shop",
+      "sql": "INSERT INTO products (sku, name, price) VALUES ('BOO-0003', 'the art of sql', 30.00)\nON CONFLICT (sku) DO NOTHING\nRETURNING id;",
+      "statements": [
+        {
+          "tag": "INSERT 0 0",
+          "command": "INSERT",
+          "columns": [
+            ["id", "int4", 23]
+          ],
+          "rowCount": 0,
+          "digest": "5de207af0f73ebab",
+          "rows": []
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

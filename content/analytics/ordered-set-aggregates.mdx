@@ -1,0 +1,162 @@
+import { PercentileLine } from "@/components/figures/analytics/PercentileLine";
+import { resultOf, runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/ordered-set-aggregates.pgtrace.json";
+import shop from "./traces/ordered-set-shop.pgtrace.json";
+
+{/* the percentile slider and the string_agg switch read traces/ordered-set-aggregates.scenario.sql
+    (school), the avg-vs-median bars read traces/ordered-set-shop.scenario.sql (shop). both
+    captured on PGlite. the slider shows postgres's own answers at thirteen fractions. */}
+
+export const salaries = resultOf(trace, 0).rows;
+export const both = resultOf(trace, 1).rows[0];
+export const FRACTIONS = [0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1];
+export const aggs = runsOf(trace, ["ORDER BY name", "ORDER BY salary DESC"], 2);
+export const middle = resultOf(shop, 0).rows.flatMap(([c, a, m]) => [
+  { label: `${c}: avg`, value: Number(a) },
+  { label: `${c}: median`, value: Number(m), tone: "hot" },
+]);
+
+<InShort>
+most aggregates don't care what order rows arrive in: a sum is a sum. a few do. an **ordered-set aggregate** takes its order in **WITHIN GROUP (ORDER BY ...)**: `percentile_cont(0.5) WITHIN GROUP (ORDER BY salary)` is the median.
+
+**percentile_cont** interpolates between the two middle values. **percentile_disc** returns an actual value from the data. and `string_agg` / `array_agg` take an ORDER BY *inside* their parentheses, or their order is anybody's guess.
+</InShort>
+
+## the picture
+
+you know how the "average salary" in a company with one CEO is a number nobody actually earns? the median is the middle person's salary instead, and a median depends on the *order* of the values, which a plain aggregate never asks for. so SQL needed a way to hand an aggregate an order: WITHIN GROUP.
+
+think of lining people up by height and asking for the one in the middle. with an odd number of people there's a middle person. with an even number there isn't, and you have two choices: report a height halfway between the two middle people (cont, continuous), or point at one of them (disc, discrete).
+
+<Figure wide caption={<>the school's eight instructors by salary. slide the fraction. <C k="hot">percentile_cont</C> slides smoothly between the values; <C k="ref">percentile_disc</C> jumps from one real salary to the next. at 0.5 (the median), cont says 86,000, which nobody earns, and disc says 85,000, which Tomás Ortega does.</>}>
+<PercentileLine values={salaries} fractions={FRACTIONS} cont={both[0]} disc={both[1]} trace={prov(trace)} />
+</Figure>
+
+## WITHIN GROUP
+
+the fraction goes in the function's parentheses, the order in WITHIN GROUP:
+
+```sql run db=school
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY salary) AS median_cont,
+       percentile_disc(0.5) WITHIN GROUP (ORDER BY salary) AS median_disc,
+       round(avg(salary)) AS avg
+FROM instructors;
+```
+
+the two answers, made the long way:
+
+- **percentile_cont(f)** puts the sorted values at positions 0 to n−1 and goes to position f × (n − 1). with 8 values, the median is position 3.5: halfway between the 4th and 5th salary, 85,000 and 87,000. the result is a `double precision`, and the column has to be numeric (or an interval).
+- **percentile_disc(f)** returns the first value whose position in the sorted list (counting from 1, out of n) is at least f of the way. 4 of 8 is exactly half, so it's the 4th, 85,000. it works on anything sortable, text included.
+
+pass an array of fractions and you get an array back, one answer each, in one pass: `percentile_cont(ARRAY[0.25, 0.5, 0.75])` gives the quartiles. (that's how the figure was captured.)
+
+<Predict options={["2.5", "2", "4"]} answer={0}>
+```sql
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v)
+FROM unnest(ARRAY[10, 1, 3, 2]) AS v;
+```
+<Explain>
+2.5. WITHIN GROUP sorts first: 1, 2, 3, 10. four values, so the median sits at position 1.5 (of 0 to 3), halfway between 2 and 3. the 10 doesn't pull it at all, which is the reason to use a median. avg would be 4. percentile_disc would be 2.
+</Explain>
+</Predict>
+
+```sql run
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) AS cont,
+       percentile_disc(0.5) WITHIN GROUP (ORDER BY v) AS disc,
+       avg(v) AS avg
+FROM unnest(ARRAY[10, 1, 3, 2]) AS v;
+```
+
+## when the average lies
+
+an average gets dragged by a few big values; a median doesn't move. the shop's product prices, in the categories where the two disagree most:
+
+<Figure caption={<>avg vs median price per category, the four categories where they're furthest apart. pets' median is 148.11 but its average is 115.96: a handful of cheap products drag the average down. books goes the other way.</>}>
+<Bars data={middle} />
+</Figure>
+
+```sql run db=shop
+SELECT category,
+       round(avg(price), 2) AS avg,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY price)::numeric(10,2) AS median,
+       count(*) AS products
+FROM products
+WHERE category IN ('pets', 'books')
+GROUP BY category
+ORDER BY category;
+```
+
+ordered-set aggregates group like any other aggregate, so a median per category is just GROUP BY category. the `::numeric(10,2)` is there because percentile_cont answers in double precision.
+
+## on text, and the most common value
+
+percentile_disc only ever returns a value from the data, so it works on any type with an order. the median grade, and `mode()`, the most frequent value:
+
+```sql run db=school
+SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY grade) AS median_grade,
+       mode() WITHIN GROUP (ORDER BY grade) AS most_common,
+       count(grade) AS graded
+FROM enrollments;
+```
+
+B both times, from 101 graded enrollments. (mode's ORDER BY only matters for ties: with two equally common values, it returns the first in that order.) percentile_cont can't interpolate between two letters. there isn't even a version of it that takes text:
+
+```sql run db=school expect=error
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY grade) FROM enrollments;
+```
+
+## string_agg and array_agg
+
+these are ordinary aggregates, but their result *shows* the order the rows arrived in. without an ORDER BY, that order is whatever the plan produced, and it can change. so the order goes inside the parentheses, right after the argument:
+
+<Figure wide caption={<>switch the inner ORDER BY. same groups, same people, a different order inside each list: in CS, Marco Rossi moves ahead of Lena Fischer. the query's own ORDER BY dept only orders the rows.</>}>
+<RunPick options={[{ key: "inside", values: ["ORDER BY name", "ORDER BY salary DESC"] }]} runs={aggs} hot={["ORDER BY name)", "ORDER BY salary DESC)"]} trace={prov(trace)} />
+</Figure>
+
+with DISTINCT, the ORDER BY may only use the expression being aggregated (anything else couldn't be ordered once the duplicates are gone):
+
+```sql run db=school
+SELECT dept, string_agg(DISTINCT credits::text, ', ' ORDER BY credits::text) AS credit_values
+FROM courses
+GROUP BY dept
+ORDER BY dept;
+```
+
+this page's checker flags any `string_agg`, `array_agg` or `json_agg` without an inner ORDER BY, for the same reason it flags a multi-row result without one ([ORDER BY](/learn/basics/order-by)).
+
+## what rank would I have?
+
+the last family is **hypothetical-set** aggregates: where *would* this value land if it were in the group? same WITHIN GROUP, with the value in the parentheses:
+
+```sql run db=school
+SELECT rank(88000) WITHIN GROUP (ORDER BY salary DESC) AS rank_of_88k,
+       round(percent_rank(88000) WITHIN GROUP (ORDER BY salary DESC)::numeric, 3) AS percent_rank
+FROM instructors;
+```
+
+a new hire on 88,000 would rank 4th of the 9 (three people earn more). they're the aggregate cousins of the window functions in [row_number, rank and dense_rank](/learn/analytics/ranking).
+
+<Gotcha title="no OVER for ordered-set aggregates">
+`percentile_cont(...) WITHIN GROUP (...) OVER (PARTITION BY ...)` would be the obvious way to put each department's median on every row. postgres doesn't do it:
+
+```sql run db=school expect=error
+SELECT name, percentile_cont(0.5) WITHIN GROUP (ORDER BY salary) OVER (PARTITION BY dept)
+FROM instructors;
+```
+
+compute the medians with GROUP BY and join them back, or use a [LATERAL](/learn/joins/lateral-joins) subquery per row.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/functions-aggregate.html#FUNCTIONS-ORDEREDSET-TABLE" title="ordered-set aggregate functions">mode, percentile_cont and percentile_disc (with single fractions or arrays), and the hypothetical-set table after it: rank, dense_rank, percent_rank and cume_dist with WITHIN GROUP.</Docs>
+
+<Interview q="what's the difference between percentile_cont and percentile_disc?">
+both compute a percentile over the values sorted by WITHIN GROUP (ORDER BY ...). percentile_cont treats the values as continuous and interpolates, so the median of 1, 2, 3, 10 is 2.5, a value that may not exist; it needs a numeric or interval column. percentile_disc returns the first actual value at or past the fraction, 2 there, and works on any sortable type. bonus point: medians resist outliers where avg doesn't, and these are aggregates, not window functions, so per-row medians need GROUP BY plus a join.
+</Interview>
+
+<Keylines>
+- WITHIN GROUP (ORDER BY ...) hands an aggregate the order it needs.
+- percentile_cont interpolates (numbers only). percentile_disc returns a real value (any type).
+- the median is percentile_cont(0.5). an array of fractions gets an array of answers.
+- string_agg and array_agg take ORDER BY inside the parentheses, or their order isn't promised.
+- ordered-set aggregates can't take OVER: GROUP BY and join back.
+</Keylines>

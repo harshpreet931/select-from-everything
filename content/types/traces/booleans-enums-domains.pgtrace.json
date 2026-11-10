@@ -1,0 +1,132 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/booleans-enums-domains.scenario.sql",
+ "title": "a boolean's three values under five tests, an enum before and after ADD VALUE, and where a domain's CHECK fires",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "subscribers": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"address","type":"email"}]},
+  "subscribers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"subscribers"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT x, x = true AS \"x = true\", x IS TRUE AS \"x IS TRUE\", x IS NOT TRUE AS \"x IS NOT TRUE\", NOT x AS \"NOT x\", x IS NOT FALSE AS \"x IS NOT FALSE\"\nFROM (VALUES (1, true), (2, false), (3, NULL::boolean)) AS v (n, x)\nORDER BY n",
+   "note": "true, false and NULL, each under = true, IS TRUE, IS NOT TRUE, NOT and IS NOT FALSE.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"x","type":"bool"},
+     {"name":"x = true","type":"bool"},
+     {"name":"x IS TRUE","type":"bool"},
+     {"name":"x IS NOT TRUE","type":"bool"},
+     {"name":"NOT x","type":"bool"},
+     {"name":"x IS NOT FALSE","type":"bool"}
+    ],
+    "data": [["t","t","t","f","f","t"],["f","f","f","t","t","f"],[null,null,"f","t",null,"t"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "CREATE TYPE order_status AS ENUM ('placed', 'paid', 'shipped', 'delivered');\nSELECT enumlabel AS label, enumsortorder AS sort_position\nFROM pg_enum WHERE enumtypid = 'order_status'::regtype\nORDER BY enumsortorder",
+   "note": "an enum with four labels. each gets a sort position, in the order they were written.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"label","type":"name"},{"name":"sort_position","type":"float4"}],
+    "data": [["placed","1"],["paid","2"],["shipped","3"],["delivered","4"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "ALTER TYPE order_status ADD VALUE 'cancelled';\nALTER TYPE order_status ADD VALUE 'packed' BEFORE 'shipped';\nALTER TYPE order_status ADD VALUE 'returned' AFTER 'delivered';\nSELECT enumlabel AS label, enumsortorder AS sort_position\nFROM pg_enum WHERE enumtypid = 'order_status'::regtype\nORDER BY enumsortorder",
+   "note": "three new labels: one at the end, one between paid and shipped, one between delivered and cancelled.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"label","type":"name"},{"name":"sort_position","type":"float4"}],
+    "data": [
+     ["placed","1"],
+     ["paid","2"],
+     ["packed","2.5"],
+     ["shipped","3"],
+     ["delivered","4"],
+     ["returned","4.5"],
+     ["cancelled","5"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "CREATE DOMAIN email AS text CHECK (VALUE ~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$');\nCREATE TABLE subscribers (id int PRIMARY KEY, address email);\nINSERT INTO subscribers VALUES (1, 'ada@example.com');\nCREATE FUNCTION welcome(e email) RETURNS text LANGUAGE sql RETURN 'hello, ' || e",
+   "note": "a domain: text, plus a CHECK that it looks like an email. and a table and a function that use it.",
+   "status": "ok",
+   "result": {"command":"CREATE FUNCTION","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT 'not an email'::email",
+   "note": "a cast to the domain checks the value.",
+   "status": "error",
+   "error": {"sqlstate":"23514","message":"value for domain email violates check constraint \"email_check\""}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "INSERT INTO subscribers VALUES (2, 'not an email')",
+   "note": "storing into a domain column checks it.",
+   "status": "error",
+   "error": {"sqlstate":"23514","message":"value for domain email violates check constraint \"email_check\""}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "UPDATE subscribers SET address = 'not an email' WHERE id = 1",
+   "note": "so does changing one.",
+   "status": "error",
+   "error": {"sqlstate":"23514","message":"value for domain email violates check constraint \"email_check\""}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT welcome('not an email')",
+   "note": "passing it to a function that takes the domain checks it too.",
+   "status": "error",
+   "error": {"sqlstate":"23514","message":"value for domain email violates check constraint \"email_check\""}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "INSERT INTO subscribers VALUES (3, NULL) RETURNING id, address",
+   "note": "a NULL passes: a CHECK only rejects false, and NULL is unknown. say NOT NULL in the domain if it must be there.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 1,
+    "columns": [{"name":"id","type":"int4"},{"name":"address","type":"text"}],
+    "data": [["3",null]]
+   }
+  }
+ ]
+}

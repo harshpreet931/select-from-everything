@@ -1,0 +1,266 @@
+{
+ "v": 1,
+ "scenario": "content/execution/traces/hash-join.scenario.sql",
+ "title": "hash joins on shop: which side gets hashed, and a build side that stops fitting in memory",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT id, customer_id FROM orders WHERE id IN (1, 12, 47, 92, 511, 529, 566, 1596) ORDER BY id",
+   "note": "eight orders: the probe side of the small join.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [{"name":"id","type":"int4"},{"name":"customer_id","type":"int4"}],
+    "data": [["1","1"],["12","4"],["47","1"],["92","5"],["511","3"],["529","2"],["566","2"],["1596","6"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id, name FROM customers WHERE id <= 5 ORDER BY id",
+   "note": "five customers: the build side.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"}],
+    "data": [["1","Maya Chen"],["2","Grace Okafor"],["3","Sam Lee"],["4","Zoë Martin"],["5","Zoe Martin"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.id, c.name FROM orders AS o JOIN customers AS c ON c.id = o.customer_id",
+   "note": "orders first in FROM: postgres hashes customers, the smaller side, and streams orders past it.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Hash Join (actual rows=10000.00 loops=1)"],
+     ["  Hash Cond: (o.customer_id = c.id)"],
+     ["  Buffers: shared hit=4 read=103"],
+     ["  ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+     ["        Buffers: shared hit=3 read=80"],
+     ["  ->  Hash (actual rows=2000.00 loops=1)"],
+     ["        Buckets: 2048  Batches: 1  Memory Usage: 90kB"],
+     ["        Buffers: shared hit=1 read=23"],
+     ["        ->  Seq Scan on customers c (actual rows=2000.00 loops=1)"],
+     ["              Buffers: shared hit=1 read=23"],
+     ["Planning:"],
+     ["  Buffers: shared hit=20 read=1"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.id, c.name FROM customers AS c JOIN orders AS o ON o.customer_id = c.id",
+   "note": "customers first in FROM: the same plan. the order you write the tables in doesn't pick the build side.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Hash Join (actual rows=10000.00 loops=1)"],
+     ["  Hash Cond: (o.customer_id = c.id)"],
+     ["  Buffers: shared hit=107"],
+     ["  ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+     ["        Buffers: shared hit=83"],
+     ["  ->  Hash (actual rows=2000.00 loops=1)"],
+     ["        Buckets: 2048  Batches: 1  Memory Usage: 90kB"],
+     ["        Buffers: shared hit=24"],
+     ["        ->  Seq Scan on customers c (actual rows=2000.00 loops=1)"],
+     ["              Buffers: shared hit=24"],
+     ["Planning:"],
+     ["  Buffers: shared hit=6"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.customer_id, o.status, o.ordered_at, o.shipped_at, oi.product_id, oi.qty\nFROM order_items AS oi JOIN orders AS o ON o.id = oi.order_id",
+   "note": "the default work_mem, 4MB, times hash_mem_multiplier 2: all 10,000 orders fit in one hash table.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Hash Join (actual rows=24942.00 loops=1)"],
+     ["  Hash Cond: (oi.order_id = o.id)"],
+     ["  Buffers: shared hit=83 read=159"],
+     ["  ->  Seq Scan on order_items oi (actual rows=24942.00 loops=1)"],
+     ["        Buffers: shared read=159"],
+     ["  ->  Hash (actual rows=10000.00 loops=1)"],
+     ["        Buckets: 16384  Batches: 1  Memory Usage: 647kB"],
+     ["        Buffers: shared hit=83"],
+     ["        ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+     ["              Buffers: shared hit=83"],
+     ["Planning:"],
+     ["  Buffers: shared hit=39 read=7"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SET work_mem = '256kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.customer_id, o.status, o.ordered_at, o.shipped_at, oi.product_id, oi.qty\nFROM order_items AS oi JOIN orders AS o ON o.id = oi.order_id",
+   "note": "256kB, so 512kB for the hash table: postgres splits both sides into 2 batches and keeps one in memory.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Hash Join (actual rows=24942.00 loops=1)"],
+     ["  Hash Cond: (oi.order_id = o.id)"],
+     ["  Buffers: shared hit=242, temp read=82 written=82"],
+     ["  ->  Seq Scan on order_items oi (actual rows=24942.00 loops=1)"],
+     ["        Buffers: shared hit=159"],
+     ["  ->  Hash (actual rows=10000.00 loops=1)"],
+     ["        Buckets: 8192  Batches: 2  Memory Usage: 333kB"],
+     ["        Buffers: shared hit=83, temp written=33"],
+     ["        ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+     ["              Buffers: shared hit=83"],
+     ["Planning:"],
+     ["  Buffers: shared hit=12"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SET work_mem = '128kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.customer_id, o.status, o.ordered_at, o.shipped_at, oi.product_id, oi.qty\nFROM order_items AS oi JOIN orders AS o ON o.id = oi.order_id",
+   "note": "128kB: 4 batches. three quarters of both sides go to temp files and come back later.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Hash Join (actual rows=24942.00 loops=1)"],
+     ["  Hash Cond: (oi.order_id = o.id)"],
+     ["  Buffers: shared hit=242, temp read=128 written=128"],
+     ["  ->  Seq Scan on order_items oi (actual rows=24942.00 loops=1)"],
+     ["        Buffers: shared hit=159"],
+     ["  ->  Hash (actual rows=10000.00 loops=1)"],
+     ["        Buckets: 4096  Batches: 4  Memory Usage: 161kB"],
+     ["        Buffers: shared hit=83, temp written=49"],
+     ["        ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+     ["              Buffers: shared hit=83"],
+     ["Planning:"],
+     ["  Buffers: shared hit=12"]
+    ]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SET work_mem = '64kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.customer_id, o.status, o.ordered_at, o.shipped_at, oi.product_id, oi.qty\nFROM order_items AS oi JOIN orders AS o ON o.id = oi.order_id",
+   "note": "64kB, the minimum: 8 batches, and the most temp file traffic.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Hash Join (actual rows=24942.00 loops=1)"],
+     ["  Hash Cond: (oi.order_id = o.id)"],
+     ["  Buffers: shared hit=242, temp read=152 written=152"],
+     ["  ->  Seq Scan on order_items oi (actual rows=24942.00 loops=1)"],
+     ["        Buffers: shared hit=159"],
+     ["  ->  Hash (actual rows=10000.00 loops=1)"],
+     ["        Buckets: 2048  Batches: 8  Memory Usage: 78kB"],
+     ["        Buffers: shared hit=83, temp written=56"],
+     ["        ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+     ["              Buffers: shared hit=83"],
+     ["Planning:"],
+     ["  Buffers: shared hit=12"]
+    ]
+   }
+  }
+ ],
+ "db": "shop"
+}

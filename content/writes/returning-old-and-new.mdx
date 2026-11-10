@@ -1,0 +1,178 @@
+import { TableSteps } from "@/components/figures/writes/TableSteps";
+import { framesOf, tableOf } from "@/components/figures/writes/frames";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/returning.pgtrace.json";
+
+{/* the figures read traces/returning.scenario.sql, captured on PGlite from shop: every kind of
+    write with RETURNING old and new, an upsert, and a DELETE handing its rows to an INSERT. */}
+
+export const kinds = {
+  INSERT: resultOf(trace, 1),
+  UPDATE: resultOf(trace, 4),
+  DELETE: resultOf(trace, 7),
+  MERGE: resultOf(trace, 10),
+};
+export const upsert = tableOf(trace, 13, { col: "inserted", map: { t: "live", f: "hot" } });
+export const move = framesOf(trace, [
+  { label: "before", state: 16 },
+  { label: "DELETE → INSERT", stmt: 17, state: 18 },
+], "tbl");
+export const source = prov(trace);
+
+<InShort>
+**RETURNING** makes INSERT, UPDATE, DELETE and MERGE hand back the rows they changed, like a SELECT would. since postgres 18 <Since v={18} /> it can return both sides: **old.** columns are the row before the statement, **new.** columns the row after.
+
+one round trip instead of two, and no window for anyone to change the row in between.
+</InShort>
+
+## the picture
+
+you know how after an UPDATE you usually want to see what it did, so you SELECT the rows again? that's a second query, a second trip to the server, and a gap in which someone else can change those rows. RETURNING is the receipt that comes with the change itself.
+
+think of handing in a form and getting a stamped copy back. before 18 the copy showed the form as filed (for DELETE, as it was when it was thrown away). now you can ask for a before-and-after copy, side by side.
+
+<Figure wide caption={<>switch the statement. the same four columns every time: <code>old.*</code> on the left, <code>new.*</code> on the right. an INSERT has no before, a DELETE has no after, and they show it as NULL. MERGE does both kinds of write in one statement, and says which with <code>merge_action()</code>.</>}>
+<RunPick
+  options={[{ key: "statement", values: ["INSERT", "UPDATE", "DELETE", "MERGE"] }]}
+  runs={kinds}
+  hot={["old.", "new.", "merge_action()"]}
+  file="returning.sql"
+  trace={source}
+/>
+</Figure>
+
+every block here starts from a fresh copy of shop, so nothing you run sticks.
+
+## the receipt
+
+the most common RETURNING of all: insert a row and get back the id the database made up for it. no `SELECT max(id)` afterwards (which is wrong the moment two people insert at once), no driver-specific "last insert id" call.
+
+```sql run db=shop
+INSERT INTO customers (name, country, created_at)
+VALUES ('Ravi Shah', 'IN', '2026-05-01 09:00+00')
+RETURNING id, name;
+```
+
+the list after RETURNING is a select list: columns, `*`, expressions, aliases. it sees the row as it ended up, after defaults, identity columns and any [triggers](/learn/writes/triggers) that changed it.
+
+before postgres 18, what you got depended on the statement: INSERT and UPDATE returned the new row, DELETE the old one. you couldn't ask an UPDATE for the old price. now you prefix a column with `old.` or `new.`:
+
+```sql run db=shop unordered
+UPDATE products SET price = round(price * 1.10, 2)
+WHERE category = 'books' AND price < 40
+RETURNING sku, old.price AS old_price, new.price AS new_price,
+          new.price - old.price AS change;
+```
+
+a bare `price` still means the new value, as it always did. `old.` and `new.` just make it explicit, and add the side you couldn't get before.
+
+<Predict options={["19.99, the old price", "NULL", "an error"]} answer={1}>
+```sql
+DELETE FROM products WHERE name = 'left-handed teapot'
+RETURNING new.price;
+```
+<Explain>
+NULL. a deleted row has no after, so every `new.` column is NULL, the same way every `old.` column is NULL for a plain INSERT. no error: the shape of the result doesn't depend on which rows there were. a bare `price` (or `old.price`) gives you the 19.99.
+</Explain>
+</Predict>
+
+```sql run db=shop
+DELETE FROM products WHERE name = 'left-handed teapot'
+RETURNING price, old.price AS old_price, new.price AS new_price;
+```
+
+## upserts that say what they did
+
+the place old and new really pay off is an upsert. `INSERT ... ON CONFLICT DO UPDATE` either inserts a row or updates the one that was there, and until 18 RETURNING couldn't tell you which. old is NULL for a row that was inserted and filled in for a row that was updated, so one more column answers it:
+
+<Figure caption={<>an upsert of two books into products. BOO-0003 existed, so its old price is there and it was <C k="hot">updated</C>. BOO-0202 didn't, so old is NULL and it was <C k="live">inserted</C>.</>}>
+<ResultTable {...upsert} />
+</Figure>
+
+```sql run db=shop unordered
+INSERT INTO products (sku, name, category, price)
+VALUES ('BOO-0003', 'the art of sql', 'books', 30.00),
+       ('BOO-0202', 'sql antipatterns', 'books', 38.00)
+ON CONFLICT (sku) DO UPDATE SET price = EXCLUDED.price
+RETURNING new.sku, old.price AS old_price, new.price AS new_price,
+          old.sku IS NULL AS inserted;
+```
+
+(the old trick for this was `RETURNING (xmax = 0) AS inserted`, which reads a system column and leans on how postgres stamps [row versions](/learn/mvcc/transaction-ids). it worked, mostly. you don't need it anymore. [INSERT ... ON CONFLICT](/learn/writes/upsert) has the rest of the upsert.)
+
+if your table happens to have a column or alias called `old` or `new`, or you're inside a [trigger function](/learn/writes/triggers) where OLD and NEW already mean something, rename them for the statement: `RETURNING WITH (OLD AS o, NEW AS n) o.price, n.price`.
+
+## moving rows in one statement
+
+RETURNING also works inside WITH, and that's how you hand the rows one statement changed to another. archiving cancelled orders is a DELETE and an INSERT, done as one statement:
+
+<Figure wide caption={<>two steps: before, and after one statement. the DELETE's RETURNING feeds the INSERT, so the 317 rows leave orders and land in the archive together. there's no moment where they're in both, or in neither.</>}>
+<TableSteps frames={move} table="row counts" trace={source} />
+</Figure>
+
+```sql run db=shop session=archive
+CREATE TABLE orders_archive (LIKE orders);
+
+WITH gone AS (
+  DELETE FROM orders WHERE status = 'cancelled'
+  RETURNING *
+)
+INSERT INTO orders_archive SELECT * FROM gone;
+```
+
+`INSERT 0 317`. if the INSERT fails, the DELETE never happened: it's one statement, so it's one transaction. (the cancelled orders' line items went too, through the cascade, and they weren't archived. a real archive would move them first, the same way.)
+
+<Gotcha title="the rest of the statement can't see the change">
+every part of a statement, data-modifying CTEs included, runs on the same snapshot: the database as it was when the statement started. so a SELECT next to an UPDATE in one WITH still sees the old values. the only way to see what a CTE changed is through its RETURNING.
+
+```sql run db=shop
+WITH bump AS (
+  UPDATE products SET price = price + 1 WHERE id = 3 RETURNING price
+)
+SELECT (SELECT price FROM bump) AS returned,
+       (SELECT price FROM products WHERE id = 3) AS selected;
+```
+
+33.00 from the RETURNING, 32.00 from the table. both are the truth, as of different moments.
+</Gotcha>
+
+## RETURNING has no order
+
+RETURNING gives rows back in whatever order the statement happened to process them. that's usually the order it found them, which is usually stable, which is exactly the kind of thing that changes the day the plan does. if the order matters, wrap it and sort:
+
+```sql run db=shop
+WITH changed AS (
+  UPDATE products SET price = round(price * 1.10, 2)
+  WHERE category = 'books'
+  RETURNING id, name, old.price AS old_price, new.price AS new_price
+)
+SELECT * FROM changed ORDER BY new_price DESC, id LIMIT 5;
+```
+
+<Deep title="old values before postgres 18">
+on 17 and earlier, the usual way to get the before value out of an UPDATE was to join the table to a locked copy of itself:
+
+```sql run db=shop unordered
+UPDATE products AS p
+SET price = round(p.price * 1.10, 2)
+FROM (SELECT id, price FROM products
+      WHERE category = 'books' AND price < 40
+      FOR UPDATE) AS before
+WHERE p.id = before.id
+RETURNING p.sku, before.price AS old_price, p.price AS new_price;
+```
+
+the `FOR UPDATE` matters: without it, another session could change a price between the subquery reading it and the UPDATE writing it, and `old_price` would be a value that was never really replaced. it works, it's just a lot of ceremony for "what was it before". the [release notes for 18](https://www.postgresql.org/docs/18/release-18.html) list old and new in RETURNING among the headline changes.
+</Deep>
+
+<Interview q="how do you get the generated id back after an INSERT in postgres?">
+`INSERT ... RETURNING id`. it comes back in the same round trip, it's the id of *your* row even with a thousand other sessions inserting, and it works for many rows at once. not `SELECT max(id)` (races), and `currval()` only works for the sequence your session just used. JDBC's `getGeneratedKeys()` gets its answer the same way on postgres: the driver adds a RETURNING clause to your INSERT. bonus point: since 18, `RETURNING old.*, new.*` also gives you the before and after of an UPDATE, and tells an upsert's inserts from its updates.
+</Interview>
+
+<Keylines>
+- RETURNING hands back the rows a write changed, in the same round trip.
+- since postgres 18, old.col is the row before and new.col the row after.
+- old is NULL for an insert, new is NULL for a delete.
+- in an upsert, old.col IS NULL tells inserted rows from updated ones.
+- RETURNING inside WITH passes changed rows to the next statement. sort it yourself if order matters.
+</Keylines>

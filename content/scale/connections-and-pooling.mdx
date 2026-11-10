@@ -1,0 +1,139 @@
+import { ProcessTree } from "@/components/figures/scale/ProcessTree";
+import { PoolModes } from "@/components/figures/scale/PoolModes";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import procs from "./traces/processes.pgtrace.json";
+import leaks from "./traces/pool-leaks.pgtrace.json";
+import measured from "./data/measured.json";
+
+{/* the process list and the backend memory come from traces/processes.scenario.sql, the leaking
+    session state from traces/pool-leaks.scenario.sql, both on a throwaway native postgres 18.6
+    (the browser has one session, so neither can run here). connection timings are in
+    data/measured.json, measured on this mac with a node script against a throwaway server.
+    no pgbouncer runs anywhere in this chapter: the pool figure is a model. */}
+
+export const types = procs.steps[0].result.data;
+export const clients = procs.steps[1].result.data.map((r) => r[1]);
+export const mem = procs.steps[2].result.data[0];
+export const limits = Object.fromEntries(procs.steps[3].result.data);
+export const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+export const c = measured.connect;
+export const ms = (v) => (v < 0.1 ? v.toFixed(3) : v.toFixed(1));
+export const ratio = Math.round(avg(c.new_tcp_scram_ms) / avg(c.reuse_tcp_ms));
+
+<InShort>
+every connection to postgres is its own **process** on the server, forked when you connect and gone when you leave. connecting costs milliseconds, and thousands of them cost memory and contention. a **connection pool** keeps a few server connections open and lends them out; pgbouncer lends them per session, per **transaction** or per statement, and the tighter it lends, the more session state you lose.
+</InShort>
+
+## the picture
+
+you know how an app with 50 pods, each with a pool of 20, wants 1,000 connections, and postgres says `too many clients already` at 100? that number isn't stingy. it's counting processes.
+
+think of a restaurant where every guest gets a dedicated waiter for the whole visit (a backend process), even while they stare at the menu. a pool is a smaller team of waiters who serve whichever table has its hand up. here's a real postgres 18.6 server with three clients connected:
+
+<Figure wide caption={<>pg_stat_activity on a native server with clients A, B and C connected (plus the capture tool's own connection). each <C k="hot">client backend</C> is a separate operating system process with its own pid; the rest are the server's helpers. autovacuum is switched off for captures, so its launcher isn't listed.</>}>
+<ProcessTree types={types} clients={clients} observer="pgtrace" trace={prov(procs)} />
+</Figure>
+
+the postmaster listens on the port. every time a client connects, it forks a new process that serves only that client until it disconnects. that's postgres's design since the beginning, and the manual says so plainly.
+
+<Docs href="https://www.postgresql.org/docs/18/connect-estab.html" title="how connections are established">the postmaster forks a new backend process for each connection request; from then on the client talks to that backend directly. the backends share data through shared memory and semaphores.</Docs>
+
+the page you're reading is the odd one out. its postgres runs inside your browser tab as a single process with exactly one session, so there's nothing to fork and nothing to pool:
+
+```sql run
+SELECT backend_type, pid = pg_backend_pid() AS is_me FROM pg_stat_activity ORDER BY backend_type;
+SHOW max_connections;
+```
+
+## what a connection costs
+
+two things: time to open one, and resources while it's open.
+
+opening one means a TCP handshake, a fork, authentication, and a backend warming up its caches. against a throwaway postgres 18.6 on the same machine, with `SELECT 1` as the work:
+
+<Figure caption={<>mean time per round, on one machine (no network in between). <C k="live">reusing</C> an open connection vs <C k="dead">connecting</C>, running the query and disconnecting. with password authentication over TCP, opening a connection costs about {ratio}x the query.</>}>
+<Bars unit=" ms" log data={[
+  { label: "reuse, unix socket", value: avg(c.reuse_unix_ms), tone: "live" },
+  { label: "reuse, tcp", value: avg(c.reuse_tcp_ms), tone: "live" },
+  { label: "connect, unix, trust", value: avg(c.new_unix_trust_ms), tone: "dead" },
+  { label: "connect, tcp, scram", value: avg(c.new_tcp_scram_ms), tone: "dead" },
+]} />
+<Provenance measured={`on ${measured.machine}. ${c.method}`} />
+</Figure>
+
+a few milliseconds sounds cheap until it's per request. an app that connects for every web request spends more time saying hello than asking anything.
+
+while it's open, each backend has private memory. a brand-new backend in the capture above had allocated {mem[1]} MB across {mem[0]} memory contexts before running anything (it asked `pg_backend_memory_contexts`). a busy one grows: every sort or hash in a running query can use up to `work_mem` on top. and every open connection, busy or idle, is one more process for the operating system to keep and schedule.
+
+that's why `max_connections` is {limits.max_connections} by default, with {limits.superuser_reserved_connections} slots held back for superusers. you can raise it, but past the point where the CPUs are all busy, more connections don't do more work. they queue for the same cores and locks, just less visibly.
+
+<Predict question="your app runs 40 pods, each with a pool of 25 connections, against max_connections = 100. what happens at deploy?" options={["it works, connections are cheap", "most pods fail to connect", "postgres queues the extras"]} answer={1}>
+```text
+40 pods × 25 = 1,000 connections wanted
+max_connections = 100
+```
+<Explain>
+postgres doesn't queue connection attempts. once the slots are gone, new ones are refused with `FATAL: sorry, too many clients already` (SQLSTATE 53300). the fix isn't 1,000 slots, it's fewer server connections: smaller pools per pod, or one pooler in front that all the pods share.
+</Explain>
+</Predict>
+
+## a pool, three ways
+
+a pool sits between the app and postgres (inside each app process, or as a separate proxy like pgbouncer) and keeps a few server connections open. the question is when it takes a connection back. pgbouncer's `pool_mode` has three answers:
+
+<Figure wide caption={<>four clients, two server connections. step through each mode. watch <C k="hot">alice's setting</C> reach other clients, and <C k="dead">her prepared statement</C> go missing, under transaction pooling.</>}>
+<PoolModes />
+</Figure>
+
+- **session**: a client keeps one server connection from connect to disconnect. everything works, but you only multiplex the idle time between clients' sessions.
+- **transaction**: the connection goes back at COMMIT or ROLLBACK. a handful of server connections can serve hundreds of clients that spend most of their time idle. this is what people usually mean by "put pgbouncer in front".
+- **statement**: back after every statement, and multi-statement transactions are refused.
+
+## what transaction pooling breaks
+
+anything that lives in the *session* instead of the transaction stays on the server connection when your transaction ends, and the next client to get that connection inherits it. here are two real backends doing exactly what a pooler would forward to them:
+
+<Figure wide caption={<>c1 and c2 are two real server connections. alice's <code>SET</code> outlives her transaction and reaches bob; her next transaction lands on c2, where her prepared statement <C k="dead">doesn't exist</C>; and her session advisory lock stays with c1, out of her reach.</>}>
+<SessionLanes sessions={leaks.sessions} trace={leaks} side="locks" provenance={<Provenance trace={prov(leaks)} />} />
+</Figure>
+
+pgbouncer's own feature table lists what never works in transaction mode: `SET`/`RESET`, `LISTEN`, `WITH HOLD` cursors, SQL `PREPARE`/`DEALLOCATE`, temp tables that outlive a transaction, `LOAD`, and session-level advisory locks. the fixes are mostly "say it per transaction":
+
+```sql run
+BEGIN;
+SET LOCAL statement_timeout = '50ms';
+SHOW statement_timeout;
+COMMIT;
+SHOW statement_timeout;
+```
+
+`SET LOCAL` ends with the transaction, and `pg_advisory_xact_lock` is released at COMMIT (see [advisory locks](/learn/transactions/advisory-locks)). session mode cleans up between clients with `server_reset_query`, `DISCARD ALL` by default, which wipes exactly the state that leaked above:
+
+```sql run expect=error
+SET statement_timeout = '50ms';
+PREPARE order_total(int) AS SELECT $1 * 2;
+DISCARD ALL;
+SHOW statement_timeout;
+EXECUTE order_total(21);
+```
+
+<Gotcha title="prepared statements and transaction pooling">
+drivers prepare statements at the protocol level (Parse, Bind, Execute), not with SQL `PREPARE`, and for years that broke under transaction pooling exactly like c2 above. pgbouncer 1.21.0 (2023-10-16) added `max_prepared_statements`, which tracks protocol-level prepared statements and re-prepares them on whichever server connection a client lands on. it was off by default until 1.24.0 (2025-01-10) set it to 200. SQL-level `PREPARE` is still unsupported in transaction mode. ([pgbouncer changelog](https://www.pgbouncer.org/changelog.html), [features](https://www.pgbouncer.org/features.html).) why prepared statements matter at all: [generic plans](/learn/optimizer/generic-plans).
+</Gotcha>
+
+## sizing it
+
+a pool's job is to keep postgres at the number of connections it can actually run at once, and make everyone else wait in the pool, where waiting is cheap, instead of in the database, where it isn't. so the pool size follows the server's cores and disks, not the number of clients. start small, measure, and raise it while throughput still rises. two things to watch while you do: [idle in transaction](/learn/transactions/begin-commit-rollback) sessions hold a server connection doing nothing (and, under transaction pooling, block everyone queued behind it), and long transactions hold the [xmin horizon](/learn/mvcc/xmin-horizon) back no matter who pools them.
+
+<Interview q="why does postgres need a connection pooler when mysql often doesn't?">
+postgres forks one process per connection, so each connection is a whole OS process with its own memory, and opening one costs a fork and authentication. mysql serves connections with threads inside one process, which are cheaper to create and keep. so postgres deployments with many clients put a pooler (pgbouncer, or a pool in the app) in front, to keep the number of server processes near what the CPUs can run. bonus point: in transaction mode, session state doesn't survive between transactions, so `SET`, SQL `PREPARE`, `LISTEN` and session advisory locks need care.
+</Interview>
+
+<Keylines>
+- one connection = one postgres process, forked at connect.
+- connecting costs milliseconds; holding thousands costs memory and scheduling.
+- a pool keeps postgres near the work it can do at once and queues the rest.
+- session, transaction, statement: when the pool takes the connection back.
+- under transaction pooling, anything session-scoped leaks or vanishes. use SET LOCAL and xact locks.
+</Keylines>

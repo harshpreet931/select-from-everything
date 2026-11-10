@@ -1,0 +1,147 @@
+import { PageBars } from "@/components/figures/storage/PageBars";
+import { PageSteps } from "@/components/figures/mvcc/PageSteps";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { btreeFromPages } from "@/lib/db/fromTrace";
+import { prov, resultOf } from "@/lib/db/captured";
+import sweep from "./traces/vacuum-sweep.pgtrace.json";
+import fullLock from "./traces/vacuum-full-lock.pgtrace.json";
+
+export const vlog = sweep.steps[2].log.slice(0, sweep.steps[2].log.findIndex((l, i) => i > 0 && l.startsWith("INFO:  vacuuming"))).filter((l) => !/system usage/.test(l)).join("\n");
+export const idxView = (i) => btreeFromPages(sweep.steps[i].btree.t_pkey);
+export const idxSteps = [
+  { view: idxView(1), label: "T1: DELETE FROM t WHERE id % 3 <> 0", note: `after the DELETE: ${sweep.steps[1].btree.t_pkey.pages[0].n} entries, still one per tuple, dead or not.` },
+  { view: idxView(2), label: "T1: VACUUM (VERBOSE) t", note: `after VACUUM: ${sweep.steps[2].btree.t_pkey.pages[0].n} entries. every key left points at a live row.` },
+];
+export const before = resultOf(fullLock, 2).rows[0];
+export const afterFull = resultOf(fullLock, 6).rows[0];
+export const p0 = sweep.steps[1].heap.t[0];
+export const p0v = sweep.steps[2].heap.t[0];
+
+<InShort>
+**VACUUM** finds row versions no snapshot can see anymore, removes the index entries that point at them, and marks their slots free for reuse. it also sets the **visibility map** and records free space. what it doesn't do is give space back: the file stays the size it was, except for empty pages at the very end. **VACUUM FULL** writes a brand new, compact file, and holds an **ACCESS EXCLUSIVE** lock on the table the whole time.
+</InShort>
+
+## the picture
+
+you know how [nothing in postgres is ever overwritten](/learn/mvcc/update-is-insert)? every UPDATE and DELETE leaves a dead version behind. something has to come round and collect them, or every table only ever grows, and every scan wades through more and more dead rows. that's VACUUM.
+
+think of a car park. VACUUM is the attendant walking the levels, towing abandoned cars and painting their bays as free (the free space map), and putting a "nothing to do here" sticker on each clean level (the visibility map). the car park is still the same size afterwards. new cars fill the free bays. VACUUM FULL is building a new, smaller car park next door, driving every car across, and demolishing the old one, with the gates shut while it happens.
+
+here's a six-page table on a real postgres 18.6 server: two rows in every three deleted, then VACUUM, then VACUUM FULL.
+
+<Figure wide caption={<>step through. after the DELETE every page is still full, <C k="dead">two thirds dead</C>. VACUUM turns the dead tuples into free space and sets every page's <C k="meta">all-visible</C> bit (●): still six pages. VACUUM FULL writes the 68 live rows into two new pages, and leaves the visibility map empty.</>}>
+<PageBars trace={sweep} />
+</Figure>
+
+## what VACUUM does, in order
+
+<Figure caption={<>one plain VACUUM of one table. hover a stage. the indexes are cleaned before the heap slots are freed, so no index entry ever points at a slot that's been reused.</>}>
+<Flow stages={[
+  { label: "scan the heap", sub: "prune, collect", note: "page by page, skipping all-visible pages. on each page it prunes (like a read would) and writes down the address of every dead tuple. tuples it removes become dead line pointers." },
+  { label: "vacuum indexes", sub: "every index", note: "one pass over each index, deleting every entry that points at one of the collected addresses. this is usually the expensive part." },
+  { label: "vacuum the heap", sub: "free the slots", note: "back to the pages: the dead line pointers become unused, free for the next insert on that page." },
+  { label: "maps and stats", sub: "fsm, vm, pg_class", note: "record each page's free space, set all-visible (and all-frozen) bits, cut empty pages off the end of the file, update relpages, reltuples and maybe relfrozenxid." },
+]} />
+</Figure>
+
+look at page 0, before and after the VACUUM. after the DELETE it held {p0.tuples.length} tuples, every one still there. after the VACUUM:
+
+<Figure wide caption={<>switch moments and step through the slots. the <C k="dead">deleted</C> tuples' slots are unused afterwards, and the live tuples were slid together toward the end of the page, so the free space is one gap again.</>}>
+<PageSteps trace={sweep} rel="t" steps={[1, 2]} labels={["after the DELETE", "after VACUUM"]} start="after the DELETE" focus={1} fields={["id"]} />
+</Figure>
+
+{p0v.tuples.filter((x) => x.lpFlags === "normal").length} live tuples and {p0v.tuples.filter((x) => x.lpFlags === "unused").length} unused slots, and free space went from {p0.upper - p0.lower} to {p0v.upper - p0v.lower} bytes. the page has {p0v.tuples.length} line pointers now, not {p0.tuples.length}: slot 34 was the last one and unused, so it was cut off the array. unused slots in the middle can't be removed (that would change other tuples' ctids), so they wait for the next insert on this page.
+
+the index lost its dead entries in the same VACUUM:
+
+<Figure wide caption={<>t_pkey, one leaf page, before and after. two thirds of the keys go: the ones whose heap tuple was dead.</>}>
+<BTree steps={idxSteps} collapse={6} legend={false} />
+<Provenance trace={prov(sweep)} />
+</Figure>
+
+`VACUUM (VERBOSE)` says all of it in its own words. this is the server log from that step:
+
+<Figure caption={<>VACUUM VERBOSE on the capture's table. the lines worth reading are <C k="hot">hot</C>: what it removed, what it set in the visibility map, and the index pass.</>}>
+<SqlPanel code={vlog} lang="text" hot={[4, 7, 8]} nolines />
+<Provenance trace={prov(sweep)} />
+</Figure>
+
+"0 are dead but not yet removable": nothing was holding these versions back. when something is, that number isn't 0, and that's [the xmin horizon](/learn/mvcc/xmin-horizon).
+
+## the same thing in the browser
+
+the same table, built in a block. nothing reads it before the VACUUM, so the browser engine's [eager pruning](/learn/mvcc/hot-updates) never gets a chance:
+
+```sql run db=lab session=vac
+CREATE TABLE t (id int PRIMARY KEY, pad text NOT NULL);
+INSERT INTO t SELECT g, repeat('x', 200) FROM generate_series(1, 204) AS g ORDER BY g;
+DELETE FROM t WHERE id % 3 <> 0;
+SELECT pg_relation_size('t') AS heap_bytes, pg_relation_filenode('t') AS filenode,
+       (SELECT sum(live_items) FROM bt_page_stats('t_pkey', 1)) AS index_entries,
+       (SELECT count(*) FILTER (WHERE all_visible) FROM pg_visibility_map('t')) AS all_visible_pages;
+```
+
+```sql run session=vac
+VACUUM t;
+SELECT pg_relation_size('t') AS heap_bytes, pg_relation_filenode('t') AS filenode,
+       (SELECT sum(live_items) FROM bt_page_stats('t_pkey', 1)) AS index_entries,
+       (SELECT count(*) FILTER (WHERE all_visible) FROM pg_visibility_map('t')) AS all_visible_pages,
+       (SELECT sum(avail) FROM pg_freespace('t')) AS free_bytes;
+```
+
+the same 49,152 bytes, the same file. a third of the index entries, every page all-visible, and the free space map now knows about the room on every page. new rows go into those bays, so the table won't grow until they're used up.
+
+<Predict question="after that VACUUM, you insert 100 new rows into t. how big is the file?" options={["49,152 bytes, the same", "bigger: new rows go at the end", "smaller"]} answer={0}>
+```sql
+INSERT INTO t SELECT g, repeat('y', 200) FROM generate_series(1001, 1100) AS g;
+SELECT pg_relation_size('t');
+```
+<Explain>
+the same. VACUUM recorded each page's free space in the free space map, and inserts ask the map before they extend the file. 100 rows of this size fit in the gaps VACUUM left. that's the steady state of a healthy table: dead rows get vacuumed, new rows reuse the room, and the file stays put.
+</Explain>
+</Predict>
+
+```sql run session=vac
+INSERT INTO t SELECT g, repeat('y', 200) FROM generate_series(1001, 1100) AS g;
+SELECT pg_relation_size('t') AS heap_bytes;
+```
+
+## VACUUM FULL
+
+to actually shrink the file you have to move the rows, and moving rows changes their ctids, which every index points at. so VACUUM FULL doesn't move anything: it copies every live row into a new file, builds every index again from scratch, and switches the table over to the new files when it commits. the old files are deleted.
+
+```sql run session=vac
+VACUUM FULL t;
+SELECT pg_relation_size('t') AS heap_bytes, pg_relation_filenode('t') AS filenode,
+       (SELECT count(*) FILTER (WHERE all_visible) FROM pg_visibility_map('t')) AS all_visible_pages;
+```
+
+a new file number (the relfilenode, see [files and forks](/learn/storage/files-and-forks)), and a smaller file. the price is the lock. while it copies, nobody else may read or write the table, so it takes ACCESS EXCLUSIVE, the strongest [table lock](/learn/locking/table-lock-modes). a plain VACUUM takes SHARE UPDATE EXCLUSIVE, which only conflicts with other vacuums and schema changes. captured on a real server:
+
+<Figure wide caption={<>step through. plain VACUUM runs straight past T2's open read. VACUUM FULL <C k="mute">waits</C> for it, and T3's plain SELECT queues behind VACUUM FULL. the locks panel shows who holds what, <C k="meta">granted</C> or waiting.</>}>
+<SessionLanes sessions={fullLock.sessions} trace={fullLock} side="locks" />
+</Figure>
+
+the file went from {before[1]} bytes under file number {before[0]} to {afterFull[1]} bytes under {afterFull[0]}. on a big table the copy takes minutes or hours, and for all of it the table is closed, and so is everyone who queues behind the lock: the [lock queue](/learn/locking/lock-queue) chapter is about exactly that.
+
+<Gotcha title="VACUUM FULL needs room for a second copy">
+the new files are written before the old ones go, so for a while the table takes up its old size plus its new size, indexes included. on a nearly full disk, that's how VACUUM FULL fills it. and it's almost never what you want on a live system: if a table is bloated because vacuum couldn't keep up, fix that (usually [autovacuum settings](/learn/mvcc/autovacuum) or [a long transaction](/learn/mvcc/xmin-horizon)), and if you must compact it online, tools like pg_repack copy the table while it stays readable and writable, taking the strong lock only for the final switch.
+</Gotcha>
+
+## bloat
+
+**bloat** is space a table or index takes beyond what its live rows need: dead tuples not yet vacuumed, plus free space vacuum created that new rows haven't filled. some is normal (a table with fillfactor 90 is "bloated" by design). a lot means vacuum is falling behind, or something is stopping it. indexes bloat too, and VACUUM doesn't shrink them either: emptied index pages are recycled within the index, and `REINDEX CONCURRENTLY` rebuilds one without blocking writes.
+
+in the browser, VACUUM only runs when you type it. on a real server [autovacuum](/learn/mvcc/autovacuum) does it in the background, triggered by how many rows changed. and VACUUM has one more job, the one that can't be skipped: [freezing](/learn/mvcc/freezing-and-wraparound) old tuples before the transaction counter wraps around.
+
+<Interview q="what's the difference between VACUUM and VACUUM FULL?">
+VACUUM removes dead tuples in place: it prunes each page, deletes index entries that point at dead tuples, marks their line pointers unused, records free space in the free space map, and sets visibility map bits. it runs alongside reads and writes (SHARE UPDATE EXCLUSIVE lock) and doesn't return space to the OS, except empty pages at the end of the file. VACUUM FULL rewrites the table and all its indexes into new files with a new relfilenode, so the space is given back, but it takes an ACCESS EXCLUSIVE lock for the whole rewrite and needs room for both copies. bonus point: the new table's visibility map starts empty, and pg_repack or (for indexes) REINDEX CONCURRENTLY are the online alternatives.
+</Interview>
+
+<Keylines>
+- VACUUM: prune, clean the indexes, free the slots, update the free space and visibility maps.
+- the file doesn't shrink, except for empty pages at the end. the free space gets reused.
+- VACUUM runs next to reads and writes. VACUUM FULL locks everyone out.
+- VACUUM FULL copies live rows into a new file with a new relfilenode and rebuilds the indexes.
+- bloat is dead or unused space. the fix is usually vacuuming more, not VACUUM FULL.
+</Keylines>

@@ -1,0 +1,128 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { LevelTable } from "@/components/figures/transactions/LevelTable";
+import { rounds } from "@/components/figures/transactions/lanes";
+import dirty from "./traces/anomaly-dirty-read.pgtrace.json";
+import nonrep from "./traces/anomaly-non-repeatable-read.pgtrace.json";
+import phantom from "./traces/anomaly-phantom.pgtrace.json";
+import lost from "./traces/anomaly-lost-update.pgtrace.json";
+import skew from "./traces/anomaly-read-skew.pgtrace.json";
+import wskew from "./traces/anomaly-write-skew.pgtrace.json";
+import firstStmt from "./traces/rr-first-statement.pgtrace.json";
+
+{/* the postgres table and both lanes figures are captures from a real postgres 18.6 server
+    (traces/anomaly-*.scenario.sql run each schedule once per level; rr-first-statement).
+    the standard's table is the postgres manual's table 13.1, paraphrased. */}
+
+export const traces = { "dirty read": dirty, "non-repeatable read": nonrep, phantom, "lost update": lost, "read skew": skew, "write skew": wskew };
+export const dirtyRounds = rounds(dirty);
+export const phantomRounds = rounds(phantom);
+
+<InShort>
+the SQL standard defines four **isolation levels** by which anomalies each one must rule out. postgres accepts all four names but runs three: **READ UNCOMMITTED is READ COMMITTED**, **REPEATABLE READ is snapshot isolation** (stronger than the standard asks: no phantoms), and **SERIALIZABLE** really is serializable, by aborting a transaction when it has to.
+</InShort>
+
+## the picture
+
+you know the table every database course shows, four levels down the side and three anomalies across the top? that's the standard's table. it says what each level is *allowed* to let through, which is a floor, not a description. a database may do better, and postgres does, in two places.
+
+think of building codes (the standard) and an actual house (postgres). the code says how strong a wall must be at least. it doesn't tell you how strong the wall is.
+
+<Figure wide caption={<>the standard's table, as the postgres manual describes it, and postgres 18.6's, where every cell is a captured run (the same runs as the <a href="/learn/transactions/anomalies">anomaly lab</a>). hover a postgres cell for what the run showed. the differences: read uncommitted never reads dirty data, and repeatable read has <C k="live">no</C> phantoms.</>}>
+<LevelTable traces={traces} />
+</Figure>
+
+<Docs href="https://www.postgresql.org/docs/18/transaction-iso.html" title="transaction isolation">the manual's table 13.1 has the standard's three phenomena plus "serialization anomaly" across the top, and marks two cells "allowed, but not in PG": dirty reads at read uncommitted, phantoms at repeatable read. it also says plainly that postgres runs read uncommitted as read committed, and that its repeatable read is what the literature calls snapshot isolation.</Docs>
+
+the standard doesn't mention lost updates, read skew or write skew at all. it defines the three lower levels by three phenomena, and SERIALIZABLE as "the same result as some one-at-a-time order". everything else is a serialization anomaly, which the standard only rules out at the top. so the postgres table has six columns where the standard's has four.
+
+## picking a level
+
+per transaction, at BEGIN (or with SET TRANSACTION before the first query), or as the default for a session, a role or the whole server:
+
+```sql run
+SHOW default_transaction_isolation;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SHOW transaction_isolation;
+COMMIT;
+SET default_transaction_isolation = 'serializable';
+BEGIN;
+SHOW transaction_isolation;
+COMMIT;
+```
+
+the level is fixed once the transaction has run a query. changing it after that is an error:
+
+```sql run expect=error
+BEGIN;
+SELECT 1;
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+```
+
+## READ UNCOMMITTED is READ COMMITTED
+
+postgres takes the name, reports it back, and runs the transaction exactly like READ COMMITTED. it can't do anything else: a dirty read would mean showing a row version written by a transaction that's still running, and [no snapshot ever includes one](/learn/mvcc/visibility-rules). here T2 asks for it while T1 has an uncommitted withdrawal:
+
+<Figure wide caption={<>T2's SHOW says read uncommitted. its read says <C k="live">100.00</C>, the committed balance, not T1's uncommitted 0.00.</>}>
+<TxLanes trace={dirty} only={dirtyRounds[0]} />
+</Figure>
+
+## REPEATABLE READ is snapshot isolation
+
+one snapshot for the whole transaction, taken at its first statement (not at BEGIN), and every read comes from it. that gives you more than the standard's REPEATABLE READ: rows you've read can't change under you, and rows can't appear either, because a new row committed after your snapshot is simply not in it.
+
+<Figure wide caption={<>the same count, twice, while T1 inserts carol's account. at read committed the second count is <C k="dead">3</C>. at repeatable read it stays <C k="live">2</C>: no phantom, though the standard would allow one.</>}>
+<TxLanes
+  option="T2 runs at"
+  runs={[
+    { label: "read committed", trace: phantom, only: phantomRounds[1] },
+    { label: "repeatable read", trace: phantom, only: phantomRounds[2] },
+  ]}
+/>
+</Figure>
+
+<Predict question="T2 runs BEGIN ISOLATION LEVEL REPEATABLE READ. T1 then commits alice = 150.00. then T2 reads alice for the first time. what does it see?" options={["100.00: the value at BEGIN", "150.00", "an error: it changed"]} answer={1}>
+```sql
+/* T2 */ BEGIN ISOLATION LEVEL REPEATABLE READ;
+/* T1 */ UPDATE accounts SET balance = 150.00 WHERE id = 1;  -- commits
+/* T2 */ SELECT balance FROM accounts WHERE id = 1;          -- ?
+```
+<Explain>
+150.00. BEGIN doesn't take a snapshot; the first statement does. T1 committed before that, so it's in. T1's *next* commit (200.00) isn't: T2 reads 150.00 again.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>the run behind that predict. watch the <C k="meta">snapshot</C> under T2's name: there's none after BEGIN, and it's fixed from the first SELECT on.</>}>
+<TxLanes trace={firstStmt} />
+</Figure>
+
+snapshot isolation has two consequences you have to plan for. a write that would overwrite a row changed after your snapshot fails with `40001` instead of [losing an update](/learn/transactions/lost-updates), so every writer at this level needs a [retry loop](/learn/transactions/retry-loops). and it checks only for write-write conflicts on the same row, so [write skew](/learn/transactions/write-skew), two transactions writing different rows based on what the other one changed, gets through.
+
+## SERIALIZABLE is SERIALIZABLE
+
+snapshot isolation plus a record of what every transaction read. when the reads and writes of overlapping transactions form a pattern that no one-at-a-time order could produce, postgres fails one of them with 40001, sometimes at COMMIT. the guarantee is the standard's: if each transaction is correct alone, the mix is correct. the price is the retries, and a little bookkeeping. [serializable snapshot isolation](/learn/locking/ssi) is how it's built.
+
+## so which one?
+
+| level | each statement sees | stops | you must handle |
+| --- | --- | --- | --- |
+| READ COMMITTED (default) | everything committed before the statement began | dirty reads | lost updates, read and write skew, in your own code |
+| REPEATABLE READ | everything committed before the transaction's first statement | all but write skew | 40001 on write conflicts |
+| SERIALIZABLE | the same snapshot, plus read tracking | everything | 40001, more often, possibly at COMMIT |
+
+short transactions that touch a few known rows: READ COMMITTED, with the arithmetic in the UPDATE. reports and exports that read a lot: REPEATABLE READ (one consistent moment, never fails a read-only transaction). anything that checks a rule across rows before writing: SERIALIZABLE everywhere, with a retry loop. and if you move between databases, check what the names mean there: mysql's InnoDB, for one, defaults to REPEATABLE READ, reads plain SELECTs from a snapshot but takes locks on index ranges for writes and locking reads, so the same name behaves differently ([its manual](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)).
+
+<Gotcha title="the level is per transaction, and the default is a setting">
+`default_transaction_isolation` set in one session or one connection pool's init doesn't reach the cron job, the migration tool or the admin's psql. a transaction that runs at a lower level than you think doesn't fail, it just quietly lets anomalies through. if your correctness depends on SERIALIZABLE, set it on the database or the role, and check `SHOW transaction_isolation` inside a transaction once in a while.
+</Gotcha>
+
+<Interview q="how is REPEATABLE READ in postgres different from the standard's REPEATABLE READ?">
+the standard only requires that rows you've read don't change (no dirty or non-repeatable reads); phantoms are allowed. postgres implements it as snapshot isolation: the whole transaction reads from one snapshot taken at its first statement, so phantoms can't happen either. in exchange, a write to a row changed after that snapshot fails with 40001 instead of waiting and overwriting, and write skew is still possible. bonus point: postgres's READ UNCOMMITTED is READ COMMITTED, so only three levels really exist.
+</Interview>
+
+<Keylines>
+- the standard says what each level must prevent. a database may prevent more.
+- postgres: READ UNCOMMITTED = READ COMMITTED. dirty reads never happen.
+- REPEATABLE READ is snapshot isolation: one snapshot from the first statement, no phantoms, no protection from write skew.
+- REPEATABLE READ and SERIALIZABLE both answer conflicts with 40001. plan the retry.
+- pick by what your transaction decides: few known rows, READ COMMITTED; rules across rows, SERIALIZABLE.
+</Keylines>

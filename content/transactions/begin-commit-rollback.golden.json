@@ -1,0 +1,320 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b1a210ba595ea5ce": {
+      "db": "empty",
+      "sql": "SELECT pg_current_xact_id();\nSELECT pg_current_xact_id();\nBEGIN;\nSELECT pg_current_xact_id();\nSELECT pg_current_xact_id();\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_current_xact_id", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "f19f9c6efcc76172",
+          "rows": [
+            ["752"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_current_xact_id", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "2f929238b44b4efe",
+          "rows": [
+            ["753"]
+          ]
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_current_xact_id", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "6f35f063d1b0e50d",
+          "rows": [
+            ["754"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_current_xact_id", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "a8259bfc17c406a4",
+          "rows": [
+            ["754"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a9a261271328ed1"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "89e2b674c8497884": {
+      "db": "bank",
+      "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 10.00 WHERE id = 1;\nSAVEPOINT before_fee;\nUPDATE accounts SET balance = balance - 25.00 WHERE id = 1;\nROLLBACK TO SAVEPOINT before_fee;\nUPDATE accounts SET balance = balance + 10.00 WHERE id = 2;\nCOMMIT;\nSELECT id, owner, balance FROM accounts WHERE id IN (1, 2) ORDER BY id;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "SAVEPOINT",
+          "command": "SAVEPOINT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bd9a4934dd00cf92"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "982af26933a33534"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a25a386d4d4ec7b"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "7386e0a94e72c2aa"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "722a5aee5ca78144"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "0b603b0fc609a457",
+          "rows": [
+            ["1", "alice", "90.00"],
+            ["2", "bob", "110.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e253ce0c87fece40": {
+      "db": "bank",
+      "sql": "BEGIN;\nUPDATE accounts SET balance = balance + 50.00 WHERE id = 1;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 3;\nSELECT balance FROM accounts WHERE id = 1;\nCOMMIT;\nSELECT id, owner, balance FROM accounts WHERE id IN (1, 3) ORDER BY id;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23514",
+            "message": "new row for relation \"accounts\" violates check constraint \"accounts_balance_check\"",
+            "detail": "Failing row contains (3, carol, 0.00, -50.00, EUR, 0, 2023-01-01 09:10:00+00).",
+            "schema": "public",
+            "table": "accounts",
+            "constraint": "accounts_balance_check"
+          },
+          "digest": "61930ca9aa6231a1"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "25P02",
+            "message": "current transaction is aborted, commands ignored until end of transaction block"
+          },
+          "digest": "28a80be6a6ddbf26"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a25a386d4d4ec7b"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "1ad8ee4e9f781580",
+          "rows": [
+            ["1", "alice", "100.00"],
+            ["3", "carol", "0.00"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23514",
+        "message": "new row for relation \"accounts\" violates check constraint \"accounts_balance_check\"",
+        "detail": "Failing row contains (3, carol, 0.00, -50.00, EUR, 0, 2023-01-01 09:10:00+00).",
+        "schema": "public",
+        "table": "accounts",
+        "constraint": "accounts_balance_check",
+        "statement": 2
+      },
+      "txn": "I"
+    },
+    "ca44548ffbe0e5c0": {
+      "db": "bank",
+      "sql": "BEGIN;\nUPDATE accounts SET balance = balance + 50.00 WHERE id = 1;\nSAVEPOINT try_carol;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 3;\nROLLBACK TO SAVEPOINT try_carol;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 4;\nCOMMIT;\nSELECT id, owner, balance FROM accounts WHERE id IN (1, 3, 4) ORDER BY id;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "SAVEPOINT",
+          "command": "SAVEPOINT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bd9a4934dd00cf92"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23514",
+            "message": "new row for relation \"accounts\" violates check constraint \"accounts_balance_check\"",
+            "detail": "Failing row contains (3, carol, 0.00, -50.00, EUR, 0, 2023-01-01 09:10:00+00).",
+            "schema": "public",
+            "table": "accounts",
+            "constraint": "accounts_balance_check"
+          },
+          "digest": "35519efb69020f02"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a25a386d4d4ec7b"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "7386e0a94e72c2aa"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "722a5aee5ca78144"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "a98b7e50574afd67",
+          "rows": [
+            ["1", "alice", "150.00"],
+            ["3", "carol", "0.00"],
+            ["4", "dave", "999950.00"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23514",
+        "message": "new row for relation \"accounts\" violates check constraint \"accounts_balance_check\"",
+        "detail": "Failing row contains (3, carol, 0.00, -50.00, EUR, 0, 2023-01-01 09:10:00+00).",
+        "schema": "public",
+        "table": "accounts",
+        "constraint": "accounts_balance_check",
+        "statement": 3
+      },
+      "txn": "I"
+    }
+  }
+}

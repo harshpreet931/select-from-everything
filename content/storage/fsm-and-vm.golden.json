@@ -1,0 +1,303 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "781a039d3dea1d4f": {
+      "db": "lab",
+      "sql": "CREATE TABLE t (id int PRIMARY KEY, pad text);\nINSERT INTO t SELECT g, repeat('x', 200) FROM generate_series(1, 272) AS g ORDER BY g;\nSELECT blkno, avail FROM pg_freespace('t') ORDER BY blkno;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 272",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 272,
+          "digest": "810fbb0ed763aece"
+        },
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["avail", "int2", 21]
+          ],
+          "rowCount": 8,
+          "digest": "517a1587624c1b8c",
+          "rows": [
+            ["0", "128"],
+            ["1", "128"],
+            ["2", "128"],
+            ["3", "128"],
+            ["4", "128"],
+            ["5", "128"],
+            ["6", "128"],
+            ["7", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "87412f6fee5df322": {
+      "db": "lab",
+      "sql": "DELETE FROM t WHERE id BETWEEN 69 AND 102 OR id BETWEEN 171 AND 204;\nINSERT INTO t VALUES (1001, repeat('y', 200)) RETURNING ctid;\nSELECT blkno, avail FROM pg_freespace('t') ORDER BY blkno;",
+      "statements": [
+        {
+          "tag": "DELETE 68",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 68,
+          "digest": "b0cd2c93f17aa676"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["ctid", "tid", 27]
+          ],
+          "rowCount": 1,
+          "digest": "b1275b3a7249885a",
+          "rows": [
+            ["(8,1)"]
+          ]
+        },
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["avail", "int2", 21]
+          ],
+          "rowCount": 9,
+          "digest": "a68e0238b56a3e7c",
+          "rows": [
+            ["0", "128"],
+            ["1", "128"],
+            ["2", "128"],
+            ["3", "128"],
+            ["4", "128"],
+            ["5", "128"],
+            ["6", "128"],
+            ["7", "128"],
+            ["8", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aa57ae7d339d7968": {
+      "db": "lab",
+      "sql": "VACUUM t;\nSELECT blkno, avail FROM pg_freespace('t') ORDER BY blkno;\nINSERT INTO t VALUES (1002, repeat('y', 200)) RETURNING ctid;",
+      "statements": [
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b40b2a8273442d58"
+        },
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["avail", "int2", 21]
+          ],
+          "rowCount": 9,
+          "digest": "0dd385462aeadbe1",
+          "rows": [
+            ["0", "128"],
+            ["1", "128"],
+            ["2", "8160"],
+            ["3", "128"],
+            ["4", "128"],
+            ["5", "8160"],
+            ["6", "128"],
+            ["7", "128"],
+            ["8", "7904"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["ctid", "tid", 27]
+          ],
+          "rowCount": 1,
+          "digest": "18a660b41791a9d3",
+          "rows": [
+            ["(2,1)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "36128bb7aef79f2a": {
+      "db": "lab",
+      "sql": "SELECT pg_relation_size('t', 'main') AS main, pg_relation_size('t', 'fsm') AS fsm,\n       pg_relation_size('t', 'vm') AS vm;\nSELECT fsm_page_contents(get_raw_page('t', 'fsm', 2));",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["main", "int8", 20],
+            ["fsm", "int8", 20],
+            ["vm", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c65056644c9e3bc3",
+          "rows": [
+            ["73728", "24576", "8192"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["fsm_page_contents", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "e5fee75ee3e8124b",
+          "rows": [
+            ["0: 255\n1: 255\n3: 255\n7: 255\n15: 255\n31: 255\n63: 255\n127: 255\n255: 255\n511: 255\n512: 247\n1023: 255\n1024: 255\n1025: 247\n2047: 4\n2048: 255\n2049: 255\n2050: 4\n2051: 247\n4095: 4\n4096: 4\n4097: 255\n4098: 4\n4099: 4\n4100: 255\n4101: 4\n4102: 4\n4103: 247\nfp_next_slot: 3\n"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b5f39f7877918c5d": {
+      "db": "lab",
+      "sql": "SELECT blkno, all_visible, all_frozen FROM pg_visibility_map('t') ORDER BY blkno;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["all_visible", "bool", 16],
+            ["all_frozen", "bool", 16]
+          ],
+          "rowCount": 9,
+          "digest": "5d9b265e3ad15584",
+          "rows": [
+            ["0", "t", "f"],
+            ["1", "t", "f"],
+            ["2", "f", "f"],
+            ["3", "t", "f"],
+            ["4", "t", "f"],
+            ["5", "t", "t"],
+            ["6", "t", "f"],
+            ["7", "t", "f"],
+            ["8", "t", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "547ada2864cb730f": {
+      "db": "lab",
+      "sql": "UPDATE t SET pad = repeat('z', 200) WHERE id = 210 RETURNING ctid;\nSELECT blkno, all_visible FROM pg_visibility_map('t') WHERE NOT all_visible ORDER BY blkno;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": [
+            ["ctid", "tid", 27]
+          ],
+          "rowCount": 1,
+          "digest": "1ab4722714b28816",
+          "rows": [
+            ["(2,2)"]
+          ]
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["all_visible", "bool", 16]
+          ],
+          "rowCount": 2,
+          "digest": "532e5672329a9918",
+          "rows": [
+            ["2", "f"],
+            ["6", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5889f265a90af412": {
+      "db": "lab",
+      "sql": "SET enable_seqscan = off;\nSET enable_bitmapscan = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT count(*) FROM t WHERE id BETWEEN 1 AND 272;\nVACUUM t;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT count(*) FROM t WHERE id BETWEEN 1 AND 272;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c538f39e9cc44083",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  ->  Index Only Scan using t_pkey on t (actual rows=204.00 loops=1)"],
+            ["        Index Cond: ((id >= 1) AND (id <= 272))"],
+            ["        Heap Fetches: 35"],
+            ["        Index Searches: 1"]
+          ]
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b44fd9ee573101c9"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2ed9068072324c19",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  ->  Index Only Scan using t_pkey on t (actual rows=204.00 loops=1)"],
+            ["        Index Cond: ((id >= 1) AND (id <= 272))"],
+            ["        Heap Fetches: 0"],
+            ["        Index Searches: 1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

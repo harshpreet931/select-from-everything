@@ -1,0 +1,55 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/text-and-collation.scenario.sql",
+ "title": "'ab' stored as char(5), varchar(5) and text, byte by byte",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "pad": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"c","type":"bpchar"},{"name":"v","type":"varchar"},{"name":"t","type":"text"}]
+  }
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE pad (c char(5), v varchar(5), t text);\nINSERT INTO pad VALUES ('ab', 'ab', 'ab')",
+   "note": "one table, the same two letters in three types.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT pg_column_size(c) AS char_5, pg_column_size(v) AS varchar_5, pg_column_size(t) AS text,\n       octet_length(c) AS char_octets, length(c) AS char_length\nFROM pad",
+   "note": "the bytes each one takes in the row: a 1-byte length header, then the characters. char(5) stores its padding.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"char_5","type":"int4"},
+     {"name":"varchar_5","type":"int4"},
+     {"name":"text","type":"int4"},
+     {"name":"char_octets","type":"int4"},
+     {"name":"char_length","type":"int4"}
+    ],
+    "data": [["6","3","3","5","2"]]
+   }
+  }
+ ]
+}

@@ -1,0 +1,218 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b11086186dcbf34e": {
+      "db": "empty",
+      "sql": "CREATE TABLE seq (id int);\nCREATE INDEX seq_id ON seq (id);\nINSERT INTO seq SELECT g FROM generate_series(1, 100000) AS g;\nCREATE TABLE rnd (id int);\nCREATE INDEX rnd_id ON rnd (id);\nINSERT INTO rnd SELECT g FROM generate_series(1, 100000) AS g ORDER BY hashint4(g);\nCREATE TABLE built (id int);\nINSERT INTO built SELECT g FROM generate_series(1, 100000) AS g ORDER BY hashint4(g);\nCREATE INDEX built_id ON built (id);\nSELECT i AS index,\n       count(*) FILTER (WHERE s.type = 'l') AS leaves,\n       round(avg(s.live_items) FILTER (WHERE s.type = 'l')) AS avg_items,\n       round(100 - 100.0 * avg(s.free_size) FILTER (WHERE s.type = 'l') / 8160) AS pct_full,\n       pg_size_pretty(pg_relation_size(i)) AS size\nFROM unnest(ARRAY['seq_id', 'rnd_id', 'built_id']) AS i,\n     bt_multi_page_stats(i, 1, -1) AS s\nGROUP BY i\nORDER BY leaves;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "INSERT 0 100000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "c5e1a06b4dce2855"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9f84e5a720f8ae6b"
+        },
+        {
+          "tag": "INSERT 0 100000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "8df748eaabc8560a"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c59f0a4b06f18cd1"
+        },
+        {
+          "tag": "INSERT 0 100000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "8263b8bb3e06cf20"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "ee57d0f3d046115f"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["index", "text", 25],
+            ["leaves", "int8", 20],
+            ["avg_items", "numeric", 1700],
+            ["pct_full", "numeric", 1700],
+            ["size", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "0ddc123f1212ac6d",
+          "rows": [
+            ["built_id", "274", "366", "90", "2208 kB"],
+            ["seq_id", "274", "366", "90", "2208 kB"],
+            ["rnd_id", "318", "315", "77", "2560 kB"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4cbffec6b9f3dfb8": {
+      "db": "empty",
+      "sql": "CREATE TABLE t AS SELECT g AS id FROM generate_series(1, 100000) AS g;\nCREATE INDEX ff100 ON t (id) WITH (fillfactor = 100);\nCREATE INDEX ff90 ON t (id);\nCREATE INDEX ff50 ON t (id) WITH (fillfactor = 50);\nCREATE TABLE app (id int);\nCREATE INDEX app_ff100 ON app (id) WITH (fillfactor = 100);\nINSERT INTO app SELECT generate_series(1, 100000);\nSELECT i AS index, pg_relation_size(i) / 8192 AS pages,\n       round(avg(s.live_items) FILTER (WHERE s.type = 'l')) AS avg_items\nFROM unnest(ARRAY['ff100', 'ff90', 'ff50', 'app_ff100']) AS i,\n     bt_multi_page_stats(i, 1, -1) AS s\nGROUP BY i\nORDER BY pages, i;",
+      "statements": [
+        {
+          "tag": "SELECT 100000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "d6755cfae38fabe0"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "90488e4141c2d7df"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a3a51d1e75e9ec8c"
+        },
+        {
+          "tag": "INSERT 0 100000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "8f85b879759a3d59"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["index", "text", 25],
+            ["pages", "int8", 20],
+            ["avg_items", "numeric", 1700]
+          ],
+          "rowCount": 4,
+          "digest": "fedb03ccb2677f71",
+          "rows": [
+            ["app_ff100", "249", "406"],
+            ["ff100", "249", "406"],
+            ["ff90", "276", "366"],
+            ["ff50", "500", "203"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4905efdac68ce3cc": {
+      "db": "empty",
+      "sql": "CREATE TABLE late (id int);\nCREATE INDEX late_id ON late (id);\nINSERT INTO late SELECT g * 10 FROM generate_series(1, 100000) AS g;\nINSERT INTO late SELECT g * 100 + 5 FROM generate_series(1, 10000) AS g;\nSELECT count(*) FILTER (WHERE type = 'l') AS leaves,\n       round(avg(live_items) FILTER (WHERE type = 'l')) AS avg_items\nFROM bt_multi_page_stats('late_id', 1, -1);",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "INSERT 0 100000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "c5e1a06b4dce2855"
+        },
+        {
+          "tag": "INSERT 0 10000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "6b9e77a60a600fa4"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["leaves", "int8", 20],
+            ["avg_items", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "95224d0e0cf27b5f",
+          "rows": [
+            ["274", "402"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

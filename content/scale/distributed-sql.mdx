@@ -1,0 +1,86 @@
+import { ArchPick } from "@/components/figures/scale/ArchPick";
+import { CommitWait } from "@/components/figures/scale/CommitWait";
+
+{/* descriptions follow the cited papers and documentation; numbers are only the ones those
+    sources state (spanner's ε from Corbett et al. 2012, aurora's quorums from Verbitski et al.
+    2017). all three figures are drawn by hand or are models. */}
+
+<InShort>
+**distributed SQL** databases keep SQL and transactions but split the data into ranges, each replicated by its own consensus group, and run cross-range transactions on top (spanner, CockroachDB, YugabyteDB). **sharding extensions** spread ordinary postgres over many nodes (citus). **disaggregated storage** keeps one SQL engine and moves the storage into a replicated service shared by every instance (aurora, neon). each one decides differently which layer gets split.
+</InShort>
+
+## the picture
+
+you know how every chapter in this part ended with "and then you need something else"? [replicas](/learn/scale/read-replicas) don't scale writes, [sharding](/learn/scale/sharding) breaks joins and transactions, [two-phase commit](/learn/scale/two-phase-commit) blocks, and [consensus](/learn/scale/consensus) is a whole project. these systems are those pieces, assembled.
+
+think of a database as four layers stacked in one box: SQL on top, then transactions, then replication, then storage. a single postgres keeps all four on one machine. every system below cuts the stack somewhere different, and what it gives up follows from where it cut:
+
+<Figure wide caption={<>seven systems, four layers. pick one and see which layers run on one node, which are split across many, and which are a shared service.</>}>
+<ArchPick />
+</Figure>
+
+## split everything: spanner and its descendants
+
+Google's spanner (Corbett et al., OSDI 2012) splits the keyspace into pieces, and replicates each piece with its own Paxos group across data centres. a transaction that touches several pieces runs two-phase commit across their groups, and since every participant (and the coordinator) is itself a replicated group, the blocking problem of plain 2PC goes away: a failed leader is replaced, not waited for.
+
+the famous part is time. spanner wants **external consistency**, which is strict serializability: if T1 commits before T2 starts, T1's timestamp is smaller. its **TrueTime** API doesn't return a time, it returns an interval guaranteed to contain the real time, kept tight by GPS receivers and atomic clocks in each data centre. a commit takes the top of the interval as its timestamp and then **waits** until the interval has moved past it:
+
+<Figure wide caption={<>TrueTime's commit wait, as a model. drag ε, the clock uncertainty: the <C k="meta">interval</C> widens and the wait before a commit becomes visible grows with it, about 2ε.</>}>
+<CommitWait />
+</Figure>
+
+the paper reports ε varying between about 1 and 7 ms in their deployment, which is why commit wait is affordable there and why the clocks matter so much: wider uncertainty means slower commits, everywhere.
+
+**CockroachDB** has the same shape without special clocks: the keyspace is split into ranges, each replicated with raft, transactions are serializable by default, and timestamps come from hybrid logical clocks. instead of waiting out the uncertainty on every commit, it assumes clocks stay within a configured maximum offset, and a read that finds a value inside its uncertainty window restarts at a later timestamp. it speaks the postgres wire protocol, so postgres drivers connect to it.
+
+**YugabyteDB** takes postgres's query layer itself (its YSQL API reuses postgres code for parsing, planning and executing) and puts it on top of DocDB, a distributed document store whose tables are split into tablets, each replicated with raft. so SQL that runs on postgres mostly runs there, and what's underneath is a different engine.
+
+## shard postgres from the inside: citus
+
+citus is a postgres extension. one node, the coordinator, holds the metadata; workers are ordinary postgres servers holding shards as ordinary tables. a **distributed table** is split by a distribution column, a **reference table** is copied to every worker, and tables distributed on the same column are co-located so their joins stay on one worker. the coordinator rewrites each query into fragments for the workers, pushes down filters and partial aggregates, and combines the results. multi-node writes use two-phase commit. it's [sharding](/learn/scale/sharding) with the router, the planner and the rebalancer written for you, and every node is still postgres, with its own [streaming replication](/learn/wal/streaming-replication) for availability.
+
+## split the storage: aurora and neon
+
+the other family keeps one SQL engine (one writer) and rethinks the bottom of the stack.
+
+**aurora** (Verbitski et al., SIGMOD 2017) makes the log the database. the database instance doesn't write pages; it ships redo log records to a storage service, which keeps six copies of each piece of data across three availability zones, treats a write as durable at four of six and reads with three of six ([quorums](/learn/scale/consensus), w + r > n). the storage nodes build pages from the log themselves. read replicas attach to the same storage, so a replica doesn't keep its own copy, though it still has to keep its cache in step with the writer.
+
+**neon** separates postgres compute from storage in a similar spirit, with the parts named after what they do. postgres sends its WAL to **safekeepers**, a small group that agrees on it with a Paxos-style protocol, so a commit is durable once a quorum has it. **pageservers** read that WAL, keep each page's history, and serve any page as of any LSN back to compute; older data lives in object storage. because storage keeps history, a compute node can stop when idle and start on demand, and a **branch** is a new compute pointed at the same history from some LSN, made without copying data.
+
+<Figure wide caption={<>neon's write and read paths, drawn from its architecture docs. hover a stage.</>}>
+<Flow stages={[
+  { label: "compute", sub: "postgres", note: "runs queries and transactions as usual, but keeps no durable state of its own: its storage manager asks the network for pages." },
+  { label: "safekeepers", sub: "a Paxos-style quorum", note: "WAL is durable once a quorum of safekeepers has it. this replaces the local WAL disk." },
+  { label: "pageservers", sub: "WAL → pages", note: "they consume the WAL, keep page versions by LSN, and answer GetPage requests from compute." },
+  { label: "object storage", sub: "the long tail", note: "older layers of history are offloaded to cloud object storage." },
+]} />
+</Figure>
+
+<Quiz question="a team moves from one postgres to aurora PostgreSQL with one writer. what got easier?" options={["write throughput scales across nodes", "storage durability and adding read replicas", "cross-region strict serializability"]} answer={1}>
+<Explain>
+storage: six copies across three zones with quorum writes, and read replicas that share the storage instead of each needing a full copy. writes still go through one writer instance, so write throughput is still one machine's. scaling writes past one node needs the split-everything family or sharding.
+</Explain>
+</Quiz>
+
+## choosing, honestly
+
+- **one postgres, plus replicas and pooling**, goes much further than people expect, and it's the only option on this page with no distributed failure modes. start there.
+- **disaggregated storage** fixes durability, storage growth, replica cost and (for neon) idle compute and branching. it doesn't scale writes past one node.
+- **citus** scales postgres out when the workload has a clear distribution key (tenants, devices, users), and stays postgres underneath.
+- **distributed SQL** scales writes and survives losing a whole zone or region with no manual failover, at the price of a network round trip in places one machine wouldn't have one, and compatibility that's close to postgres rather than identical. the [PACELC](/learn/scale/cap-and-pacelc) trade-off, on every commit.
+
+<Gotcha title="'postgres-compatible' has levels">
+wire-protocol compatible (drivers connect), syntax compatible (your queries parse), and behaviour compatible (same isolation semantics, same extensions, same planner choices) are three different promises. CockroachDB speaks the protocol with its own SQL engine; YugabyteDB reuses postgres's query layer on a different storage engine; citus, aurora PostgreSQL and neon run postgres itself. test the queries and the isolation level you actually use.
+</Gotcha>
+
+<Interview q="how does spanner provide external consistency?">
+every piece of data is replicated by a Paxos group, and cross-group transactions use two-phase commit with replicated participants. for ordering, TrueTime returns an interval guaranteed to contain the true time; a transaction takes the interval's latest bound as its commit timestamp and waits until TrueTime's earliest bound has passed it before making the commit visible. any transaction that starts after that sees a later time, so timestamp order matches real-time order. bonus point: the wait is about twice the clock uncertainty, which the 2012 paper reports at roughly 1 to 7 ms, so tight clocks are a performance feature, not just a correctness one.
+</Interview>
+
+<Keylines>
+- distributed SQL: ranges, a consensus group per range, 2PC across them.
+- spanner orders commits by real time with TrueTime and commit wait.
+- citus shards postgres as an extension; every node is still postgres.
+- aurora and neon keep one writer and turn storage into a replicated service.
+- choose by what you need to scale: reads, storage, or writes.
+</Keylines>

@@ -1,0 +1,150 @@
+import { Selectivity } from "@/components/figures/optimizer/Selectivity";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/selectivity.pgtrace.json";
+
+{/* every estimate in the figures comes from traces/selectivity.scenario.sql, captured on PGlite
+    with the events dataset (`pnpm pgtrace <file> --engine=pglite --twice`), so it matches the
+    run buttons. the Selectivity figure redoes the planner's arithmetic for every captured point
+    and fails the build if one comes out different. */}
+
+export const combos = trace.steps[2].result.data;
+export const guesses = trace.steps[3].result.data;
+export const short = ["purchase", "user_id < 42", "purchase AND < 42", "purchase OR < 42", "NOT purchase", "signup AND user 1"];
+export const n = (s) => Number(s).toLocaleString("en-US");
+
+<InShort>
+before it can price a plan, the planner needs a row count for every WHERE. it turns each condition into a **selectivity** (the fraction of rows that pass) using what ANALYZE wrote down: the **most common values** with their exact frequencies, a **histogram** of everything else, and the number of distinct values.
+
+when there's nothing to go on, a function or an expression, it falls back to a fixed **default guess**: 0.005 for `=`, 1/3 for `<`.
+</InShort>
+
+## the picture
+
+you know how EXPLAIN says `rows=34` for a user who has 19 events, and `rows=34` again for one with 53? it isn't counting anything. it's reading a summary of the column and doing arithmetic on it.
+
+think of a census office that keeps two things about a town: a list of the 100 biggest families with their exact headcounts, and, for everyone else, a line of 100 people sorted by surname with a marker every 1%. ask "how many Garcias?" and if Garcia is on the big-family list, you get the exact number. if not, you get "an average-sized family". ask "how many surnames before M?" and they count the big families before M, then see how many 1% markers come before M, and guess the bit between two markers.
+
+that's `pg_stats` for `events.user_id`. pick a predicate and slide the value:
+
+<Figure wide caption={<>the <C k="meta">spikes</C> are user_id's 100 most common values, the <C k="meta">blocks</C> the histogram of the other 400: 100 buckets holding the same number of rows each, so a narrow block means dense values. slide the value and the part of the statistics the estimate reads goes <C k="hot">hot</C>. try = 1 (a spike), = 250 (no spike), = 501 (past the end), then the same values with &lt;, then the + 0 versions.</>}>
+<Selectivity trace={trace} />
+</Figure>
+
+every estimate in that figure is the planner's own, captured from EXPLAIN, and the arithmetic under it is redone for each one. if it didn't land on the planner's number, this page wouldn't build.
+
+## equality: the MCV list, or an even share
+
+ANALYZE keeps up to `default_statistics_target` (100) most common values per column, with the fraction of rows each one has:
+
+```sql run db=events
+SELECT (most_common_vals::text::int[])[1:5] AS top_5,
+       most_common_freqs[1:5] AS freqs,
+       array_length(most_common_freqs, 1) AS kept
+FROM pg_stats
+WHERE tablename = 'events' AND attname = 'user_id';
+```
+
+user 1 has 4.536% of the rows. for `user_id = 1` the estimate is that, times the row count:
+
+```sql run db=events
+EXPLAIN SELECT * FROM events WHERE user_id = 1;
+SELECT count(*) FROM events WHERE user_id = 1;
+```
+
+0.04536 × 25,000 = 1,134, and so is the count. on these datasets the statistics are exact (every table is under 30,000 rows, so ANALYZE reads all of it: [pg_stats and ANALYZE](/learn/optimizer/statistics) says why that's unusual), so an MCV hit is exact too.
+
+a value that isn't in the list gets an even share of what the list leaves over. the 100 MCVs cover 45.844% of the rows; the other 54.156% is spread over the other 400 distinct values:
+
+(1 − 0.45844 − 0) / (500 − 100) = 0.00135 → × 25,000 = 34 rows
+
+for user 250 (35 rows), user 333 (32) and user 150 (53) alike. and for user 501, who doesn't exist: equality never looks at the histogram, so the planner has no idea 501 is past the end.
+
+<Predict question="user_id = 250 and user_id = 333 both aren't MCVs. which gets the bigger estimate?" options={["250", "333", "the same"]} answer={2}>
+```sql
+EXPLAIN SELECT * FROM events WHERE user_id = 250;
+EXPLAIN SELECT * FROM events WHERE user_id = 333;
+```
+<Explain>
+the same: 34 rows each. outside the MCV list, an equality estimate is the leftover fraction divided by the number of leftover distinct values. it doesn't depend on the value at all, which is why a column whose rare values are very uneven (one has 1 row, another 5,000) needs a bigger MCV list (raise the column's statistics target).
+</Explain>
+</Predict>
+
+## ranges: count the spikes, then the buckets
+
+for `user_id < v`, two parts add up:
+
+- **the MCVs below v**, exactly: sum their frequencies.
+- **the histogram**, for the other 54.156%. its 101 bounds cut those rows into 100 buckets of equal size, so each full bucket below v is 1% of them. for the bucket v lands in, the planner assumes the values inside are spread evenly and takes the fraction of the way across: v = 250 sits in the bucket [246, 250), 100% across.
+
+```sql run db=events
+SELECT (histogram_bounds::text::int[])[46:49] AS around_250
+FROM pg_stats
+WHERE tablename = 'events' AND attname = 'user_id';
+EXPLAIN SELECT * FROM events WHERE user_id < 250;
+SELECT count(*) FROM events WHERE user_id < 250;
+```
+
+17,655 estimated, 17,665 real. step through the `<` values in the figure and the working shows each piece, including two small corrections postgres makes: `<` takes off one value's share (the histogram really answers `<=`), and an estimate outside the histogram is clamped to a sliver instead of 0 or 1, because the bounds may be out of date.
+
+<Deep title="why a histogram of the rest, and not of everything">
+the MCVs are taken out first, so the histogram only covers values that aren't common. otherwise user 1's 1,134 rows would eat four or five buckets on their own, and every bucket around them would be useless. postgres calls these equal-height (or equal-frequency) histograms: every bucket holds the same number of rows and the bounds move. the alternative, equal-width buckets, spends most of its buckets on empty ranges for skewed data like this.
+</Deep>
+
+## combining conditions
+
+a WHERE with several conditions gets one selectivity per condition, then:
+
+- `a AND b`: s(a) × s(b)
+- `a OR b`: s(a) + s(b) − s(a) × s(b)
+- `NOT a`: 1 − s(a)
+
+<Figure caption={<>estimated and real rows for combinations of two predicates on events, on a log scale. AND and OR come out close here because kind and user_id are nearly independent. the last one isn't: every user's first event is their signup, so user 1 has exactly one, and the planner multiplies its way to {n(combos[5][1])}.</>}>
+<Bars data={combos.flatMap((r, i) => [
+  { label: `${short[i]}: est`, value: Number(r[1]) },
+  { label: `${short[i]}: real`, value: Number(r[2]), tone: Number(r[1]) / Math.max(1, Number(r[2])) > 10 ? "dead" : "live" },
+])} log />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+the multiplication assumes the conditions are **independent**: knowing the kind tells you nothing about the user. when that's false the estimate can be off by orders of magnitude, which is the whole of [when estimates go wrong](/learn/optimizer/misestimates), and the fix is [extended statistics](/learn/optimizer/extended-statistics).
+
+## when there's nothing to go on
+
+statistics are per column. wrap the column in a function or an expression and the planner can't see through it, so it uses a constant from `selfuncs.h`:
+
+<Figure caption={<>conditions the column statistics don't cover. the guesses never look at the value: = gets 0.005 of the table, &lt; gets a third, a two-sided range 0.005. the BETWEEN on the bare column is there for contrast, and IS NULL reads null_frac.</>}>
+<ResultTable columns={[{ name: "predicate", type: "text" }, { name: "est", type: "int8" }, { name: "actual", type: "int8" }]} rows={guesses} rowTones={guesses.map((r) => (Math.max(Number(r[1]), Number(r[2])) / Math.max(1, Math.min(Number(r[1]), Number(r[2]))) >= 10 ? "dead" : null))} dense />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+the defaults, as postgres 18 defines them: `DEFAULT_EQ_SEL` 0.005, `DEFAULT_INEQ_SEL` 1/3, `DEFAULT_RANGE_INEQ_SEL` 0.005, `DEFAULT_MATCH_SEL` 0.005 for pattern matches, and `DEFAULT_NUM_DISTINCT` 200 when even the distinct count is unknown. `lower(kind) = 'view'` is a 121x miss: 125 guessed, 15,112 real. try it:
+
+```sql run db=events
+EXPLAIN SELECT * FROM events WHERE lower(kind) = 'view';
+EXPLAIN SELECT * FROM events WHERE kind = 'view';
+```
+
+two ways out. write the condition so it uses the bare column (`kind = 'view'`), or give the planner statistics on the expression. an [expression index](/learn/indexes/partial-and-expression) gets its own statistics at the next ANALYZE, and so does `CREATE STATISTICS` on an expression, without the index ([extended statistics](/learn/optimizer/extended-statistics)).
+
+<Gotcha title="the guess doesn't care about your data">
+the 125 above would be 125 on a table where every row is a view and on one with none. a query whose plan depends on a default guess is a plan picked at random, and it'll stay that way until the expression gets statistics. in EXPLAIN, a suspiciously round estimate (0.5% or a third of the table) is the tell.
+</Gotcha>
+
+<Quiz question={<>events has 25,000 rows. <code>WHERE props-&gt;&gt;'device' = 'ios'</code> is estimated at 125. where does 125 come from?</>} options={["the MCV list of props", "0.005 × 25,000", "1/200 of the distinct devices"]} answer={1}>
+<Explain>
+0.005 × 25,000, the default for an equality the planner has no statistics for. props has statistics as a whole jsonb value, but not for what `->>'device'` extracts from it, so the real 8,007 is invisible.
+</Explain>
+</Quiz>
+
+<Interview q="how does postgres estimate the number of rows a WHERE returns?">
+per condition, from pg_stats. equality with a most common value uses its stored frequency; any other value gets (1 − sum of MCV frequencies − null fraction) / (n_distinct − number of MCVs). a range adds the MCVs that satisfy it to a fraction of the equal-height histogram, interpolating linearly inside the bucket the constant falls in. conditions combine by multiplying (AND) or adding minus the overlap (OR), assuming independence. no statistics (a function, an expression) means a default: 0.005 for =, 1/3 for `<`. bonus point: the row count it multiplies by is reltuples scaled to the table's current size, and you check all of it with EXPLAIN ANALYZE, estimated vs actual rows.
+</Interview>
+
+<Keylines>
+- every condition becomes a selectivity, times the table's row count.
+- equality: an MCV's exact frequency, or an even share of what the MCVs leave over.
+- ranges: the MCVs that pass, plus histogram buckets, interpolated inside the last one.
+- AND multiplies, OR adds and subtracts the overlap. both assume independence.
+- no statistics (functions, expressions): 0.005 for =, 1/3 for `<`. a round estimate is a guess.
+</Keylines>

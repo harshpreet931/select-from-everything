@@ -1,0 +1,177 @@
+import { ForEachRow } from "@/components/figures/joins/ForEachRow";
+import { planOf, prov, resultOf } from "@/components/figures/joins/captured";
+import trace from "./traces/correlated.pgtrace.json";
+
+{/* the stepper and the plan read traces/correlated.scenario.sql, captured on PGlite: each inner
+    table is the inner query really run with that product's category filled in. the four queries
+    in the first figure are illustrations of where a subquery can go; each one runs further down. */}
+
+export const outer = resultOf(trace, 0);
+export const each = [1, 2, 3, 4].map((i) => resultOf(trace, i));
+export const whole = resultOf(trace, 5);
+export const plan = planOf(trace, 6);
+export const source = prov(trace);
+export const hl = (code, sub) => [{ from: code.indexOf(sub), to: code.indexOf(sub) + sub.length, tone: "hot" }];
+export const q1 = "SELECT name, price\nFROM products\nWHERE price > (SELECT avg(price) FROM products);";
+export const q2 = "SELECT count(*)\nFROM (SELECT customer_id, count(*) AS n\n      FROM orders GROUP BY customer_id) AS c\nWHERE n >= 20;";
+export const q3 = "SELECT count(*)\nFROM products\nWHERE id IN (SELECT product_id FROM order_items);";
+export const q4 = "SELECT p.name, p.price,\n       (SELECT round(avg(p2.price), 2) FROM products AS p2\n        WHERE p2.category = p.category) AS category_avg\nFROM products AS p;";
+
+<InShort>
+a **subquery** is a SELECT in parentheses, and it can go anywhere a value or a table can. a **scalar** subquery returns one value. a **table** subquery returns rows, for FROM or for IN. a **correlated** subquery refers to the outer row, so it gets a new answer for every row.
+</InShort>
+
+## the picture
+
+you know how you sometimes run one query, copy the number it gives you, and paste it into the next one? "what's the average price? 101.39. ok, which products cost more than 101.39?" a subquery is that, without the copy and paste: the first query goes inside the second, in parentheses, right where the number went.
+
+think of a sticky note with a little calculation on it, stuck onto a form where a value is supposed to go. the form doesn't care whether you wrote the number in or stuck a note there. postgres doesn't either: a subquery is just a way to say "the value (or the table) this query produces".
+
+<Figure wide caption={<>step through four places a subquery can go. what the <C k="hot">subquery</C> has to return depends on where it is: one value, a table, a list, or one value per outer row.</>}>
+<Slides>
+<Slide note="where a value goes: in a comparison. the subquery must return one row with one column. this is a scalar subquery.">
+<SqlPanel code={q1} marks={hl(q1, "(SELECT avg(price) FROM products)")} file="scalar.sql" />
+</Slide>
+<Slide note="where a table goes: in FROM. any number of rows and columns. the outer query treats it like a table (a derived table).">
+<SqlPanel code={q2} marks={hl(q2, "(SELECT customer_id, count(*) AS n\n      FROM orders GROUP BY customer_id)")} file="derived.sql" />
+</Slide>
+<Slide note="where a list goes: after IN. one column, any number of rows. the outer row is kept if its value is in the list.">
+<SqlPanel code={q3} marks={hl(q3, "(SELECT product_id FROM order_items)")} file="in.sql" />
+</Slide>
+<Slide note="a value per row: the subquery mentions p.category, a column of the outer query. so its answer depends on the outer row. that's a correlated subquery.">
+<SqlPanel code={q4} marks={hl(q4, "(SELECT round(avg(p2.price), 2) FROM products AS p2\n        WHERE p2.category = p.category)")} file="correlated.sql" />
+</Slide>
+</Slides>
+</Figure>
+
+## scalar subqueries: one value
+
+the products that cost more than the average product:
+
+```sql run db=shop
+SELECT round(avg(price), 2) AS avg_price FROM products;
+
+SELECT count(*) AS above_average
+FROM products
+WHERE price > (SELECT avg(price) FROM products);
+```
+
+the subquery runs once, comes back as one number, and the comparison uses it like a constant. a scalar subquery has to return at most one row with exactly one column, and postgres checks the row part while it runs:
+
+<Predict options={["the kitchen products", "an error", "no rows"]} answer={1}>
+```sql
+SELECT name
+FROM products
+WHERE price = (SELECT price FROM products WHERE category = 'kitchen');
+```
+<Explain>
+there are 19 kitchen products, so the subquery returns 19 prices, and `price = (19 values)` doesn't mean anything. postgres stops with `more than one row returned by a subquery used as an expression`. if you meant "equal to any of them", that's `IN (...)` or `= ANY (...)`.
+</Explain>
+</Predict>
+
+```sql run db=shop expect=error
+SELECT name
+FROM products
+WHERE price = (SELECT price FROM products WHERE category = 'kitchen');
+```
+
+zero rows is fine, though. a scalar subquery that finds nothing is NULL:
+
+```sql run db=shop
+SELECT (SELECT name FROM products WHERE id = 999) AS nobody;
+```
+
+## table subqueries: in FROM
+
+a subquery in FROM is a table that exists for one query, often called a **derived table**. it's how you filter on something that only exists after a GROUP BY, without HAVING, or stack one aggregate on top of another. how many customers have placed 20 orders or more?
+
+```sql run db=shop
+SELECT count(*) AS regulars
+FROM (SELECT customer_id, count(*) AS n
+      FROM orders
+      GROUP BY customer_id) AS c
+WHERE n >= 20;
+```
+
+the inner query makes one row per customer with their order count, the outer query counts the rows where that's 20 or more. `AS c` names the derived table. postgres 16 made that name optional <Since v={16} />, but most other databases still require one, and you'll want it the moment you join the derived table to anything. it's also exactly the "aggregate first" shape that fixes a [fan-out](/learn/joins/fan-out).
+
+## IN: a list from a query
+
+`x IN (subquery)` is true when `x` equals at least one value the subquery returns. which products have ever been sold?
+
+```sql run db=shop
+SELECT count(*) AS sold_with_in
+FROM products
+WHERE id IN (SELECT product_id FROM order_items);
+
+SELECT count(*) AS rows_with_join
+FROM products AS p
+JOIN order_items AS oi ON oi.product_id = p.id;
+```
+
+199 products, against 24,942 rows for the join. IN asks a yes-or-no question per product, so each product comes back once at most, however many order lines mention it. a join returns one row per matching pair. that difference has a name, the **semi join**, and a chapter: [EXISTS, semi joins and anti joins](/learn/joins/exists-semi-anti). its evil twin, `NOT IN`, has [a chapter of its own](/learn/joins/not-in-trap) for a reason.
+
+## correlated subqueries: a value per row
+
+the subqueries so far could run once on their own. this one can't: it mentions `p.category`, a column of the outer query, so it has no answer until it knows which outer row it's for. each product, next to the average price of its own category:
+
+<Figure wide caption={<>step through the outer rows. for each one, the inner query runs with that row's category filled in. the wooden train has no category, and <code>category = NULL</code> matches nothing, so its average is NULL.</>}>
+<ForEachRow outer={{ name: "products", columns: outer.columns, rows: outer.rows }} each={each} final={whole} label="product" hot={["'kitchen'", "'books'", "'audio'", "NULL"]} trace={source} />
+</Figure>
+
+```sql run db=shop
+SELECT p.id, p.name, p.price,
+       (SELECT round(avg(p2.price), 2)
+        FROM products AS p2
+        WHERE p2.category = p.category) AS category_avg
+FROM products AS p
+WHERE p.id IN (1, 3, 5, 7)
+ORDER BY p.id;
+```
+
+`p2` is a second alias for products, so the inner query's products and the outer query's products can be told apart. that's a self join's trick, used inside a subquery.
+
+"runs once per row" isn't a figure of speech. here's the plan for all 200 products:
+
+<Figure wide caption={<>the plan for the correlated query over every product. the Aggregate under the outer scan is the subquery, and its loops count is 200: once per product.</>}>
+<PlanTree plan={plan} show={["actual"]} />
+</Figure>
+
+the same plan as EXPLAIN prints it, where the subquery has its own label, `SubPlan 1`:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT p.id, p.name, p.price,
+       (SELECT round(avg(p2.price), 2)
+        FROM products AS p2
+        WHERE p2.category = p.category) AS category_avg
+FROM products AS p;
+```
+
+200 outer rows, 200 runs of the inner query, each scanning all 200 products again. that's fine for 200 rows and painful for 2 million. postgres can often rewrite IN and EXISTS subqueries into joins on its own, but a scalar subquery in the select list like this one usually stays a SubPlan. [how subqueries get planned](/learn/optimizer/subquery-planning) has the details, and the usual fix is the one from fan-out: aggregate once per category in a derived table, then join to it.
+
+<Gotcha title="the subquery that quietly uses the outer table">
+inside a subquery, a column name that doesn't exist in the subquery's own tables is looked up in the outer query. that's what makes correlation work. it's also what makes this a disaster:
+
+```sql run db=shop
+SELECT count(*) FROM orders
+WHERE customer_id IN (SELECT customer_id FROM customers WHERE city = 'London');
+
+SELECT count(*) FROM orders
+WHERE customer_id IN (SELECT id FROM customers WHERE city = 'London');
+```
+
+`customers` has no `customer_id` column, so in the first query postgres finds `orders.customer_id` outside and uses that. the IN becomes "is this order's customer_id equal to its own customer_id", which is true for every order: 10,000 instead of 794. no error. as a DELETE, it deletes the table. qualify columns inside subqueries (`c.id`, not `id`), and a typo becomes an error instead.
+</Gotcha>
+
+<Interview q="subquery or join: which one is faster?">
+it depends, and less than people think: postgres rewrites a lot of subqueries before it plans them. IN and EXISTS usually become semi joins, NOT EXISTS an anti join, and a simple derived table in FROM is merged into the outer query. what can't be rewritten (a scalar subquery per row, NOT IN) runs as a SubPlan, once per outer row or once as a hashed list. so compare plans, not syntax. bonus point: they aren't interchangeable anyway. a join returns a row per matching pair, `IN` returns each outer row at most once, so switching between them can change the answer, not just the speed.
+</Interview>
+
+<Keylines>
+- a subquery is a SELECT in parentheses, wherever a value or a table can go.
+- scalar subqueries return one value: more than one row is an error, zero rows is NULL.
+- a subquery in FROM is a derived table. IN takes a one-column list.
+- a correlated subquery uses the outer row, so it gets a new answer per row.
+- unqualified names in a subquery can silently resolve to the outer query.
+</Keylines>

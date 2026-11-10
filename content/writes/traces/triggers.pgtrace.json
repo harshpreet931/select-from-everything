@@ -1,0 +1,436 @@
+{
+ "v": 1,
+ "scenario": "content/writes/traces/triggers.scenario.sql",
+ "title": "triggers on bank: who fires when, an audit table, 20,000 rows row by row or all at once, and skipping no-op updates",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"owner","type":"text"},
+    {"name":"opening_balance","type":"numeric"},
+    {"name":"balance","type":"numeric"},
+    {"name":"currency","type":"bpchar"},
+    {"name":"version","type":"int4"},
+    {"name":"opened_at","type":"timestamptz"}
+   ]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "transfers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"from_id","type":"int4"},
+    {"name":"to_id","type":"int4"},
+    {"name":"amount","type":"numeric"},
+    {"name":"sent_at","type":"timestamptz"}
+   ]
+  },
+  "transfers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"transfers"},
+  "accounts_audit": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"account_id","type":"int4"},
+    {"name":"op","type":"text"},
+    {"name":"old_balance","type":"numeric"},
+    {"name":"new_balance","type":"numeric"}
+   ]
+  },
+  "accounts_audit_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts_audit"}
+ },
+ "base": {"xid":796,"lsn":29783528},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction, so the firing-order triggers disappear afterwards.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "CREATE TABLE fired (seq int GENERATED ALWAYS AS IDENTITY, trigger_when text, level text, account int);\nCREATE FUNCTION log_fire() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  INSERT INTO fired (trigger_when, level, account)\n  VALUES (TG_WHEN, TG_LEVEL, CASE WHEN TG_LEVEL = 'ROW' THEN NEW.id END);\n  IF TG_LEVEL = 'ROW' AND TG_WHEN = 'BEFORE' THEN RETURN NEW; END IF;\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER before_stmt BEFORE UPDATE ON accounts FOR EACH STATEMENT EXECUTE FUNCTION log_fire();\nCREATE TRIGGER before_row  BEFORE UPDATE ON accounts FOR EACH ROW       EXECUTE FUNCTION log_fire();\nCREATE TRIGGER after_row   AFTER  UPDATE ON accounts FOR EACH ROW       EXECUTE FUNCTION log_fire();\nCREATE TRIGGER after_stmt  AFTER  UPDATE ON accounts FOR EACH STATEMENT EXECUTE FUNCTION log_fire()",
+   "note": "four triggers on accounts that all write to one log: before and after, statement and row.",
+   "status": "ok",
+   "result": {"command":"CREATE TRIGGER","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = balance + 1 WHERE id IN (1, 2, 3)",
+   "note": "one UPDATE of three rows.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":3,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT seq, trigger_when, level, account FROM fired ORDER BY seq",
+   "note": "the order they fired in.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"seq","type":"int4"},
+     {"name":"trigger_when","type":"text"},
+     {"name":"level","type":"text"},
+     {"name":"account","type":"int4"}
+    ],
+    "data": [
+     ["1","BEFORE","STATEMENT",null],
+     ["2","BEFORE","ROW","1"],
+     ["3","BEFORE","ROW","2"],
+     ["4","BEFORE","ROW","3"],
+     ["5","AFTER","ROW","1"],
+     ["6","AFTER","ROW","2"],
+     ["7","AFTER","ROW","3"],
+     ["8","AFTER","STATEMENT",null]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "CREATE TABLE accounts_audit (\n  id          int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  account_id  int NOT NULL,\n  op          text NOT NULL,\n  old_balance numeric(12,2),\n  new_balance numeric(12,2)\n);\nCREATE FUNCTION audit_accounts() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  IF TG_OP = 'DELETE' THEN\n    INSERT INTO accounts_audit (account_id, op, old_balance) VALUES (OLD.id, TG_OP, OLD.balance);\n  ELSIF TG_OP = 'INSERT' THEN\n    INSERT INTO accounts_audit (account_id, op, new_balance) VALUES (NEW.id, TG_OP, NEW.balance);\n  ELSE\n    INSERT INTO accounts_audit (account_id, op, old_balance, new_balance) VALUES (NEW.id, TG_OP, OLD.balance, NEW.balance);\n  END IF;\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER audit AFTER INSERT OR UPDATE OR DELETE ON accounts\nFOR EACH ROW EXECUTE FUNCTION audit_accounts()",
+   "note": "an audit table, and a row trigger that writes to it on every insert, update and delete.",
+   "status": "ok",
+   "result": {"command":"CREATE TRIGGER","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT id, account_id, op, old_balance, new_balance FROM accounts_audit ORDER BY id",
+   "note": "the audit table starts empty.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 0,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"account_id","type":"int4"},
+     {"name":"op","type":"text"},
+     {"name":"old_balance","type":"numeric"},
+     {"name":"new_balance","type":"numeric"}
+    ],
+    "data": []
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = balance + CASE id WHEN 1 THEN -50.00 ELSE 50.00 END\nWHERE id IN (1, 2)",
+   "note": "alice pays bob 50.00, in one statement that updates two rows. the trigger fires once per row.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT id, account_id, op, old_balance, new_balance FROM accounts_audit ORDER BY id",
+   "note": "two audit rows, old and new balance side by side.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"account_id","type":"int4"},
+     {"name":"op","type":"text"},
+     {"name":"old_balance","type":"numeric"},
+     {"name":"new_balance","type":"numeric"}
+    ],
+    "data": [["1","1","UPDATE","100.00","50.00"],["2","2","UPDATE","100.00","150.00"]]
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "DELETE FROM accounts WHERE id = 3",
+   "note": "carol closes her account.",
+   "status": "ok",
+   "result": {"command":"DELETE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SELECT id, account_id, op, old_balance, new_balance FROM accounts_audit ORDER BY id",
+   "note": "a DELETE has only an old row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"account_id","type":"int4"},
+     {"name":"op","type":"text"},
+     {"name":"old_balance","type":"numeric"},
+     {"name":"new_balance","type":"numeric"}
+    ],
+    "data": [["1","1","UPDATE","100.00","50.00"],["2","2","UPDATE","100.00","150.00"],["3","3","DELETE","0.00",null]]
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "INSERT INTO accounts (id, owner, opening_balance, balance, opened_at)\nVALUES (1001, 'erin', 25.00, 25.00, '2026-05-01 10:00+00')",
+   "note": "erin opens one.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "SELECT id, account_id, op, old_balance, new_balance FROM accounts_audit ORDER BY id",
+   "note": "an INSERT has only a new row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"account_id","type":"int4"},
+     {"name":"op","type":"text"},
+     {"name":"old_balance","type":"numeric"},
+     {"name":"new_balance","type":"numeric"}
+    ],
+    "data": [
+     ["1","1","UPDATE","100.00","50.00"],
+     ["2","2","UPDATE","100.00","150.00"],
+     ["3","3","DELETE","0.00",null],
+     ["4","1001","INSERT",null,"25.00"]
+    ]
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "DROP TRIGGER audit ON accounts",
+   "note": "the audit trigger goes, so the next scenes don't write to it.",
+   "status": "ok",
+   "result": {"command":"DROP TRIGGER","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction for the row-trigger run.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "CREATE SEQUENCE trigger_calls;\nCREATE TABLE transfers_audit (transfer_id bigint, old_amount numeric(12,2), new_amount numeric(12,2));\nCREATE FUNCTION audit_transfer_row() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM nextval('trigger_calls');\n  INSERT INTO transfers_audit VALUES (OLD.id, OLD.amount, NEW.amount);\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER audit_transfers AFTER UPDATE ON transfers\nFOR EACH ROW EXECUTE FUNCTION audit_transfer_row()",
+   "note": "a row-level trigger on transfers that copies every changed row into an audit table, and counts its own calls.",
+   "status": "ok",
+   "result": {"command":"CREATE TRIGGER","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "UPDATE transfers SET amount = amount + 1",
+   "note": "every transfer, 20,000 rows.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":20000,"columns":[],"data":[]}
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "SELECT nextval('trigger_calls') - 1 AS calls, (SELECT count(*) FROM transfers_audit) AS audit_rows",
+   "note": "the trigger function ran 20,000 times, and ran 20,000 single-row INSERTs.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"calls","type":"int8"},{"name":"audit_rows","type":"int8"}],
+    "data": [["20000","20000"]]
+   }
+  },
+  {
+   "i": 18,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 19,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction for the statement-trigger run.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 20,
+   "session": "T1",
+   "sql": "CREATE SEQUENCE trigger_calls;\nCREATE TABLE transfers_audit (transfer_id bigint, old_amount numeric(12,2), new_amount numeric(12,2));\nCREATE FUNCTION audit_transfer_stmt() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM nextval('trigger_calls');\n  INSERT INTO transfers_audit\n  SELECT o.id, o.amount, n.amount FROM old_rows AS o JOIN new_rows AS n USING (id);\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER audit_transfers AFTER UPDATE ON transfers\nREFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows\nFOR EACH STATEMENT EXECUTE FUNCTION audit_transfer_stmt()",
+   "note": "the same audit as a statement-level trigger: REFERENCING gives it every old and new row of the statement as two tables.",
+   "status": "ok",
+   "result": {"command":"CREATE TRIGGER","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 21,
+   "session": "T1",
+   "sql": "UPDATE transfers SET amount = amount + 1",
+   "note": "every transfer, 20,000 rows.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":20000,"columns":[],"data":[]}
+  },
+  {
+   "i": 22,
+   "session": "T1",
+   "sql": "SELECT nextval('trigger_calls') - 1 AS calls, (SELECT count(*) FROM transfers_audit) AS audit_rows",
+   "note": "one call, one INSERT ... SELECT, the same 20,000 audit rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"calls","type":"int8"},{"name":"audit_rows","type":"int8"}],
+    "data": [["1","20000"]]
+   }
+  },
+  {
+   "i": 23,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 24,
+   "session": "T1",
+   "sql": "SELECT id, currency, ctid, xmin FROM accounts WHERE id IN (1, 2, 4) ORDER BY id",
+   "note": "three accounts: where each version lives (ctid) and which transaction wrote it (xmin).",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"currency","type":"bpchar"},
+     {"name":"ctid","type":"tid"},
+     {"name":"xmin","type":"xid"}
+    ],
+    "data": [["1","EUR","(9,49)","800"],["2","EUR","(9,50)","800"],["4","EUR","(0,4)","752"]]
+   }
+  },
+  {
+   "i": 25,
+   "session": "T1",
+   "sql": "UPDATE accounts SET currency = currency",
+   "note": "an UPDATE that changes nothing: currency = currency, on every account.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1000,"columns":[],"data":[]}
+  },
+  {
+   "i": 26,
+   "session": "T1",
+   "sql": "SELECT id, currency, ctid, xmin FROM accounts WHERE id IN (1, 2, 4) ORDER BY id",
+   "note": "every row has a new ctid and a new xmin anyway: a whole new version was written, 1,000 times.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"currency","type":"bpchar"},
+     {"name":"ctid","type":"tid"},
+     {"name":"xmin","type":"xid"}
+    ],
+    "data": [["1","EUR","(18,92)","806"],["2","EUR","(18,93)","806"],["4","EUR","(0,108)","806"]]
+   }
+  },
+  {
+   "i": 27,
+   "session": "T1",
+   "sql": "CREATE TRIGGER skip_noop BEFORE UPDATE ON accounts\nFOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()",
+   "note": "a BEFORE UPDATE trigger running the built-in suppress_redundant_updates_trigger().",
+   "status": "ok",
+   "result": {"command":"CREATE TRIGGER","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 28,
+   "session": "T1",
+   "sql": "UPDATE accounts SET currency = currency",
+   "note": "the same no-op UPDATE. the trigger sees new = old, returns NULL, and the row is skipped. UPDATE 0.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":0,"columns":[],"data":[]}
+  },
+  {
+   "i": 29,
+   "session": "T1",
+   "sql": "SELECT id, currency, ctid, xmin FROM accounts WHERE id IN (1, 2, 4) ORDER BY id",
+   "note": "nothing written: same ctids, same xmins.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"currency","type":"bpchar"},
+     {"name":"ctid","type":"tid"},
+     {"name":"xmin","type":"xid"}
+    ],
+    "data": [["1","EUR","(18,92)","806"],["2","EUR","(18,93)","806"],["4","EUR","(0,108)","806"]]
+   }
+  },
+  {
+   "i": 30,
+   "session": "T1",
+   "sql": "UPDATE accounts SET currency = 'USD' WHERE id = 4",
+   "note": "a real change still goes through.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 31,
+   "session": "T1",
+   "sql": "SELECT id, currency, ctid, xmin FROM accounts WHERE id IN (1, 2, 4) ORDER BY id",
+   "note": "one new version, for dave.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"currency","type":"bpchar"},
+     {"name":"ctid","type":"tid"},
+     {"name":"xmin","type":"xid"}
+    ],
+    "data": [["1","EUR","(18,92)","806"],["2","EUR","(18,93)","806"],["4","USD","(0,111)","809"]]
+   }
+  }
+ ],
+ "db": "bank"
+}

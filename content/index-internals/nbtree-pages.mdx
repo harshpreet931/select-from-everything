@@ -1,0 +1,174 @@
+import { IndexPage } from "@/components/figures/index-internals/IndexPage";
+import trace from "./traces/orders-pkey.pgtrace.json";
+
+{/* the tree figure reads traces/orders-pkey.scenario.sql (PGlite, the shop dataset as the
+    site seeds it). every number in the prose and in the page figures comes from the run
+    blocks' golden, nbtree-pages.golden.json. */}
+
+<InShort>
+a postgres b-tree is a file of 8 KB pages. page 0 is the **metapage**, which says where the **root** is. every other page is a root, inner or leaf page with the same layout: a header, line pointers, index tuples, and a 16-byte **special space** holding the page's level and its left and right neighbours. a non-rightmost page's first item is its **high key**. pageinspect's `bt_metap`, `bt_page_stats` and `bt_page_items` read all of it.
+</InShort>
+
+## the picture
+
+you know the [B+tree shape](/learn/index-internals/b-plus-trees): separators on top, keys in linked leaves. that's the drawing. on disk it's just a numbered list of pages in one file, and the tree lives in pointers between them: downlinks that name a child page, sibling links that name a neighbour.
+
+think of a binder of loose sheets (the index file). sheet 0 is a sticky note on the cover (the metapage): "the table of contents is on sheet 3". the contents sheet (the root) says which sheet each range starts on. every sheet also has a footer (the special space) with "previous sheet, next sheet", so you can flip through in order even though the sheets were filed in whatever order they were written.
+
+here's a real one: the primary key of shop's `orders`, 10,000 ids.
+
+<Figure wide caption={<>orders_pkey: a root (page 3) over 28 leaves, drawn with a few keys per page. every leaf but the last ends in its <C k="meta">high key</C>, and every page links to its <C k="ref">right neighbour</C>. notice the page numbers: leaves 1 and 2, then the root, then leaves 4 to 29.</>}>
+<BTree trace={trace} select="orders_pkey" collapse={4} pageCollapse={4} />
+</Figure>
+
+page 3 is the root because of how CREATE INDEX builds: it writes leaves left to right, and when leaf 2 fills it starts the level above on the next free page. the page numbers say nothing about the order, only the links do.
+
+## the metapage
+
+```sql run db=shop ext=pageinspect session=pk
+SELECT * FROM bt_metap('orders_pkey');
+```
+
+page 0 never holds keys. `root` is 3 and `level` is 1: the root is one level above the leaves, so this is a two-level tree, and a lookup reads page 0, page 3 and one leaf. `fastroot` is a shortcut for trees whose top levels have shrunk to a single page each after deletions; here it's the root itself. `allequalimage` says every key type in the index can be compared byte for byte, which is what lets the index [deduplicate](/learn/index-internals/dedup-and-bottom-up-deletion). (`magic` and `version` are a format stamp: 340322 is nbtree, and version 4 is the format since postgres 12.)
+
+## every page at once
+
+`bt_multi_page_stats` <Since v={16} /> reads a range of pages (`-1` means to the end):
+
+```sql run session=pk rows=6
+SELECT blkno, type, live_items, avg_item_size, free_size,
+       btpo_prev AS prev, btpo_next AS next, btpo_level AS level
+FROM bt_multi_page_stats('orders_pkey', 1, -1)
+ORDER BY blkno;
+```
+
+28 leaves (`l`) with 367 items each and the root (`r`) with 28, one per leaf. each full leaf has 808 bytes free: CREATE INDEX filled them to the default leaf **fillfactor** of 90 and stopped, so the first inserts after it have somewhere to go. the last leaf, page 29, is the leftover: 118 items. the `prev` and `next` columns are the sibling links, and they're the true order: 1 → 2 → 4 → 5 → … → 29.
+
+<Predict question="leaf 1 of orders_pkey has 367 items. how many order ids does it hold?" options={["367", "366", "368"]} answer={1}>
+```sql
+SELECT live_items FROM bt_page_stats('orders_pkey', 1);  -- 367
+```
+<Explain>
+366. item 1 on every page except the rightmost one on its level is the high key: a copy of the first key of the next page, kept as an upper bound, pointing at no row. the rightmost leaf has no high key, so its 118 items are 118 ids. 27 × 366 + 118 = 10,000.
+</Explain>
+</Predict>
+
+## inside a leaf
+
+a b-tree page has the same skeleton as a [heap page](/learn/storage/the-page): line pointers growing down from the 24-byte header, tuples growing up from the end, free space in between. the end is different: 16 bytes of special space that heap pages leave empty.
+
+```sql run session=pk
+SELECT p.blkno, h.lower, h.upper, h.special, s.live_items, s.free_size, s.btpo_flags
+FROM (VALUES (1), (3), (29)) AS p(blkno),
+     page_header(get_raw_page('orders_pkey', p.blkno)) AS h,
+     bt_page_stats('orders_pkey', p.blkno) AS s
+ORDER BY p.blkno;
+```
+
+<Figure caption={<>three pages of orders_pkey, to scale. a full leaf is mostly index tuples (16 bytes each) and <C k="ref">line pointers</C> (4 bytes each); the root is nearly empty; the last leaf is about a third full. all three end in the same 16 bytes of <C k="meta">special space</C>.</>}>
+<IndexPage
+  pages={[
+    { label: "leaf, page 1 · 367 items", lower: 1492, upper: 2304, special: 8176 },
+    { label: "root, page 3 · 28 items", lower: 136, upper: 7736, special: 8176 },
+    { label: "rightmost leaf, page 29 · 118 items", lower: 496, upper: 6288, special: 8176 },
+  ]}
+  provenance="real output, postgres 18.6 (PGlite 0.5.12) · the run block above"
+/>
+</Figure>
+
+the arithmetic is exact: 24 bytes of header plus 367 line pointers of 4 bytes is 1,492, which is `lower`. 367 tuples of 16 bytes is 5,872, and 8,176 minus that is 2,304, which is `upper`. a 16-byte tuple is an 8-byte index tuple header (the heap address, plus flags and a length) and the int4 key padded to 8. (`free_size` is 4 bytes less than upper minus lower: room for one more line pointer is held back.) `btpo_flags` is 1 for a leaf and 2 for the root. the special space holds `btpo_prev`, `btpo_next`, the level, those flags, and a cycle id that VACUUM uses to notice pages that split under it.
+
+now the items themselves:
+
+```sql run session=pk
+SELECT itemoffset, ctid, itemlen, htid, data
+FROM bt_page_items('orders_pkey', 1)
+WHERE itemoffset <= 3 OR itemoffset = 367
+ORDER BY itemoffset;
+```
+
+item 1 is the high key: `6f 01 00 00` is 367 (little-endian, padded to 8 bytes), and it has no `htid` because it isn't a row. items 2 to 367 are ids 1 to 366, each with the heap address of its row in `htid`. (on a leaf, `ctid` is that same address. on a high key it's not an address, and on a posting-list tuple, below, it means something else again, which is why pageinspect shows `htid` too.)
+
+## inside an inner page
+
+```sql run session=pk
+SELECT itemoffset, ctid AS downlink, itemlen, data
+FROM bt_page_items('orders_pkey', 3)
+WHERE itemoffset <= 4 OR itemoffset = 28
+ORDER BY itemoffset;
+```
+
+<Figure caption={<>the root's items in slot order. slot 1 is the <C k="ref">minus infinity</C> downlink to page 1, with no key. every other item is a separator and the page it starts.</>}>
+<IndexPage
+  items={[
+    { text: "−∞ → page 1", kind: "minus" },
+    { text: "367 → page 2" },
+    { text: "733 → page 4" },
+    { text: "1099 → page 5" },
+    { text: "…", kind: "more" },
+    { text: "9883 → page 29", slot: 28 },
+  ]}
+  itemsLabel="root, page 3"
+  provenance="real output, postgres 18.6 (PGlite 0.5.12) · the run block above"
+/>
+</Figure>
+
+on an inner page `ctid` is the downlink: the block number of a child page (the offset part is unused). item 1 is an 8-byte tuple with empty data: the "minus infinity" key, smaller than everything, so there's nothing to store. the root has no high key, because it's the rightmost page on its level (it's the only one). every separator is the first id on its child: 367, 733 (`dd 02`), 1,099 (`4b 04`), each 366 apart.
+
+## many rows, one key
+
+ids are unique. a column like `status` isn't: 10,000 orders, six values.
+
+```sql run session=pk
+CREATE INDEX orders_status ON orders (status);
+SELECT blkno, type, live_items, avg_item_size, free_size
+FROM bt_multi_page_stats('orders_status', 1, -1)
+ORDER BY blkno;
+SELECT itemoffset, itemlen, cardinality(tids) AS rows, htid, left(data, 20) AS data
+FROM bt_page_items('orders_status', 1)
+ORDER BY itemoffset;
+```
+
+ten pages for 10,000 rows, and each leaf holds about 10 items. most of them are 808 bytes: **posting list** tuples, one key followed by a sorted array of 130 heap addresses (`tids`). `delivered` covers most of the table, so it takes dozens of them, spread over several leaves. that's deduplication, and what it saves is in [deduplication and bottom-up deletion](/learn/index-internals/dedup-and-bottom-up-deletion).
+
+<Figure caption={<>leaf 1 of orders_status in slot order: a <C k="meta">high key</C>, then <C k="ref">posting lists</C> of up to 130 row addresses each. the high key carries a heap address too: the boundary between leaf 1 and the next falls in the middle of the delivered rows.</>}>
+<IndexPage
+  items={[
+    { text: "delivered (6,104)", kind: "high" },
+    { text: "cancelled", kind: "posting", n: 130 },
+    { text: "cancelled", kind: "posting", n: 130 },
+    { text: "cancelled", kind: "posting", n: 57 },
+    { text: "delivered", kind: "posting", n: 130 },
+    { text: "delivered", kind: "posting", n: 130 },
+    { text: "…", kind: "more" },
+    { text: "delivered", kind: "posting", n: 130, slot: 10 },
+  ]}
+  itemsLabel="orders_status, leaf page 1"
+  provenance="real output, postgres 18.6 (PGlite 0.5.12) · the run block above"
+/>
+</Figure>
+
+look at the high key: `delivered`, with an `htid` of (6,104). since postgres 12 the heap address is part of the key, as a last tiebreaker column, so even equal values have one exact place in the order and a page boundary can fall between two rows with the same status. that's what lets a b-tree find one duplicate's entry again when [VACUUM](/learn/mvcc/vacuum) comes to remove it, instead of scanning every `delivered` entry.
+
+<Gotcha title="block numbers aren't tree order">
+it's tempting to read `bt_page_items('idx', 1)`, then 2, then 3, and think you're walking the index. you aren't: page 3 here is the root, and after a few [splits](/learn/index-internals/page-splits) the leaves are scattered all over the file. follow `btpo_next`. and `itemoffset` 1 is a key only on a rightmost page; everywhere else it's the high key.
+</Gotcha>
+
+<Deep title="the functions, in one place">
+<Defs>
+<dt>bt_metap(index)</dt><dd>page 0: root, level, fastroot, allequalimage.</dd>
+<dt>bt_page_stats(index, blkno)</dt><dd>one page: type (r, i, l, or d for deleted), live and dead items, free space, prev, next, level, flags.</dd>
+<dt>bt_multi_page_stats(index, from, count)</dt><dd>the same for a run of pages, <code>-1</code> for all of them. postgres 16+.</dd>
+<dt>bt_page_items(index, blkno)</dt><dd>every item on a page: itemoffset, ctid, itemlen, nulls, vars, data (the key's bytes), dead (the LP_DEAD hint), htid, tids.</dd>
+<dt>page_header(get_raw_page(index, blkno))</dt><dd>the generic header: lower, upper, special, the page LSN and checksum.</dd>
+<dt>bt_index_check(index)</dt><dd>from amcheck: verifies key order within and across pages, under a light lock.</dd>
+</Defs>
+</Deep>
+
+<Keylines>
+- page 0 is the metapage: it names the root and the tree's height.
+- every page has a header, line pointers, tuples, and 16 bytes of special space with its level and both sibling links.
+- item 1 of a non-rightmost page is the high key, an upper bound that points at no row.
+- an inner page's first item is the key-less "minus infinity" downlink.
+- repeated keys are stored once with a posting list of heap addresses, and the heap address is part of the key.
+</Keylines>

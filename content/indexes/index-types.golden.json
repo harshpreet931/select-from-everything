@@ -1,0 +1,129 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "3148c3e265c8071a": {
+      "db": "empty",
+      "sql": "SELECT amname,\n       pg_indexam_has_property(oid, 'can_order') AS sorted,\n       pg_indexam_has_property(oid, 'can_unique') AS can_unique,\n       pg_indexam_has_property(oid, 'can_multi_col') AS multicolumn,\n       pg_indexam_has_property(oid, 'can_include') AS include\nFROM pg_am\nWHERE amtype = 'i'\nORDER BY amname;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["amname", "name", 19],
+            ["sorted", "bool", 16],
+            ["can_unique", "bool", 16],
+            ["multicolumn", "bool", 16],
+            ["include", "bool", 16]
+          ],
+          "rowCount": 6,
+          "digest": "03f94891805b6714",
+          "rows": [
+            ["brin", "f", "f", "t", "f"],
+            ["btree", "t", "t", "t", "t"],
+            ["gin", "f", "f", "t", "f"],
+            ["gist", "f", "f", "t", "t"],
+            ["hash", "f", "f", "f", "f"],
+            ["spgist", "f", "f", "f", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "370ef2072422aa1d": {
+      "db": "empty",
+      "sql": "SELECT am.amname AS method, opf.opfname AS family,\n       string_agg(DISTINCT op.oprname, ' ' ORDER BY op.oprname) AS operators\nFROM pg_amop AS ao\nJOIN pg_am AS am ON am.oid = ao.amopmethod\nJOIN pg_opfamily AS opf ON opf.oid = ao.amopfamily\nJOIN pg_operator AS op ON op.oid = ao.amopopr\nWHERE opf.opfname IN ('integer_ops', 'text_ops', 'text_pattern_ops', 'array_ops',\n                      'jsonb_ops', 'jsonb_path_ops', 'range_ops', 'tsvector_ops', 'integer_minmax_ops')\nGROUP BY am.amname, opf.opfname\nORDER BY am.amname, opf.opfname;",
+      "statements": [
+        {
+          "tag": "SELECT 22",
+          "command": "SELECT",
+          "columns": [
+            ["method", "name", 19],
+            ["family", "name", 19],
+            ["operators", "text", 25]
+          ],
+          "rowCount": 22,
+          "digest": "f8bcb505c09a36a4",
+          "rows": [
+            ["brin", "integer_minmax_ops", "< <= = > >="],
+            ["btree", "array_ops", "< <= = > >="],
+            ["btree", "integer_ops", "< <= = > >="],
+            ["btree", "jsonb_ops", "< <= = > >="],
+            ["btree", "range_ops", "< <= = > >="],
+            ["btree", "text_ops", "< <= = > >="],
+            ["btree", "text_pattern_ops", "= ~<=~ ~<~ ~>=~ ~>~"],
+            ["btree", "tsvector_ops", "< <= = > >="],
+            ["gin", "array_ops", "&& <@ = @>"],
+            ["gin", "jsonb_ops", "? ?& ?| @> @? @@"],
+            ["gin", "jsonb_path_ops", "@> @? @@"],
+            ["gin", "tsvector_ops", "@@ @@@"],
+            ["gist", "range_ops", "&& &< &> -|- << <@ = >> @>"],
+            ["gist", "tsvector_ops", "@@"],
+            ["hash", "array_ops", "="],
+            ["hash", "integer_ops", "="],
+            ["hash", "jsonb_ops", "="],
+            ["hash", "range_ops", "="],
+            ["hash", "text_ops", "="],
+            ["hash", "text_pattern_ops", "="],
+            ["spgist", "range_ops", "&& &< &> -|- << <@ = >> @>"],
+            ["spgist", "text_ops", "< <= = > >= ^@ ~<=~ ~<~ ~>=~ ~>~"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "977cf7409d0f8747": {
+      "db": "shop",
+      "sql": "CREATE INDEX products_tags ON products USING gin (tags);\nSET enable_seqscan = off;\nEXPLAIN (COSTS OFF) SELECT id FROM products WHERE 'steel' = ANY(tags);\nEXPLAIN (COSTS OFF) SELECT id FROM products WHERE tags @> ARRAY['steel'];",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "3a8a3e9e3d26f52e",
+          "rows": [
+            ["Seq Scan on products"],
+            ["  Disabled: true"],
+            ["  Filter: ('steel'::text = ANY (tags))"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "cbd6de7b3779db58",
+          "rows": [
+            ["Bitmap Heap Scan on products"],
+            ["  Recheck Cond: (tags @> '{steel}'::text[])"],
+            ["  ->  Bitmap Index Scan on products_tags"],
+            ["        Index Cond: (tags @> '{steel}'::text[])"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

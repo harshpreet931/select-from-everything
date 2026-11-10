@@ -1,0 +1,229 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5d2bcdd539e11786": {
+      "db": "empty",
+      "sql": "CREATE TABLE k1 AS SELECT generate_series(1, 1000) AS id;\nCREATE TABLE k100 AS SELECT generate_series(1, 100000) AS id;\nCREATE TABLE k1m AS SELECT generate_series(1, 1000000) AS id;\nCREATE INDEX k1_id ON k1 (id);\nCREATE INDEX k100_id ON k100 (id);\nCREATE INDEX k1m_id ON k1m (id);\nSELECT i AS index, m.level + 1 AS levels,\n       pg_relation_size(i) / 8192 AS pages\nFROM unnest(ARRAY['k1_id', 'k100_id', 'k1m_id']) AS i,\n     bt_metap(i) AS m\nORDER BY pages;",
+      "statements": [
+        {
+          "tag": "SELECT 1000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "327b5d75819d5100"
+        },
+        {
+          "tag": "SELECT 100000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "f77dcf5db8cdbb31"
+        },
+        {
+          "tag": "SELECT 1000000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 1000000,
+          "digest": "137162fef2fae066"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9f84e5a720f8ae6b"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a3a51d1e75e9ec8c"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["index", "text", 25],
+            ["levels", "int8", 20],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "5f886012f3545e0f",
+          "rows": [
+            ["k1_id", "2", "5"],
+            ["k100_id", "2", "276"],
+            ["k1m_id", "3", "2745"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3f25507efe19e498": {
+      "db": "empty",
+      "sql": "CREATE TABLE k1m AS SELECT generate_series(1, 1000000) AS id;\nCREATE INDEX k1m_id ON k1m (id);\nVACUUM ANALYZE k1m;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id FROM k1m WHERE id = 777777;",
+      "statements": [
+        {
+          "tag": "SELECT 1000000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 1000000,
+          "digest": "f918ce50ad20f270"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c974f9299f9460f6"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "6be53535c0d8dbbb",
+          "rows": [
+            ["Index Only Scan using k1m_id on k1m (actual rows=1.00 loops=1)"],
+            ["  Index Cond: (id = 777777)"],
+            ["  Heap Fetches: 0"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared hit=1 read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=11"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "12dd41e280588df8": {
+      "db": "empty",
+      "sql": "CREATE TABLE t (id int);\nINSERT INTO t SELECT generate_series(1, 200);\nCREATE INDEX t_id ON t (id) WITH (fillfactor = 10);\nSELECT root, level FROM bt_metap('t_id');\nSELECT itemoffset, ctid AS downlink, data\nFROM bt_page_items('t_id', 3)\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 200",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 200,
+          "digest": "8127430ed77774c7"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["root", "int8", 20],
+            ["level", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "2f313e50d5e91f40",
+          "rows": [
+            ["3", "1"]
+          ]
+        },
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["downlink", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 6,
+          "digest": "2f17bf3707f794cf",
+          "rows": [
+            ["1", "(1,0)", ""],
+            ["2", "(2,1)", "27 00 00 00 00 00 00 00"],
+            ["3", "(4,1)", "4d 00 00 00 00 00 00 00"],
+            ["4", "(5,1)", "73 00 00 00 00 00 00 00"],
+            ["5", "(6,1)", "99 00 00 00 00 00 00 00"],
+            ["6", "(7,1)", "bf 00 00 00 00 00 00 00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b3ccef9f10b4d674": {
+      "db": "empty",
+      "sql": "SELECT itemoffset, ctid, htid, data\nFROM bt_page_items('t_id', 1)\nWHERE itemoffset <= 3 OR itemoffset >= 38\nORDER BY itemoffset;\nSELECT blkno, type, live_items, btpo_prev AS prev, btpo_next AS next\nFROM bt_multi_page_stats('t_id', 1, -1)\nORDER BY blkno;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["htid", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "154dc1f3ebd868fe",
+          "rows": [
+            ["1", "(0,1)", null, "27 00 00 00 00 00 00 00"],
+            ["2", "(0,1)", "(0,1)", "01 00 00 00 00 00 00 00"],
+            ["3", "(0,2)", "(0,2)", "02 00 00 00 00 00 00 00"],
+            ["38", "(0,37)", "(0,37)", "25 00 00 00 00 00 00 00"],
+            ["39", "(0,38)", "(0,38)", "26 00 00 00 00 00 00 00"]
+          ]
+        },
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["type", "char", 18],
+            ["live_items", "int4", 23],
+            ["prev", "int8", 20],
+            ["next", "int8", 20]
+          ],
+          "rowCount": 7,
+          "digest": "c829f14b1f679790",
+          "rows": [
+            ["1", "l", "39", "0", "2"],
+            ["2", "l", "39", "1", "4"],
+            ["3", "r", "6", "0", "0"],
+            ["4", "l", "39", "2", "5"],
+            ["5", "l", "39", "4", "6"],
+            ["6", "l", "39", "5", "7"],
+            ["7", "l", "10", "6", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

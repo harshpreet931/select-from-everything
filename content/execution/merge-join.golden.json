@@ -1,0 +1,86 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0be310a7afe1e68a": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.id, o.status, oi.line_no, oi.qty\nFROM orders AS o JOIN order_items AS oi ON oi.order_id = o.id\nORDER BY o.id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5e7d949b91bb2739",
+          "rows": [
+            ["Merge Join (actual rows=24942.00 loops=1)"],
+            ["  Merge Cond: (o.id = oi.order_id)"],
+            ["  Buffers: shared hit=6 read=335"],
+            ["  ->  Index Scan using orders_pkey on orders o (actual rows=10000.00 loops=1)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=3 read=109"],
+            ["  ->  Index Scan using order_items_pkey on order_items oi (actual rows=24942.00 loops=1)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=3 read=226"],
+            ["Planning:"],
+            ["  Buffers: shared hit=88 read=14 dirtied=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a804635618f28c05": {
+      "db": "shop",
+      "sql": "SET enable_hashjoin = off;\nSET enable_nestloop = off;\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT p.name, oi.qty\nFROM order_items AS oi JOIN products AS p ON p.id = oi.product_id;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b18e694552a6939f",
+          "rows": [
+            ["Merge Join (actual rows=24942.00 loops=1)"],
+            ["  Merge Cond: (oi.product_id = p.id)"],
+            ["  Buffers: shared read=164"],
+            ["  ->  Sort (actual rows=24942.00 loops=1)"],
+            ["        Sort Key: oi.product_id"],
+            ["        Sort Method: quicksort  Memory: 1097kB"],
+            ["        Buffers: shared read=159"],
+            ["        ->  Seq Scan on order_items oi (actual rows=24942.00 loops=1)"],
+            ["              Buffers: shared read=159"],
+            ["  ->  Sort (actual rows=199.00 loops=1)"],
+            ["        Sort Key: p.id"],
+            ["        Sort Method: quicksort  Memory: 24kB"],
+            ["        Buffers: shared read=5"],
+            ["        ->  Seq Scan on products p (actual rows=200.00 loops=1)"],
+            ["              Buffers: shared read=5"],
+            ["Planning:"],
+            ["  Buffers: shared hit=165 read=9"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

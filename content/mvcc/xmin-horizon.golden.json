@@ -1,0 +1,107 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "79ee577b4101fbde": {
+      "db": "lab",
+      "sql": "BEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT count(*) FROM accounts;\nSELECT backend_xid, backend_xmin, state FROM pg_stat_activity WHERE backend_xmin IS NOT NULL;\nCOMMIT;\nSELECT backend_xid, backend_xmin, state FROM pg_stat_activity WHERE backend_xmin IS NOT NULL;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "3c20bd21079ece53",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["backend_xid", "xid", 28],
+            ["backend_xmin", "xid", 28],
+            ["state", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "7bbc23902bf744c1",
+          "rows": [
+            [null, "753", "active"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7f3480ce95d80d83"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["backend_xid", "xid", 28],
+            ["backend_xmin", "xid", 28],
+            ["state", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "58992a1223e65173",
+          "rows": [
+            [null, "753", "active"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d2cfe69cad19c535": {
+      "db": "lab",
+      "sql": "SHOW idle_in_transaction_session_timeout;\nSET idle_in_transaction_session_timeout = '5min';\nSHOW idle_in_transaction_session_timeout;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["idle_in_transaction_session_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "723f01e882f805bc",
+          "rows": [
+            ["0"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["idle_in_transaction_session_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "119b19327202e2ff",
+          "rows": [
+            ["5min"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

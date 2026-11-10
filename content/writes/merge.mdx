@@ -1,0 +1,192 @@
+import { TableSteps } from "@/components/figures/writes/TableSteps";
+import { framesOf } from "@/components/figures/writes/frames";
+import { runOf } from "@/components/figures/writes/lanes";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/merge.pgtrace.json";
+import mergeRace from "./traces/merge-race.pgtrace.json";
+import upsertRace from "./traces/upsert-race.pgtrace.json";
+
+{/* traces/merge.scenario.sql (PGlite, shop) has the book feed, the MERGE clause by clause, and
+    the books before and after. the race is two real sessions on a native postgres 18.6:
+    traces/merge-race.scenario.sql, next to upsert's ON CONFLICT race for comparison. */}
+
+export const sync = framesOf(trace, [
+  { label: "before", state: 1 },
+  { label: "MERGE", stmt: 9, state: 10 },
+], "sku");
+export const tone = (r) => ({ ...r, tones: r.rows.map((x) => (x[0] === "INSERT" ? "live" : x[0] === "DELETE" ? "dead" : "hot")) });
+export const clauses = {
+  "MATCHED": tone(resultOf(trace, 3)),
+  "+ NOT MATCHED": tone(resultOf(trace, 6)),
+  "+ NOT MATCHED BY SOURCE": tone(resultOf(trace, 9)),
+  "BY SOURCE, no AND": tone(resultOf(trace, 13)),
+};
+export const races = {
+  MERGE: runOf(mergeRace, { ok: false, what: "lost delivery", text: "T2's MERGE had already decided on its INSERT. when T1 committed, it hit the unique index instead of switching to WHEN MATCHED: 23505." }),
+  "INSERT ... ON CONFLICT": runOf(upsertRace, { ok: true, what: "lost delivery", text: "the same race with ON CONFLICT: T2 waits, finds T1's committed row, and updates it. qty 8." }),
+};
+export const source = prov(trace);
+
+<InShort>
+**MERGE** compares a source with a target table, row by row on a join condition, and says what to do with each kind of row: **WHEN MATCHED** (in both), **WHEN NOT MATCHED** (only in the source) and, since postgres 17, **WHEN NOT MATCHED BY SOURCE** (only in the target). each can UPDATE, DELETE, INSERT or DO NOTHING.
+
+it's the standard's sync statement <Since v={15} />. it is not a concurrency-safe upsert: that's still `INSERT ... ON CONFLICT`.
+</InShort>
+
+## the picture
+
+you know the nightly job that takes a supplier's file and makes your table match it? update what changed, add what's new, retire what's gone. people write that as three statements and a prayer. MERGE is the one statement for it.
+
+think of checking a delivery against the shop shelf. each item on the delivery note and each item on the shelf gets paired up by sku. a pair (matched) might need a new price tag. a note item with no shelf spot (not matched) goes on the shelf. a shelf item that's not on the note (not matched by source) gets a "discontinued" sticker.
+
+<Figure wide caption={<>shop's 12 books before and after one MERGE with a supplier's list of 10. two prices change (<C k="hot">hot</C>), two new books arrive (<C k="live">live</C>), four books missing from the list are marked discontinued.</>}>
+<TableSteps frames={sync} table="products, the books" file="merge.sql" trace={source} />
+</Figure>
+
+every block here runs on a fresh copy of shop, so nothing you do sticks. the supplier's list is a table of its own:
+
+```sql run db=shop session=feed title="feed.sql"
+CREATE TABLE feed (sku text PRIMARY KEY, name text NOT NULL, price numeric(10,2) NOT NULL);
+INSERT INTO feed VALUES
+  ('BOO-0003', 'the art of sql',     32.00),
+  ('BOO-0028', 'bamboo cookbook',    17.50),
+  ('BOO-0053', 'mini notebook',     153.60),
+  ('BOO-0054', 'compact novel',      69.00),
+  ('BOO-0060', 'travel field guide', 67.89),
+  ('BOO-0097', 'deluxe notebook',   114.68),
+  ('BOO-0120', 'large cookbook',     16.60),
+  ('BOO-0142', 'deluxe cookbook',   128.41),
+  ('BOO-0201', 'the sql cookbook',   24.00),
+  ('BOO-0202', 'sql antipatterns',   38.00);
+```
+
+## the clauses
+
+the whole statement, once:
+
+```sql run session=feed
+WITH m AS (
+  MERGE INTO products AS p
+  USING feed AS f ON p.sku = f.sku
+  WHEN MATCHED AND p.price <> f.price THEN
+    UPDATE SET price = f.price
+  WHEN NOT MATCHED THEN
+    INSERT (sku, name, category, price) VALUES (f.sku, f.name, 'books', f.price)
+  WHEN NOT MATCHED BY SOURCE AND p.category = 'books' THEN
+    UPDATE SET discontinued = true
+  RETURNING merge_action() AS action, p.sku, old.price AS old_price, new.price AS new_price
+)
+SELECT * FROM m ORDER BY action, sku;
+```
+
+read it top to bottom. `MERGE INTO` names the target, `USING` the source (a table, a query, a VALUES list), `ON` how rows pair up. then the WHEN clauses, and the action for each:
+
+| clause | the row is | actions allowed |
+| --- | --- | --- |
+| `WHEN MATCHED` | in both: the ON condition found a pair | UPDATE, DELETE, DO NOTHING |
+| `WHEN NOT MATCHED [BY TARGET]` | only in the source | INSERT, DO NOTHING |
+| `WHEN NOT MATCHED BY SOURCE` <Since v={17} /> | only in the target | UPDATE, DELETE, DO NOTHING |
+
+each clause can carry an `AND condition`, and the clauses are tried in the order you wrote them: the first one whose condition holds wins, and no row gets more than one action. six of the matched books had the same price, so their clause's `AND p.price <> f.price` was false and, with no other MATCHED clause to try, they were left alone. that's how 10 feed rows and 12 books come out as 8 actions: 2 updates, 2 inserts, 4 discontinued.
+
+`RETURNING` <Since v={17} /> with `merge_action()` says which action each row got, and old and new <Since v={18} /> work like they do [everywhere else](/learn/writes/returning-old-and-new). MERGE inside WITH, as above, is how you sort what it returns.
+
+<Figure wide caption={<>add the clauses one at a time and watch what MERGE returns: <C k="hot">updates</C> and <C k="live">inserts</C>. the last option drops <code>AND p.category = 'books'</code> from the BY SOURCE clause. a feed of books doesn't mention the 188 products that aren't books either, so they get discontinued too.</>}>
+<RunPick
+  options={[{ key: "clauses", values: ["MATCHED", "+ NOT MATCHED", "+ NOT MATCHED BY SOURCE", "BY SOURCE, no AND"] }]}
+  runs={clauses}
+  hot={["WHEN NOT MATCHED BY SOURCE AND p.category = 'books'", "WHEN NOT MATCHED BY SOURCE THEN", "WHEN NOT MATCHED THEN"]}
+  file="merge.sql"
+  maxRows={10}
+  trace={source}
+/>
+</Figure>
+
+<Gotcha title="NOT MATCHED BY SOURCE means the whole target">
+"not in the source" is judged against the entire target table, not against the part of it you had in mind. a feed of books says nothing about the toys, so every toy is "not matched by source". limit the clause with an AND (`AND p.category = 'books'`), every time you write one.
+</Gotcha>
+
+## order matters
+
+because the first true clause wins, an early, narrower clause shadows a later one. here: never lower a price (do nothing), otherwise take the feed's price. (this runs on a fresh shop with the same feed, not after the merge above.)
+
+```sql hidden db=shop session=order
+CREATE TABLE feed (sku text PRIMARY KEY, name text NOT NULL, price numeric(10,2) NOT NULL);
+INSERT INTO feed VALUES
+  ('BOO-0003', 'the art of sql',     32.00),
+  ('BOO-0028', 'bamboo cookbook',    17.50),
+  ('BOO-0053', 'mini notebook',     153.60),
+  ('BOO-0054', 'compact novel',      69.00),
+  ('BOO-0060', 'travel field guide', 67.89),
+  ('BOO-0097', 'deluxe notebook',   114.68),
+  ('BOO-0120', 'large cookbook',     16.60),
+  ('BOO-0142', 'deluxe cookbook',   128.41),
+  ('BOO-0201', 'the sql cookbook',   24.00),
+  ('BOO-0202', 'sql antipatterns',   38.00);
+```
+
+```sql run session=order
+MERGE INTO products AS p
+USING feed AS f ON p.sku = f.sku
+WHEN MATCHED AND f.price < p.price THEN
+  DO NOTHING
+WHEN MATCHED AND f.price > p.price THEN
+  UPDATE SET price = f.price;
+```
+
+`MERGE 1`: bamboo cookbook's price went up from 16.90 to 17.50, compact novel's would have gone down and was skipped, and DO NOTHING doesn't count. put an unconditional clause first and postgres catches the dead code for you:
+
+```sql run session=feed expect=error
+MERGE INTO products AS p
+USING feed AS f ON p.sku = f.sku
+WHEN MATCHED THEN DO NOTHING
+WHEN MATCHED AND f.price > p.price THEN UPDATE SET price = f.price;
+```
+
+<Predict options={["one of the two prices", "an error", "both, one after another"]} answer={1}>
+```sql
+-- the source has two rows for the same book
+MERGE INTO products AS p
+USING (VALUES ('BOO-0003', 29.00), ('BOO-0003', 35.00)) AS f (sku, price)
+ON p.sku = f.sku
+WHEN MATCHED THEN UPDATE SET price = f.price;
+```
+<Explain>
+an error: `MERGE command cannot affect row a second time` (SQLSTATE 21000). a target row may be changed at most once per MERGE, and with two candidates postgres won't pick. [UPDATE ... FROM](/learn/writes/update-and-delete), given the same source, silently uses one of them. deduplicate the source first.
+</Explain>
+</Predict>
+
+```sql run db=shop expect=error
+MERGE INTO products AS p
+USING (VALUES ('BOO-0003', 29.00), ('BOO-0003', 35.00)) AS f (sku, price)
+ON p.sku = f.sku
+WHEN MATCHED THEN UPDATE SET price = f.price;
+```
+
+## MERGE is not an upsert
+
+a MERGE with a MATCHED UPDATE and a NOT MATCHED INSERT looks exactly like an upsert. alone in the database, it behaves like one. with someone else inserting the same key at the same moment, it doesn't:
+
+<Figure wide caption={<>two real sessions on a postgres 18.6 server deliver the same new sku. switch between MERGE and INSERT ... ON CONFLICT and step through. both make T2 wait for T1. only one of them has a plan for what to do after the wait.</>}>
+<SessionLanes sessions={["T1", "T2"]} options={[{ key: "how", label: "statement", values: ["MERGE", "INSERT ... ON CONFLICT"] }]} runs={races} side="db" />
+</Figure>
+
+MERGE joins first and decides each row's action from what it saw. T2 saw no TEA-02 (T1's wasn't committed), so it chose INSERT, and when the unique index made it wait and T1 committed, the INSERT failed. the manual says so directly: MERGE doesn't go back and re-evaluate its MATCHED clauses after a concurrent insert, and it suggests `INSERT ... ON CONFLICT` when that matters. ON CONFLICT is built around the unique index, so it can switch to the update after the wait. ([INSERT ... ON CONFLICT](/learn/writes/upsert) has that race step by step.)
+
+so: MERGE for batch syncs, where one job owns the table for a while, or where a retry is fine. ON CONFLICT for upserts that many sessions run at once.
+
+<Deep title="what's standard and what's postgres">
+MERGE is in the SQL standard (since SQL:2003), and postgres supports it since 15. the manual's compatibility notes list what postgres adds on top: `BY SOURCE` and `BY TARGET`, the `DO NOTHING` action, `RETURNING`, and a WITH clause in front. sql server [has the same](https://learn.microsoft.com/en-us/sql/t-sql/statements/merge-transact-sql) `WHEN NOT MATCHED BY SOURCE` clause. the [release notes for 17](https://www.postgresql.org/docs/17/release-17.html) list both BY SOURCE and RETURNING with merge_action().
+</Deep>
+
+<Interview q="when would you use MERGE instead of INSERT ... ON CONFLICT?">
+MERGE when you're syncing a table to a source: it can update, insert and delete in one statement (deleting or flagging rows missing from the source is the part ON CONFLICT can't do at all), the match condition can be any join, not just a unique key, and it's standard SQL. ON CONFLICT when concurrent sessions upsert single keys: it's driven by a unique index, so under concurrency it waits for the other inserter and then updates, while MERGE can fail with a unique violation. bonus point: MERGE errors (21000) if two source rows match one target row, which is a feature: UPDATE ... FROM would silently pick one.
+</Interview>
+
+<Keylines>
+- MERGE pairs source and target rows with ON, then runs the first WHEN clause that's true for each pair.
+- MATCHED: in both. NOT MATCHED: only in the source. NOT MATCHED BY SOURCE (pg 17): only in the target.
+- BY SOURCE judges the whole target table: limit it with an AND.
+- a target row can change only once: duplicate source rows are an error, not a coin toss.
+- for concurrent upserts, ON CONFLICT is the safe one. MERGE can fail with 23505.
+</Keylines>

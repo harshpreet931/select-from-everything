@@ -1,0 +1,92 @@
+import { PrecedenceLab } from "@/components/figures/locking/PrecedenceLab";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* a theory chapter: every figure is the textbook model, drawn by hand, and says so. the
+    postgres facts it points at are captured in the chapters it links to. */}
+
+<InShort>
+a **schedule** is the order the operations of concurrent transactions actually ran in. it's **serializable** if it has the same effect as running the transactions one at a time, in some order. the test everyone uses: two operations **conflict** if they touch the same item from different transactions and one of them writes. draw an edge for every conflict, and the schedule is **conflict serializable** exactly when that **precedence graph** has no cycle.
+</InShort>
+
+## the picture
+
+you know how every isolation level is defined by "anomalies it prevents"? that's a list of symptoms. serializability is the definition of healthy: whatever happened, it must be explainable as *some* one-at-a-time order.
+
+think of two cooks sharing one recipe card for a sauce. each step is "read the card" or "write a change on it". if one cook does all their steps and then the other, fine. if they interleave, the result is fine only if it matches one of those two orders. the precedence graph is the record of who had to go first, step by step.
+
+here's the classic broken one, with values. A is alice's balance, 100. T1 adds 10, T2 adds 30:
+
+<Figure caption={<>a schedule in lanes, values on the side. both read A = 100 before either writes, so T2's write replaces T1's: 130 instead of 140. no one-at-a-time order gives 130. this is the textbook model, not a postgres run (postgres's version of it is in <a href="/learn/transactions/lost-updates">lost updates</a>).</>}>
+<SessionLanes
+  sessions={["T1", "T2"]}
+  side="db"
+  sideTitle="the item"
+  provenance="drawn by hand · the textbook lost update schedule"
+  steps={[
+    { ops: ["R(A) → 100", null], db: { A: 100 }, note: "T1 reads A: 100." },
+    { ops: [null, "R(A) → 100"], db: { A: 100 }, note: "T2 reads A too: 100. so far nothing conflicts, two reads never do." },
+    { ops: [{ sql: "W(A) = 110", tone: "hot" }, null], db: { A: 110 }, note: "T1 writes 100 + 10. this conflicts with T2's read before it: T2 → T1 (T2's read has to come before T1's write)." },
+    { ops: [null, { sql: "W(A) = 130", tone: "dead" }], db: { A: 130 }, note: "T2 writes 100 + 30. this conflicts with T1's read and write before it: T1 → T2. edges both ways: a cycle." },
+    { ops: ["COMMIT", "COMMIT"], db: { A: 130 }, note: "130. serially it'd be 140 either way: T1 then T2, or T2 then T1." },
+  ]}
+/>
+</Figure>
+
+## conflicts
+
+only some pairs of operations care about their order. swap two reads of the same item and nobody can tell. swap a read and a write of the same item and the reader sees a different value. swap two writes and a different value survives.
+
+<Figure caption={<>when two operations from different transactions on the <em>same</em> item conflict. operations on different items never do.</>}>
+<ResultTable columns={["", "then R(x)", "then W(x)"]} rows={[["R(x)", "no conflict", "conflict (rw)"], ["W(x)", "conflict (wr)", "conflict (ww)"]]} footer="none" />
+<Provenance drawn="the textbook definition" />
+</Figure>
+
+two schedules are **conflict equivalent** if every conflicting pair is in the same order in both. you can turn one into the other by swapping adjacent non-conflicting operations, one swap at a time. a schedule is **conflict serializable** if it's conflict equivalent to some serial schedule.
+
+## the precedence graph
+
+checking every serial order would mean n! of them. instead: one node per transaction, and an edge Ti → Tj whenever an operation of Ti conflicts with a *later* operation of Tj. Ti had to come first. a cycle says Ti must come before Tj and Tj before Ti, which no serial order can do. no cycle: sort the graph topologically, and that's your equivalent serial order.
+
+play with it. pick a schedule and move operations up and down:
+
+<Figure wide caption={<>reorder the operations. swapping two that don't conflict never changes the graph. swapping a conflicting pair flips its edge. the verdict below the graph is the cycle test: an edge on a <C k="dead">cycle</C> means not serializable, no cycle gives the <C k="live">serial order</C> it's equivalent to.</>}>
+<PrecedenceLab />
+</Figure>
+
+try "lost update": move T2's read below T1's write and the edge T2 → T1 flips to T1 → T2, the cycle is gone, and the schedule is equivalent to T1 then T2. try "three": a cycle T1 → T2 → T3 → T1 of length three, which no pair of transactions shows on its own.
+
+<Quiz question="schedule: R1(A) W1(A) R2(A) R2(B) R1(B) W1(B). is it conflict serializable?" options={["yes, as T1 then T2", "yes, as T2 then T1", "no: there's a cycle"]} answer={2}>
+<Explain>
+no. W1(A) before R2(A) gives T1 → T2 (T2 read A after T1 wrote it). R2(B) before W1(B) gives T2 → T1 (T2 read B before T1 wrote it). T2 saw T1's new A and the old B: a state that never existed in any serial order. that's read skew, and the graph catches it as a two-node cycle.
+</Explain>
+</Quiz>
+
+## what databases actually do with this
+
+nobody builds the precedence graph of a running system and checks it for cycles: the graph never stops growing, and by the time you find a cycle, transactions have committed. the graph is the yardstick. the algorithms are ways to guarantee no cycle can form, or to notice cheaply when one might:
+
+- **[two-phase locking](/learn/locking/two-phase-locking)** makes conflicting operations wait, so edges can only point from earlier lock holders to later ones.
+- **[timestamp ordering](/learn/locking/timestamp-ordering-and-occ)** fixes the serial order up front (by start time) and aborts any operation that would create an edge pointing backwards.
+- **[serializable snapshot isolation](/learn/locking/ssi)**, postgres's SERIALIZABLE, tracks only the rw edges between overlapping transactions and aborts when two of them line up in a row, a pattern every cycle under snapshot isolation must contain.
+
+postgres's REPEATABLE READ is snapshot isolation, which is not serializable: [write skew](/learn/transactions/write-skew) is a cycle of two rw edges it lets through.
+
+<Gotcha title="serializable doesn't mean a particular order">
+serializable only promises *some* serial order, not the order the transactions started or committed in. a transaction that commits later can be serialized before one that committed earlier. if your app needs "real time" order (a read sees every commit that finished before it started), that's a stronger property, strict serializability, and it matters most in [distributed systems](/learn/scale/consistency-models).
+</Gotcha>
+
+<Deep title="conflict vs view serializability">
+conflict serializability is slightly stricter than the full definition. a schedule is **view serializable** if every read sees the same write as in some serial schedule and the final writes match. some view-serializable schedules aren't conflict serializable: they involve blind writes (a write with no read before it) that get overwritten anyway. testing view serializability is NP-complete, while the precedence graph test is linear in the number of conflicts, so practical systems aim for conflict serializability and give up the rest.
+</Deep>
+
+<Interview q="what does it mean for a schedule to be serializable, and how do you test it?">
+a schedule of concurrent transactions is serializable if its effect equals that of some serial execution of the same transactions. the practical test is conflict serializability: two operations conflict if they're from different transactions, touch the same item and at least one writes. build the precedence graph with an edge Ti → Tj whenever an operation of Ti conflicts with a later one of Tj. the schedule is conflict serializable iff the graph is acyclic, and any topological order is an equivalent serial order. bonus point: databases don't run this test live; 2PL, timestamp ordering and SSI are protocols that guarantee (or approximately check) acyclicity.
+</Interview>
+
+<Keylines>
+- serializable: same effect as some one-at-a-time order of the same transactions.
+- conflict: same item, different transactions, at least one write.
+- precedence graph: Ti → Tj when Ti's op conflicts with a later op of Tj.
+- no cycle = conflict serializable, and the topological order is the serial order.
+- 2PL, timestamp ordering and SSI are ways to never build a cycle.
+</Keylines>

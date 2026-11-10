@@ -1,0 +1,181 @@
+import { ResultSteps } from "@/components/figures/joins/ResultSteps";
+import { RunPick } from "@/components/figures/joins/RunPick";
+import { prov, resultOf, runsOf, valueOf } from "@/components/figures/joins/captured";
+import trace from "./traces/fan-out.pgtrace.json";
+
+{/* the stepper and the category switch read traces/fan-out.scenario.sql, captured on PGlite with
+    the same ALTER TABLE ... ADD COLUMN total that the first block on the page runs. */}
+
+export const steps = [0, 1, 2].map((i) => resultOf(trace, i));
+export const sums = [3, 4, 5].map((i) => valueOf(trace, i));
+export const report = runsOf(trace, ["join, then aggregate", "aggregate, then join"], 6);
+export const source = prov(trace);
+
+<InShort>
+joining a one-to-many table repeats the "one" side **once per match**. anything you then SUM, COUNT or AVG from the "one" side is counted again for every match: that's **fan-out**.
+
+the fix is to **aggregate first, then join**: shrink the many side to one row per key before it meets the rest.
+</InShort>
+
+## the picture
+
+you know the report where revenue comes out nearly three times what finance says, and the query looks fine? every join in it is correct. the problem is what got summed after the joins.
+
+think of a shopping bag with the receipt stapled to every item in it. count the receipts and you get the number of items. add up the totals printed on the receipts and you get the bag's total once per item. nobody lied: each receipt is real, there are just more copies of it than there were purchases.
+
+the shop doesn't store an order's total on the order, but most real shops do, so add one. the total is computed from the order's lines, once:
+
+```sql run db=shop session=fan
+ALTER TABLE orders ADD COLUMN total numeric(10,2);
+UPDATE orders AS o
+SET total = (SELECT sum(oi.qty * oi.unit_price) FROM order_items AS oi WHERE oi.order_id = o.id);
+```
+
+now watch Ada's orders meet their lines:
+
+<Figure wide caption={<>step through it. shaded bands are rows that share an <code>order_id</code>. after the join, each order's <code>total</code> sits in its band once per line, and the sum adds every copy. aggregating the lines first puts every order back in one row.</>}>
+<ResultSteps
+  steps={[
+    { label: "orders", run: steps[0], total: { k: "sum(o.total)", v: sums[0], ok: true } },
+    { label: "+ order_items", run: steps[1], group: "order_id", hot: ["JOIN order_items AS oi ON oi.order_id = o.id"], total: { k: "sum(o.total)", v: sums[1], ok: false } },
+    { label: "aggregate first", run: steps[2], hot: ["(SELECT order_id, sum(qty) AS items FROM order_items GROUP BY order_id)"], total: { k: "sum(o.total)", v: sums[2], ok: true } },
+  ]}
+  trace={source}
+/>
+</Figure>
+
+order 880 has 3 lines, so its 831.01 is in the sum three times. your totals triple, line by line, and the bigger orders count the most.
+
+## the wrong total
+
+<Predict options={["3,033.13 again", "more than 3,033.13", "an error"]} answer={1}>
+```sql
+SELECT sum(o.total)
+FROM orders AS o
+JOIN order_items AS oi ON oi.order_id = o.id
+WHERE o.customer_id = 42;
+```
+<Explain>
+the join makes one row per order line, and every one of those rows carries its order's total. 7 orders, 18 lines, so 18 totals get added up: each order's total times its number of lines. 8,474.47, almost three times what Ada actually spent.
+</Explain>
+</Predict>
+
+both, for real:
+
+```sql run session=fan
+SELECT sum(o.total) AS spent
+FROM orders AS o
+WHERE o.customer_id = 42;
+
+SELECT sum(o.total) AS spent_after_join
+FROM orders AS o
+JOIN order_items AS oi ON oi.order_id = o.id
+WHERE o.customer_id = 42;
+```
+
+nothing in the second query is wrong on its own. the join is right: those are Ada's lines. the sum is right: it adds up the column. the mistake is the grain. after the join, a row means "one order line", and `o.total` is a fact about an order, so the sum counts order facts at line grain.
+
+## two one-to-many joins
+
+chain two of them, customers → orders → order_items, and every level above the last join gets repeated. Ada's name is in 18 rows, each order in as many rows as it has lines. counting orders by counting rows goes wrong the same way:
+
+```sql run session=fan
+SELECT count(o.id) AS orders, count(DISTINCT o.id) AS distinct_orders, sum(oi.qty) AS items
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+JOIN order_items AS oi ON oi.order_id = o.id
+WHERE c.id = 42;
+```
+
+`count(o.id)` says 18, because it counts lines. `count(DISTINCT o.id)` says 7, which is right, and `sum(oi.qty)` is right too, because `qty` is a fact about a line, and the rows are lines.
+
+so DISTINCT fixes counts. it does not fix sums. `sum(DISTINCT o.total)` adds up the distinct *values*, and two different orders can have the same total. José Silva (customer 6) has two orders of 49.00 each:
+
+```sql run session=fan
+SELECT sum(o.total) AS right_answer
+FROM orders AS o
+WHERE o.customer_id = 6;
+
+SELECT sum(o.total) AS after_join, sum(DISTINCT o.total) AS distinct_after_join
+FROM orders AS o
+JOIN order_items AS oi ON oi.order_id = o.id
+WHERE o.customer_id = 6;
+```
+
+9,598.99 is what José spent. the join makes it 29,014.95. DISTINCT makes it 9,549.99, exactly 49.00 short, because one of the two 49.00 orders got thrown away as a duplicate. there's no keyword that un-fans a sum.
+
+## aggregate first, then join
+
+the fix that always works: bring the many side down to one row per key *before* the join. then every join is one-to-one or many-to-one, and nothing gets repeated.
+
+<Figure caption={<>hover a stage. the subquery turns 24,942 lines into one row per order, so the join to orders matches each order once.</>}>
+<Flow
+  stages={[
+    { label: "order_items", sub: "one row per line", note: "the many side: several lines per order." },
+    { label: "GROUP BY order_id", sub: "one row per order", note: "sum the lines' quantities (or whatever you need from them) per order, in a subquery." },
+    { label: "⋈ orders", sub: "one row per order", note: "now each order matches exactly one row. o.total appears once." },
+    { label: "GROUP BY customer", sub: "one row per customer", note: "every sum is at the right grain: orders counted once, lines summed once." },
+  ]}
+/>
+</Figure>
+
+a per-customer report that gets all three numbers right, for José and Ada:
+
+```sql run session=fan
+SELECT c.id, c.name, count(*) AS orders, sum(o.total) AS spent, sum(li.items) AS items
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+JOIN (SELECT order_id, sum(qty) AS items
+      FROM order_items
+      GROUP BY order_id) AS li ON li.order_id = o.id
+WHERE c.id IN (6, 42)
+GROUP BY c.id
+ORDER BY c.id;
+```
+
+the `(SELECT ... GROUP BY order_id) AS li` is a subquery used as a table, a [derived table](/learn/joins/subqueries). a [CTE](/learn/joins/ctes) says the same thing with a name up front, which reads better once there are two of them.
+
+## the quiet one: averages
+
+a sum that triples is easy to spot. an average that's off by a quarter isn't. here's a category report, one join and three numbers about products:
+
+<Figure wide caption={<>switch the order of the two steps. after the join, <code>products</code> counts order lines, <code>avg_price</code> is weighted by how often each product sold, and only <code>units</code> is right. kitchen's average drops from 88.62 to 67.74, and nothing about it looks wrong.</>}>
+<RunPick
+  options={[{ key: "order", values: ["join, then aggregate", "aggregate, then join"] }]}
+  runs={report}
+  hot={["JOIN order_items AS oi ON oi.product_id = p.id", "(SELECT product_id, sum(qty) AS units FROM order_items GROUP BY product_id)"]}
+  trace={source}
+/>
+</Figure>
+
+4,518 kitchen "products" is absurd enough that someone would notice. 67.74 as the average kitchen price is not. it's the average price *of a thing sold*, cheap best sellers counted once per order line, which is a real number, just not the one the column header promises. fan-out bends every aggregate over the "one" side: count, sum and average alike.
+
+(the fixed version uses a LEFT JOIN, so the left-handed teapot, which never sold, still counts as a kitchen product: 19.)
+
+<Gotcha title="how to catch a fan-out">
+before you trust a SUM over a join, check the grain: is the key you think the rows are about still unique in the result? count rows before and after each join (an inner join to a many-to-one table keeps the count, a one-to-many join raises it), or look for repeated keys directly:
+
+```sql run session=fan
+SELECT o.id, count(*) AS rows_per_order
+FROM orders AS o
+JOIN order_items AS oi ON oi.order_id = o.id
+WHERE o.customer_id = 42
+GROUP BY o.id
+HAVING count(*) > 1
+ORDER BY o.id;
+```
+
+any row in that result is an order whose facts will be counted more than once.
+</Gotcha>
+
+<Interview q="revenue in the dashboard doubled after someone added a join for a new column. what happened?">
+fan-out. the new join is one-to-many from the table the revenue lives on, so every revenue row now appears once per matching row on the other side, and the SUM adds every copy. the join itself is probably right, the grain changed: rows used to be orders and now they're order lines. the fix is to aggregate the new table down to one row per order in a subquery or CTE first, and join that. bonus point: say why `sum(DISTINCT revenue)` isn't a fix, it drops orders that happen to have the same amount, and that `count(DISTINCT id)` is fine for counts.
+</Interview>
+
+<Keylines>
+- a one-to-many join repeats the "one" side once per match.
+- sums, counts and averages over the repeated side come out inflated or skewed.
+- count(DISTINCT key) fixes a count. nothing like it fixes a sum.
+- aggregate the many side to one row per key first, then join.
+- check the grain: is the key you sum by still unique after the joins?
+</Keylines>

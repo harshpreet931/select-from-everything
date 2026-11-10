@@ -1,0 +1,599 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/jsonb.scenario.sql",
+ "title": "json vs jsonb on the same text, six operators on one event's props, two kinds of GIN index, and JSON_TABLE",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"},
+  "ev_path_ops": {"kind":"index","am":"gin","columns":[{"name":"props","type":"int4"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT t.type, t.value, t.bytes\nFROM (VALUES (1, 'json', '{\"b\": 1,   \"a\": 2, \"a\": 3}'::json::text, pg_column_size('{\"b\": 1,   \"a\": 2, \"a\": 3}'::json)),\n             (2, 'jsonb', '{\"b\": 1,   \"a\": 2, \"a\": 3}'::jsonb::text, pg_column_size('{\"b\": 1,   \"a\": 2, \"a\": 3}'::jsonb))) AS t (n, type, value, bytes)\nORDER BY t.n",
+   "note": "one piece of text, stored as json and as jsonb: json keeps the text, jsonb keeps the meaning.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"type","type":"text"},{"name":"value","type":"text"},{"name":"bytes","type":"int4"}],
+    "data": [["json","{\"b\": 1,   \"a\": 2, \"a\": 3}","30"],["jsonb","{\"a\": 3, \"b\": 1}","44"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT props -> 'utm' AS result, pg_typeof(props -> 'utm') AS type FROM events WHERE id = 26",
+   "note": "-> takes a key and gives jsonb back: still json, quotes and all.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"jsonb"},{"name":"type","type":"regtype"}],
+    "data": [["{\"source\": \"search\", \"campaign\": \"spring\"}","jsonb"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT props ->> 'device' AS result, pg_typeof(props ->> 'device') AS type FROM events WHERE id = 26",
+   "note": "->> gives text: the value without its json quoting.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"text"},{"name":"type","type":"regtype"}],
+    "data": [["web","text"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT props #> '{utm,source}' AS result, pg_typeof(props #> '{utm,source}') AS type FROM events WHERE id = 26",
+   "note": "#> follows a path of keys, and gives jsonb.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"jsonb"},{"name":"type","type":"regtype"}],
+    "data": [["\"search\"","jsonb"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT props #>> '{utm,source}' AS result, pg_typeof(props #>> '{utm,source}') AS type FROM events WHERE id = 26",
+   "note": "#>> follows a path, and gives text.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"text"},{"name":"type","type":"regtype"}],
+    "data": [["search","text"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT props @> '{\"utm\": {\"source\": \"search\"}}' AS result, pg_typeof(props @> '{\"utm\": {\"source\": \"search\"}}') AS type FROM events WHERE id = 26",
+   "note": "@> asks whether the left contains the right, nested objects included.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"bool"},{"name":"type","type":"regtype"}],
+    "data": [["t","boolean"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT props @? '$.utm ? (@.source == \"search\")' AS result, pg_typeof(props @? '$.utm ? (@.source == \"search\")') AS type FROM events WHERE id = 26",
+   "note": "@? asks whether a jsonpath finds anything.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"bool"},{"name":"type","type":"regtype"}],
+    "data": [["t","boolean"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "CREATE INDEX ev_ops ON events USING gin (props);\nCREATE INDEX ev_path_ops ON events USING gin (props jsonb_path_ops);\nSELECT 'table' AS what, pg_relation_size('events') / 8192 AS pages\nUNION ALL SELECT 'gin (props)', pg_relation_size('ev_ops') / 8192\nUNION ALL SELECT 'gin (props jsonb_path_ops)', pg_relation_size('ev_path_ops') / 8192",
+   "note": "two GIN indexes on props: the default operator class, and jsonb_path_ops.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"what","type":"text"},{"name":"pages","type":"int8"}],
+    "data": [["table","335"],["gin (props)","38"],["gin (props jsonb_path_ops)","25"]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "DROP INDEX ev_path_ops;\nANALYZE events",
+   "note": "only the default index left.",
+   "status": "ok",
+   "result": {"command":"ANALYZE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props @> '{\"utm\": {\"source\": \"newsletter\"}}'",
+   "note": "containment with the default index.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["832"]]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props @> '{\"utm\": {\"source\": \"newsletter\"}}'",
+   "note": "the default index serves @>.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Plain",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 369.23,
+     "Total Cost": 369.24,
+     "Plan Rows": 1,
+     "Plan Width": 8,
+     "Actual Rows": 1,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 318,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "events",
+       "Alias": "events",
+       "Startup Cost": 21.75,
+       "Total Cost": 367.15,
+       "Plan Rows": 832,
+       "Plan Width": 0,
+       "Actual Rows": 832,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Recheck Cond": "(props @> '{\"utm\": {\"source\": \"newsletter\"}}'::jsonb)",
+       "Rows Removed by Index Recheck": 0,
+       "Exact Heap Blocks": 309,
+       "Lossy Heap Blocks": 0,
+       "Shared Hit Blocks": 318,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "ev_ops",
+         "Startup Cost": 0,
+         "Total Cost": 21.54,
+         "Plan Rows": 832,
+         "Plan Width": 0,
+         "Actual Rows": 832,
+         "Actual Loops": 1,
+         "Disabled": false,
+         "Index Cond": "(props @> '{\"utm\": {\"source\": \"newsletter\"}}'::jsonb)",
+         "Index Searches": 1,
+         "Shared Hit Blocks": 9,
+         "Shared Read Blocks": 0,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 1,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props ? 'utm'",
+   "note": "key existence with the default index.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["2495"]]}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props ? 'utm'",
+   "note": "and ?, because it indexes every key on its own.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Plain",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 394.11,
+     "Total Cost": 394.12,
+     "Plan Rows": 1,
+     "Plan Width": 8,
+     "Actual Rows": 1,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 338,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "events",
+       "Alias": "events",
+       "Startup Cost": 21.65,
+       "Total Cost": 387.87,
+       "Plan Rows": 2497,
+       "Plan Width": 0,
+       "Actual Rows": 2495,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Recheck Cond": "(props ? 'utm'::text)",
+       "Rows Removed by Index Recheck": 0,
+       "Exact Heap Blocks": 334,
+       "Lossy Heap Blocks": 0,
+       "Shared Hit Blocks": 338,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "ev_ops",
+         "Startup Cost": 0,
+         "Total Cost": 21.03,
+         "Plan Rows": 2497,
+         "Plan Width": 0,
+         "Actual Rows": 2495,
+         "Actual Loops": 1,
+         "Disabled": false,
+         "Index Cond": "(props ? 'utm'::text)",
+         "Index Searches": 1,
+         "Shared Hit Blocks": 4,
+         "Shared Read Blocks": 0,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 1,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "DROP INDEX ev_ops;\nCREATE INDEX ev_path_ops ON events USING gin (props jsonb_path_ops);\nANALYZE events",
+   "note": "only jsonb_path_ops left.",
+   "status": "ok",
+   "result": {"command":"ANALYZE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props @> '{\"utm\": {\"source\": \"newsletter\"}}'",
+   "note": "containment with jsonb_path_ops.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["832"]]}
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props @> '{\"utm\": {\"source\": \"newsletter\"}}'",
+   "note": "jsonb_path_ops serves @>, from a smaller index.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Plain",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 360.39,
+     "Total Cost": 360.4,
+     "Plan Rows": 1,
+     "Plan Width": 8,
+     "Actual Rows": 1,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 312,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "events",
+       "Alias": "events",
+       "Startup Cost": 12.91,
+       "Total Cost": 358.31,
+       "Plan Rows": 832,
+       "Plan Width": 0,
+       "Actual Rows": 832,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Recheck Cond": "(props @> '{\"utm\": {\"source\": \"newsletter\"}}'::jsonb)",
+       "Rows Removed by Index Recheck": 0,
+       "Exact Heap Blocks": 309,
+       "Lossy Heap Blocks": 0,
+       "Shared Hit Blocks": 312,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "ev_path_ops",
+         "Startup Cost": 0,
+         "Total Cost": 12.7,
+         "Plan Rows": 832,
+         "Plan Width": 0,
+         "Actual Rows": 832,
+         "Actual Loops": 1,
+         "Disabled": false,
+         "Index Cond": "(props @> '{\"utm\": {\"source\": \"newsletter\"}}'::jsonb)",
+         "Index Searches": 1,
+         "Shared Hit Blocks": 3,
+         "Shared Read Blocks": 0,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 1,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props ? 'utm'",
+   "note": "key existence with jsonb_path_ops.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["2495"]]}
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE props ? 'utm'",
+   "note": "but not ?: it stores hashes of whole paths to values, not keys on their own, so it reads the whole table.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Plain",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 653.74,
+     "Total Cost": 653.75,
+     "Plan Rows": 1,
+     "Plan Width": 8,
+     "Actual Rows": 1,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 335,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Seq Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "events",
+       "Alias": "events",
+       "Startup Cost": 0,
+       "Total Cost": 647.5,
+       "Plan Rows": 2497,
+       "Plan Width": 0,
+       "Actual Rows": 2495,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Filter": "(props ? 'utm'::text)",
+       "Rows Removed by Filter": 22505,
+       "Shared Hit Blocks": 335,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 0,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 18,
+   "session": "T1",
+   "sql": "SELECT jt.*\nFROM JSON_TABLE(\n  '{\"order\": 1042, \"items\": [{\"sku\": \"KIT-0001\", \"qty\": 2, \"price\": 49.00},\n                             {\"sku\": \"AUD-0005\", \"qty\": 1, \"price\": 129.99, \"gift\": true}]}',\n  '$.items[*]'\n  COLUMNS (line FOR ORDINALITY,\n           sku text PATH '$.sku',\n           qty int PATH '$.qty',\n           price numeric(10,2) PATH '$.price',\n           gift boolean PATH '$.gift' DEFAULT false ON EMPTY)\n) AS jt\nORDER BY jt.line",
+   "note": "JSON_TABLE turns an order document's items into rows and typed columns.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"line","type":"int4"},
+     {"name":"sku","type":"text"},
+     {"name":"qty","type":"int4"},
+     {"name":"price","type":"numeric"},
+     {"name":"gift","type":"bool"}
+    ],
+    "data": [["1","KIT-0001","2","49.00","f"],["2","AUD-0005","1","129.99","t"]]
+   }
+  }
+ ],
+ "db": "events"
+}

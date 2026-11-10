@@ -1,0 +1,256 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5888dbd141708806": {
+      "db": "org",
+      "sql": "SELECT e.id, e.name, e.title, m.name AS manager\nFROM employees AS e\nLEFT JOIN employees AS m ON m.id = e.manager_id\nWHERE e.id <= 13\nORDER BY e.id;",
+      "statements": [
+        {
+          "tag": "SELECT 13",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["title", "text", 25],
+            ["manager", "text", 25]
+          ],
+          "rowCount": 13,
+          "digest": "cc81949f3804083d",
+          "rows": [
+            ["1", "Fatima Lopez", "ceo", null],
+            ["2", "Olivia Lopez", "vp", "Fatima Lopez"],
+            ["3", "Mei Dubois", "vp", "Fatima Lopez"],
+            ["4", "Chen Smith", "vp", "Fatima Lopez"],
+            ["5", "Rahul Singh", "director", "Olivia Lopez"],
+            ["6", "Amelia Hansen", "director", "Olivia Lopez"],
+            ["7", "Olivia Singh", "director", "Olivia Lopez"],
+            ["8", "Noah Silva", "director", "Mei Dubois"],
+            ["9", "Valentina Haddad", "director", "Mei Dubois"],
+            ["10", "Kenji Larsen", "director", "Mei Dubois"],
+            ["11", "Valentina Okafor", "director", "Chen Smith"],
+            ["12", "Leila Larsen", "director", "Chen Smith"],
+            ["13", "Chen Jensen", "director", "Chen Smith"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a38c6f599c1c87f6": {
+      "db": "org",
+      "sql": "SELECT employees.name\nFROM employees\nJOIN employees ON employees.id = employees.manager_id;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42712",
+            "message": "table name \"employees\" specified more than once"
+          },
+          "digest": "d2aad0f2fe08df6c"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42712",
+        "message": "table name \"employees\" specified more than once",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "dcb7054e6f3c12cd": {
+      "db": "org",
+      "sql": "SELECT count(*) AS inner_join FROM employees AS e JOIN employees AS m ON m.id = e.manager_id;\nSELECT count(*) AS left_join FROM employees AS e LEFT JOIN employees AS m ON m.id = e.manager_id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["inner_join", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "64b39db3d39b7dfb",
+          "rows": [
+            ["299"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["left_join", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "dc217660129a51c8",
+          "rows": [
+            ["300"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "00054e270124980a": {
+      "db": "org",
+      "sql": "SELECT e.id, e.name, m.name AS manager, gm.name AS managers_manager\nFROM employees AS e\nJOIN employees AS m ON m.id = e.manager_id\nJOIN employees AS gm ON gm.id = m.manager_id\nWHERE e.id BETWEEN 14 AND 19\nORDER BY e.id;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["manager", "text", 25],
+            ["managers_manager", "text", 25]
+          ],
+          "rowCount": 6,
+          "digest": "58a2bd796f520e58",
+          "rows": [
+            ["14", "Ama Rossi", "Rahul Singh", "Olivia Lopez"],
+            ["15", "Ingrid Smith", "Rahul Singh", "Olivia Lopez"],
+            ["16", "Clara Petrov", "Rahul Singh", "Olivia Lopez"],
+            ["17", "Yuna Garcia", "Amelia Hansen", "Olivia Lopez"],
+            ["18", "Aisha Garcia", "Amelia Hansen", "Olivia Lopez"],
+            ["19", "Kenji Hansen", "Amelia Hansen", "Olivia Lopez"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d92c4c793ef4c39a": {
+      "db": "org",
+      "sql": "CREATE TABLE vps AS SELECT id, name, salary FROM employees WHERE title = 'vp';\n\nSELECT count(*) AS same_name_pairs\nFROM employees AS a\nJOIN employees AS b ON b.name = a.name AND a.id < b.id;\n\nSELECT a.name, a.id AS first_id, b.id AS second_id\nFROM employees AS a\nJOIN employees AS b ON b.name = a.name AND a.id < b.id\nWHERE a.name IN ('Priya Shah', 'Clara Petrov')\nORDER BY a.name, a.id, b.id;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "f34243a33c6102b6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["same_name_pairs", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b2edab15f657e6e2",
+          "rows": [
+            ["65"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["first_id", "int4", 23],
+            ["second_id", "int4", 23]
+          ],
+          "rowCount": 4,
+          "digest": "0fdc8e7f830996db",
+          "rows": [
+            ["Clara Petrov", "16", "105"],
+            ["Clara Petrov", "16", "254"],
+            ["Clara Petrov", "105", "254"],
+            ["Priya Shah", "57", "203"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f594425d4441bf2d": {
+      "db": "org",
+      "sql": "SELECT d.name AS dept, t.title, count(e.id) AS people\nFROM departments AS d\nCROSS JOIN (VALUES ('manager'), ('lead'), ('associate')) AS t (title)\nLEFT JOIN employees AS e ON e.dept_id = d.id AND e.title = t.title\nGROUP BY d.id, d.name, t.title\nORDER BY d.id, t.title;",
+      "statements": [
+        {
+          "tag": "SELECT 24",
+          "command": "SELECT",
+          "columns": [
+            ["dept", "text", 25],
+            ["title", "text", 25],
+            ["people", "int8", 20]
+          ],
+          "rowCount": 24,
+          "digest": "654c6dcca942d1c5",
+          "rows": [
+            ["engineering", "associate", "54"],
+            ["engineering", "lead", "18"],
+            ["engineering", "manager", "6"],
+            ["product", "associate", "27"],
+            ["product", "lead", "9"],
+            ["product", "manager", "3"],
+            ["design", "associate", "27"],
+            ["design", "lead", "9"],
+            ["design", "manager", "3"],
+            ["sales", "associate", "54"],
+            ["sales", "lead", "18"],
+            ["sales", "manager", "6"],
+            ["support", "associate", "16"],
+            ["support", "lead", "9"],
+            ["support", "manager", "3"],
+            ["finance", "associate", "0"],
+            ["finance", "lead", "9"],
+            ["finance", "manager", "3"],
+            ["people", "associate", "0"],
+            ["people", "lead", "9"],
+            ["people", "manager", "3"],
+            ["research", "associate", "0"],
+            ["research", "lead", "0"],
+            ["research", "manager", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "39f4ee5c6c83f047": {
+      "db": "org",
+      "sql": "SELECT count(*) FROM employees AS a, employees AS b;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "98b711ae8bfff750",
+          "rows": [
+            ["90000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8ecd08c8f6ad8eab": {
+      "db": "org",
+      "sql": "SELECT e.name, e.salary, m.name AS manager, m.salary AS manager_salary\nFROM employees AS e\nJOIN employees AS m ON m.id = e.manager_id\nWHERE e.salary > m.salary\nORDER BY e.id;",
+      "statements": [
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["salary", "numeric", 1700],
+            ["manager", "text", 25],
+            ["manager_salary", "numeric", 1700]
+          ],
+          "rowCount": 0,
+          "digest": "f65f84ec76dbe7be",
+          "rows": []
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

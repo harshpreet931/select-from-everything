@@ -1,0 +1,444 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* the toy database below is one file, toydb.mjs, 236 lines of plain javascript with no
+    dependencies. every line of it is on this page, in order, split into its seven sections. it
+    was written to a scratch directory and run with node 23.10.0 on macOS 27.0 (m4 pro); every
+    transcript and hex dump on this page is from those runs. it is not part of the site's code. */}
+
+export const REC = "node 23.10.0 on macOS 27.0 (m4 pro), toydb.mjs from this page";
+
+<InShort>
+a database is a few ideas stacked on each other: a file of fixed-size **pages**, a **b+tree** that keeps keys sorted across those pages, a **buffer pool** that keeps pages in memory, a **WAL** that makes a change durable before the page is written, a **checkpoint** that writes pages and moves the redo pointer, and a **REPL** on top.
+
+here are all of them in 236 lines of javascript you can run. every piece links to the postgres chapter that does it for real.
+</InShort>
+
+## the picture
+
+you know how, after a whole book of internals, postgres can still feel like one big black box? the fastest way to make it a set of parts is to build the parts yourself, badly, in an afternoon. you'll hit every design decision postgres made, and you'll see why it made them.
+
+think of a model railway next to the real one. same signals, same points, same timetable, a thousand times smaller, and you can pick up the trains. toydb is that: one table of `int → text`, no SQL, no concurrency, but real pages on disk, a real tree, and a real log that survives a real crash.
+
+<Figure caption={<>the toy's seven sections, bottom to top, and the postgres chapter each one is a miniature of. hover a box.</>}>
+<Flow stages={[
+  { label: "pager", sub: "4 KB pages", note: "a file read and written in fixed-size pages. postgres: 8 KB pages, one file per table and index." },
+  { label: "page format", sub: "bytes ↔ node", note: "a node serialized into a page. postgres: page header, line pointers, tuples." },
+  { label: "buffer pool", sub: "dirty frames", note: "pages kept in memory, marked dirty when changed. postgres: shared_buffers, clock sweep." },
+  { label: "b+tree", sub: "descend, split", note: "sorted keys, splits that push a separator up, right-sibling links. postgres: nbtree." },
+  { label: "WAL", sub: "append, fsync", note: "every put logged and fsynced before it counts. postgres: WAL records, the commit flush." },
+  { label: "recovery", sub: "redo after crash", note: "replay the log after the last checkpoint. postgres: crash recovery from the redo pointer." },
+  { label: "REPL", sub: "put, get, scan", note: "a loop that reads commands. postgres: the parser, planner and executor, which this toy skips." },
+]} />
+</Figure>
+
+## pages
+
+everything on disk is a page: 4,096 bytes, read and written whole, addressed by number. the pager is twenty lines because a page file is just offsets ([disks, memory and why pages exist](/learn/storage/why-pages), [the files behind a table](/learn/storage/files-and-forks)).
+
+```js title="toydb.mjs"
+// toydb: pages, a b+tree, a WAL and a REPL. node toydb.mjs <dir>
+import fs from "node:fs";
+import path from "node:path";
+import readline from "node:readline";
+
+// ---- 1. the pager: a file of fixed-size pages ------------------------------
+const PAGE = 4096;
+
+class Pager {
+  constructor(file) {
+    this.fd = fs.openSync(file, fs.existsSync(file) ? "r+" : "w+");
+    this.pages = Math.floor(fs.fstatSync(this.fd).size / PAGE);
+  }
+  read(n) {
+    const buf = Buffer.alloc(PAGE);
+    fs.readSync(this.fd, buf, 0, PAGE, n * PAGE);
+    return buf;
+  }
+  write(n, buf) {
+    fs.writeSync(this.fd, buf, 0, PAGE, n * PAGE);
+    this.pages = Math.max(this.pages, n + 1);
+  }
+  sync() { fs.fsyncSync(this.fd); }
+}
+```
+
+a node has to become bytes. the toy's leaf page is a type byte, a key count, a right-sibling page number, then key, length and value for each entry, packed from the front. postgres's [8 KB page](/learn/storage/the-page) is smarter: line pointers from the front, tuples from the back, so a tuple can move inside the page without its address changing.
+
+```js
+// ---- 2. nodes <-> page bytes ------------------------------------------------
+// leaf:     [1][count u16][next u32] then (key i32, len u16, utf8 bytes)*
+// internal: [2][count u16][child0 u32] then (key i32, child u32)*
+function encode(node) {
+  const buf = Buffer.alloc(PAGE);
+  buf.writeUInt8(node.leaf ? 1 : 2, 0);
+  buf.writeUInt16LE(node.keys.length, 1);
+  let at = 7;
+  if (node.leaf) {
+    buf.writeUInt32LE(node.next, 3);
+    node.keys.forEach((k, i) => {
+      const v = Buffer.from(node.vals[i]);
+      buf.writeInt32LE(k, at);
+      buf.writeUInt16LE(v.length, at + 4);
+      v.copy(buf, at + 6);
+      at += 6 + v.length;
+    });
+  } else {
+    buf.writeUInt32LE(node.kids[0], 3);
+    node.keys.forEach((k, i) => {
+      buf.writeInt32LE(k, at);
+      buf.writeUInt32LE(node.kids[i + 1], at + 4);
+      at += 8;
+    });
+  }
+  return buf;
+}
+
+function decode(buf) {
+  const leaf = buf.readUInt8(0) === 1, n = buf.readUInt16LE(1);
+  const node = { leaf, keys: [], vals: [], kids: [], next: 0 };
+  let at = 7;
+  if (leaf) {
+    node.next = buf.readUInt32LE(3);
+    for (let i = 0; i < n; i++) {
+      const len = buf.readUInt16LE(at + 4);
+      node.keys.push(buf.readInt32LE(at));
+      node.vals.push(buf.toString("utf8", at + 6, at + 6 + len));
+      at += 6 + len;
+    }
+  } else {
+    node.kids.push(buf.readUInt32LE(3));
+    for (let i = 0; i < n; i++) {
+      node.keys.push(buf.readInt32LE(at));
+      node.kids.push(buf.readUInt32LE(at + 4));
+      at += 8;
+    }
+  }
+  return node;
+}
+
+const size = (node) => 7 + (node.leaf ? node.vals.reduce((s, v) => s + 6 + Buffer.byteLength(v), 0) : node.keys.length * 8);
+```
+
+## a buffer pool
+
+reading a page from disk every time would be slow, and writing it on every change slower. the pool keeps decoded pages in memory, and a change only marks the frame dirty. nothing is written until a checkpoint. postgres does the same with shared buffers, and has to pick which page to evict when memory is full ([the buffer pool](/learn/storage/buffer-pool), [clock sweep](/learn/storage/clock-sweep)); the toy never evicts.
+
+```js
+// ---- 3. a tiny buffer pool: pages in memory, dirty until a checkpoint --------
+class Pool {
+  constructor(pager) { this.pager = pager; this.frames = new Map(); this.reads = 0; }
+  get(n) {
+    if (!this.frames.has(n)) { this.frames.set(n, { node: decode(this.pager.read(n)), dirty: false }); this.reads++; }
+    return this.frames.get(n).node;
+  }
+  put(n, node) { this.frames.set(n, { node, dirty: true }); }
+  dirty() { return [...this.frames.values()].filter((f) => f.dirty).length; }
+  flush() {
+    let n = 0;
+    for (const [id, f] of this.frames) if (f.dirty) { this.pager.write(id, encode(f.node)); f.dirty = false; n++; }
+    this.pager.sync();
+    return n;
+  }
+}
+```
+
+## a b+tree
+
+the tree descends from the root to a leaf, remembering the path. inserting into a full leaf splits it in half and pushes the first key of the right half up to the parent as a separator; if the parent overflows, it splits too, and a split root makes the tree one level taller. leaves are linked left to right, so a range scan walks sideways instead of climbing back up ([b+trees](/learn/index-internals/b-plus-trees), [page splits](/learn/index-internals/page-splits)).
+
+```js
+// ---- 4. the b+tree ------------------------------------------------------------
+// page 0 is the meta page: root page, next free page, checkpoint lsn.
+class BTree {
+  constructor(pool, meta) { this.pool = pool; this.meta = meta; }
+  alloc(node) { const id = this.meta.nextPage++; this.pool.put(id, node); return id; }
+
+  // descend from the root, remembering the path for splits
+  path(key) {
+    const trail = [];
+    let id = this.meta.root;
+    for (;;) {
+      const node = this.pool.get(id);
+      trail.push(id);
+      if (node.leaf) return trail;
+      let i = 0;
+      while (i < node.keys.length && key >= node.keys[i]) i++;
+      id = node.kids[i];
+    }
+  }
+
+  get(key) {
+    const leaf = this.pool.get(this.path(key).at(-1));
+    const i = leaf.keys.indexOf(key);
+    return i < 0 ? undefined : leaf.vals[i];
+  }
+
+  *scan(lo, hi) {
+    let id = this.path(lo).at(-1);
+    while (id) {
+      const leaf = this.pool.get(id);
+      for (let i = 0; i < leaf.keys.length; i++) {
+        if (leaf.keys[i] > hi) return;
+        if (leaf.keys[i] >= lo) yield [leaf.keys[i], leaf.vals[i]];
+      }
+      id = leaf.next; // the right-sibling link: no going back up the tree
+    }
+  }
+
+  put(key, val) {
+    const trail = this.path(key);
+    const leafId = trail.at(-1);
+    const leaf = structuredClone(this.pool.get(leafId));
+    let i = 0;
+    while (i < leaf.keys.length && leaf.keys[i] < key) i++;
+    if (leaf.keys[i] === key) leaf.vals[i] = val;
+    else { leaf.keys.splice(i, 0, key); leaf.vals.splice(i, 0, val); }
+    this.pool.put(leafId, leaf);
+    if (size(leaf) > PAGE) this.split(trail);
+  }
+
+  // split the full node at the end of the trail in half, push a separator up
+  split(trail) {
+    const id = trail.pop();
+    const node = this.pool.get(id);
+    const mid = Math.floor(node.keys.length / 2);
+    let sep, right;
+    if (node.leaf) {
+      right = { leaf: true, keys: node.keys.splice(mid), vals: node.vals.splice(mid), kids: [], next: node.next };
+      sep = right.keys[0];
+      node.next = this.alloc(right);
+    } else {
+      sep = node.keys[mid];
+      right = { leaf: false, keys: node.keys.splice(mid + 1), vals: [], kids: node.kids.splice(mid + 1), next: 0 };
+      node.keys.pop();
+    }
+    const rightId = node.leaf ? node.next : this.alloc(right);
+    this.pool.put(id, node);
+    if (!trail.length) {
+      // the root split: a new root with two children, the tree is one level taller
+      this.meta.root = this.alloc({ leaf: false, keys: [sep], vals: [], kids: [id, rightId], next: 0 });
+      return;
+    }
+    const parentId = trail.at(-1);
+    const parent = structuredClone(this.pool.get(parentId));
+    let j = 0;
+    while (j < parent.keys.length && parent.keys[j] < sep) j++;
+    parent.keys.splice(j, 0, sep);
+    parent.kids.splice(j + 1, 0, rightId);
+    this.pool.put(parentId, parent);
+    if (size(parent) > PAGE) this.split(trail);
+  }
+
+  height() { let h = 1, n = this.pool.get(this.meta.root); while (!n.leaf) { n = this.pool.get(n.kids[0]); h++; } return h; }
+}
+```
+
+what's missing, next to postgres's nbtree ([a real b-tree, page by page](/learn/index-internals/nbtree-pages)): high keys and the right-link trick that let readers keep going while another backend splits a page ([b-trees under concurrency](/learn/index-internals/btree-concurrency)), deletion, duplicates, and the heap. here the values live in the leaves, which makes it a clustered tree, like InnoDB or sqlite ([sqlite, inside](/learn/deep-dives/sqlite-inside)); postgres's leaves hold a heap address instead.
+
+## a WAL, and recovery
+
+the buffer pool means a crash loses whatever was only in memory. the fix is the oldest trick in the book: before a change counts, append a record describing it to a log and fsync the log. the data pages can be written whenever. after a crash, replay the log ([the write-ahead rule](/learn/wal/write-ahead-rule)).
+
+```js
+// ---- 5. the WAL: log first, fsync at commit, replay after a crash -------------
+class Wal {
+  constructor(file) {
+    this.file = file;
+    this.records = fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    this.lsn = this.records.at(-1)?.lsn ?? 0;
+    this.fd = fs.openSync(file, "a");
+  }
+  append(rec) {
+    rec.lsn = ++this.lsn;
+    fs.writeSync(this.fd, JSON.stringify(rec) + "\n");
+    fs.fsyncSync(this.fd); // the commit: once this returns, the change survives a crash
+    return rec.lsn;
+  }
+}
+```
+
+the checkpoint is what keeps replay short: write every dirty page, fsync, then record "everything up to this LSN is in the data file" on page 0. recovery replays only the records after it ([checkpoints](/learn/wal/checkpoints), [crash recovery](/learn/wal/crash-recovery)).
+
+```js
+// ---- 6. the database: open, recover, put, checkpoint ----------------------------
+function open(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  const pager = new Pager(path.join(dir, "data.db"));
+  const pool = new Pool(pager);
+  const wal = new Wal(path.join(dir, "wal.log"));
+  let meta = { root: 1, nextPage: 2, checkpointLsn: 0 };
+  if (pager.pages > 0) meta = JSON.parse(pager.read(0).toString("utf8").replace(/\0+$/, ""));
+  const tree = new BTree(pool, meta);
+  if (pager.pages === 0) pool.put(1, { leaf: true, keys: [], vals: [], kids: [], next: 0 });
+  // redo: every record after the last checkpoint goes back into the tree
+  const redo = wal.records.filter((r) => r.lsn > meta.checkpointLsn);
+  for (const r of redo) tree.put(r.key, r.val);
+  const db = {
+    tree, pool, wal, meta, recovered: redo.length,
+    put(key, val) { wal.append({ op: "put", key, val }); tree.put(key, val); },
+    checkpoint() {
+      const n = pool.flush(); // every dirty page to the data file, fsynced
+      meta.checkpointLsn = wal.lsn; // redo can start here from now on
+      const page = Buffer.alloc(PAGE);
+      page.write(JSON.stringify(meta));
+      pager.write(0, page);
+      pager.sync();
+      return n;
+    },
+  };
+  return db;
+}
+```
+
+replay works here because a put is idempotent: setting key 42 to "Ada Lovelace" twice leaves the same tree. postgres's records aren't all idempotent (insert a tuple into slot 3 twice and you've broken the page), so each page carries the LSN of the last record applied to it, and redo skips any record at or below it. the toy also has no torn-page protection: a crash in the middle of writing a 4 KB page would leave half a page. postgres logs a full copy of each page the first time it changes after a checkpoint for exactly that ([torn pages and full-page writes](/learn/wal/full-page-writes)).
+
+## the REPL
+
+```js
+// ---- 7. the REPL --------------------------------------------------------------
+const db = open(process.argv[2] ?? "toydb-data");
+console.log(`toydb: ${db.recovered} WAL record(s) replayed since the checkpoint at lsn ${db.meta.checkpointLsn}`);
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+for await (const line of rl) {
+  const [cmd, a, ...rest] = line.trim().split(/\s+/);
+  if (!cmd) continue;
+  console.log(`toydb> ${line.trim()}`);
+  if (cmd === "put") { db.put(Number(a), rest.join(" ")); console.log(`ok, lsn ${db.wal.lsn}`); }
+  else if (cmd === "fill") { for (let k = 1; k <= Number(a); k++) db.put(k, `row ${k}`); console.log(`ok, ${a} rows, lsn ${db.wal.lsn}`); }
+  else if (cmd === "get") console.log(db.tree.get(Number(a)) ?? "(not found)");
+  else if (cmd === "scan") for (const [k, v] of db.tree.scan(Number(a), Number(rest[0]))) console.log(`${k}\t${v}`);
+  else if (cmd === "stats") console.log(`height ${db.tree.height()}, pages ${db.meta.nextPage}, root page ${db.meta.root}, dirty ${db.pool.dirty()}, wal lsn ${db.wal.lsn}, checkpoint lsn ${db.meta.checkpointLsn}`);
+  else if (cmd === "checkpoint") console.log(`checkpoint: wrote ${db.checkpoint()} page(s), redo starts after lsn ${db.meta.checkpointLsn}`);
+  else if (cmd === "crash") { console.log("crash: exiting without writing any page"); process.exit(1); }
+  else console.log("commands: put k v, fill n, get k, scan lo hi, stats, checkpoint, crash");
+}
+```
+
+## run it
+
+save the seven sections as `toydb.mjs` and pipe it some commands. 2,000 rows, a checkpoint, two more puts, and a crash before any page is written:
+
+```text
+$ printf 'fill 2000\nstats\nget 42\nscan 998 1003\ncheckpoint\nput 42 Ada Lovelace\nput 2001 the row after the checkpoint\nstats\ncrash\n' | node toydb.mjs data
+toydb: 0 WAL record(s) replayed since the checkpoint at lsn 0
+toydb> fill 2000
+ok, 2000 rows, lsn 2000
+toydb> stats
+height 2, pages 15, root page 3, dirty 14, wal lsn 2000, checkpoint lsn 0
+toydb> get 42
+row 42
+toydb> scan 998 1003
+998	row 998
+999	row 999
+1000	row 1000
+1001	row 1001
+1002	row 1002
+1003	row 1003
+toydb> checkpoint
+checkpoint: wrote 14 page(s), redo starts after lsn 2000
+toydb> put 42 Ada Lovelace
+ok, lsn 2001
+toydb> put 2001 the row after the checkpoint
+ok, lsn 2002
+toydb> stats
+height 2, pages 15, root page 3, dirty 2, wal lsn 2002, checkpoint lsn 2000
+toydb> crash
+crash: exiting without writing any page
+exit 1
+total 384
+-rw-r--r--  1 harshpreet.singh  wheel   61440 Nov  6 12:38 data.db
+-rw-r--r--  1 harshpreet.singh  wheel  100805 Nov  6 12:38 wal.log
+```
+
+<Provenance recorded={REC} />
+
+<Predict question="toydb crashed with 2 dirty pages never written. after a restart, what does get 42 return?" options={["row 42", "Ada Lovelace", "(not found)"]} answer={1}>
+```text
+toydb> checkpoint            (lsn 2000)
+toydb> put 42 Ada Lovelace   (lsn 2001)
+toydb> crash                 (the page with key 42 was never written)
+$ node toydb.mjs data
+toydb> get 42
+```
+<Explain>
+Ada Lovelace. the data file still says "row 42": the leaf page holding key 42 was dirty in memory and died with the process. but the put was in the WAL, fsynced before it returned, with lsn 2001. on open, recovery reads page 0 (checkpoint lsn 2000) and replays every record after it, so the leaf gets the new value back. the same thing postgres does after a crash, at a thousandth of the size.
+</Explain>
+</Predict>
+
+```text
+$ printf 'get 42\nget 2001\nscan 1999 2001\nstats\n' | node toydb.mjs data
+toydb: 2 WAL record(s) replayed since the checkpoint at lsn 2000
+toydb> get 42
+Ada Lovelace
+toydb> get 2001
+the row after the checkpoint
+toydb> scan 1999 2001
+1999	row 1999
+2000	row 2000
+2001	the row after the checkpoint
+toydb> stats
+height 2, pages 15, root page 3, dirty 2, wal lsn 2002, checkpoint lsn 2000
+```
+
+<Provenance recorded={REC} />
+
+two WAL records replayed, both puts back. that's [ACID](/learn/transactions/acid)'s D, in sixteen lines of WAL.
+
+## what's on disk
+
+15 pages × 4,096 bytes is the 61,440-byte `data.db` above. page 0 is the meta page, page 3 the root (page 1 was the first leaf, page 2 the leaf its first split made, and the root came third), and the rest are leaves:
+
+<Figure caption={<>the first bytes of page 0 and page 1 of <code>data.db</code>, after the run, read with xxd. page 0 is the meta page, written as JSON to keep the toy short. page 1 is the first leaf: type <code>01</code>, then the little-endian key count and right sibling, then key 1 and its value.</>}>
+```text
+$ xxd -l 48 data/data.db
+00000000: 7b22 726f 6f74 223a 332c 226e 6578 7450  {"root":3,"nextP
+00000010: 6167 6522 3a31 352c 2263 6865 636b 706f  age":15,"checkpo
+00000020: 696e 744c 736e 223a 3230 3030 7d00 0000  intLsn":2000}...
+$ xxd -s 4096 -l 32 data/data.db
+00001000: 01a1 0002 0000 0001 0000 0005 0072 6f77  .............row
+00001010: 2031 0200 0000 0500 726f 7720 3203 0000   1......row 2...
+```
+<Defs>
+<dt><code>01</code></dt><dd>a leaf page</dd>
+<dt><code>a1 00</code></dt><dd>161 keys on this leaf</dd>
+<dt><code>02 00 00 00</code></dt><dd>right sibling: page 2</dd>
+<dt><code>01 00 00 00</code></dt><dd>key 1</dd>
+<dt><code>05 00</code>, <code>row 1</code></dt><dd>a 5-byte value and its bytes</dd>
+</Defs>
+<Provenance recorded={REC} />
+</Figure>
+
+161 keys on a leaf that could hold about twice that. ascending inserts always split the rightmost leaf, and splitting in half leaves every left half half-empty forever. the same 3,000 rows put in shuffled order took 18 pages; in ascending order, 22. postgres's nbtree knows the ascending pattern and splits the rightmost page unevenly, leaving the left page mostly full ([page splits](/learn/index-internals/page-splits)).
+
+for comparison, postgres's own b-tree keeps the same facts in its metapage (page 0, like the toy's): where the root is, and how many levels sit under it. shop's 2,000-row customers_pkey:
+
+```sql run db=shop ext=pageinspect
+SELECT root, level FROM bt_metap('customers_pkey');
+SELECT count(*) AS leaf_pages FROM generate_series(1, pg_relation_size('customers_pkey') / 8192 - 1) AS blkno
+WHERE (bt_page_stats('customers_pkey', blkno::int)).type = 'l';
+```
+
+the root on page 3, one level above six leaves: the same shape as the toy's tree, which also put its root on page 3 over a row of leaves ([a real b-tree, page by page](/learn/index-internals/nbtree-pages)).
+
+and the WAL, a line per put. the toy writes JSON so you can read it; postgres writes binary records with a header, a CRC and block references, and you read them with pg_walinspect ([WAL records and LSNs](/learn/wal/wal-records)):
+
+```text
+$ head -3 data/wal.log
+{"op":"put","key":1,"val":"row 1","lsn":1}
+{"op":"put","key":2,"val":"row 2","lsn":2}
+{"op":"put","key":3,"val":"row 3","lsn":3}
+```
+
+<Provenance recorded={REC} />
+
+<Gotcha title="fsync per put is why fill 2000 wrote 2,000 fsyncs">
+the toy's WAL calls fsync on every record, which is honest (each put is durable when it returns) and slow. postgres batches: one COMMIT flushes the WAL for every record of the transaction, and concurrent commits share one flush (group commit). `synchronous_commit = off` skips the wait entirely and risks the last few hundred milliseconds of commits ([what COMMIT waits for](/learn/wal/commit-path)). the toy has no transactions at all, so every put is its own commit.
+</Gotcha>
+
+<Keylines>
+- a database is pages on disk, a buffer pool in memory, and a log that's written first.
+- a b+tree split pushes one key up; a root split makes the tree taller.
+- a put is durable once its WAL record is fsynced, not when its page is written.
+- a checkpoint writes the dirty pages and moves the redo starting point.
+- recovery replays the log after the checkpoint. postgres adds page LSNs and full-page images so replay is safe on any page.
+</Keylines>

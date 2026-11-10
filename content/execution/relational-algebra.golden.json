@@ -1,0 +1,93 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "18d01f07f1eba6e8": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS rows, count(DISTINCT city) AS cities FROM customers;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rows", "int8", 20],
+            ["cities", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c7f502c8591b6685",
+          "rows": [
+            ["2000", "28"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8a396fc3a9edf50d": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT city FROM customers WHERE country = 'GB'\nUNION\nSELECT city FROM customers WHERE country = 'FR';\n\nEXPLAIN (COSTS OFF)\nSELECT city FROM customers WHERE country = 'GB'\nEXCEPT\nSELECT city FROM customers WHERE country = 'FR';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "33e20a6e40e7bb0d",
+          "rows": [
+            ["HashAggregate"],
+            ["  Group Key: customers.city"],
+            ["  ->  Append"],
+            ["        ->  Seq Scan on customers"],
+            ["              Filter: (country = 'GB'::bpchar)"],
+            ["        ->  Seq Scan on customers customers_1"],
+            ["              Filter: (country = 'FR'::bpchar)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a0be958c839c0888",
+          "rows": [
+            ["HashSetOp Except"],
+            ["  ->  Seq Scan on customers"],
+            ["        Filter: (country = 'GB'::bpchar)"],
+            ["  ->  Seq Scan on customers customers_1"],
+            ["        Filter: (country = 'FR'::bpchar)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9799d853968ca579": {
+      "db": "shop",
+      "sql": "SELECT DISTINCT c.name\nFROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'Paris'\nORDER BY c.name\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "78721f5989d04fbc",
+          "rows": [
+            ["Aisha Moreau"],
+            ["Ama Jensen"],
+            ["Ama Silva"],
+            ["Ama Smith"],
+            ["Amelia Ahmed"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

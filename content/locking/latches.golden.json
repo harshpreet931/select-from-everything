@@ -1,0 +1,52 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "a7c7f114003be013": {
+      "db": "empty",
+      "sql": "SELECT type, count(*) FROM pg_wait_events GROUP BY type ORDER BY type;\nSELECT name, description FROM pg_wait_events\nWHERE type = 'LWLock' AND name IN ('BufferContent', 'BufferMapping', 'LockManager', 'WALInsert', 'WALWrite')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["type", "text", 25],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 9,
+          "digest": "9961536d0a5c919e",
+          "rows": [
+            ["Activity", "18"],
+            ["BufferPin", "1"],
+            ["Client", "9"],
+            ["Extension", "1"],
+            ["IO", "81"],
+            ["IPC", "58"],
+            ["LWLock", "84"],
+            ["Lock", "12"],
+            ["Timeout", "10"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["description", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "c1318f4fdc1658b2",
+          "rows": [
+            ["BufferContent", "Waiting to access a data page in memory"],
+            ["BufferMapping", "Waiting to associate a data block with a buffer in the buffer pool"],
+            ["LockManager", "Waiting to read or update information about \"heavyweight\" locks"],
+            ["WALInsert", "Waiting to insert WAL data into a memory buffer"],
+            ["WALWrite", "Waiting for WAL buffers to be written to disk"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

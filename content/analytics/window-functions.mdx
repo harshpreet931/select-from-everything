@@ -1,0 +1,149 @@
+import { runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/window-functions.pgtrace.json";
+
+{/* the GROUP BY / OVER switch, the four-window switch and the clause stepper all read
+    traces/window-functions.scenario.sql: school's eight instructors, captured on PGlite. the
+    stepper's tables are real prefix queries (@stages). */}
+
+export const fold = runsOf(trace, ["GROUP BY dept", "OVER (PARTITION BY dept)"], 0);
+export const W = ["()", "(PARTITION BY dept)", "(ORDER BY salary DESC)", "(PARTITION BY dept ORDER BY salary DESC)"];
+export const windows = Object.fromEntries(Object.entries(runsOf(trace, W, 2)).map(([k, r]) => [k, { ...r, hot: [`OVER ${k}`] }]));
+
+<InShort>
+a **window function** computes something across a set of rows, like an aggregate, and then **puts the answer on every row** instead of folding them into one. `OVER (...)` says which rows: **PARTITION BY** splits them into groups, ORDER BY lines each group up.
+
+windows run after WHERE, GROUP BY and HAVING, and before DISTINCT, ORDER BY and LIMIT. so they can't go in WHERE.
+</InShort>
+
+## the picture
+
+you know how GROUP BY gets you each department's average salary, and in the same breath throws away every name? and then you join the averages back onto the people to compare them? kinda clunky. a window function is the version that keeps the people.
+
+think of a class photo. GROUP BY is the yearbook page that says "CS: 4 instructors, average 88,750". a window is the same photo with a sticky note on every face: "you're in CS, there are 4 of you, the average here is 88,750". same numbers. nobody left the photo.
+
+<Figure wide caption={<>switch between the two. GROUP BY folds the eight instructors into four rows. <code>OVER (PARTITION BY dept)</code> computes the same count and average per department, and keeps all eight rows, each with its department's numbers.</>}>
+<RunPick options={[{ key: "fold with", values: ["GROUP BY dept", "OVER (PARTITION BY dept)"] }]} runs={fold} hot={["GROUP BY dept", "OVER (PARTITION BY dept)"]} group="dept" trace={prov(trace)} />
+</Figure>
+
+that's the whole idea: an aggregate with `OVER` after it stops being a GROUP BY aggregate and becomes a window function. the rows go in, the same rows come out, and each one gets a new column.
+
+## OVER: which rows each row sees
+
+the parentheses after OVER describe a **window**: for the current row, which other rows count. there are two knobs, and an empty `OVER ()` uses neither.
+
+```sql run db=school
+SELECT name, dept, salary,
+       salary - round(avg(salary) OVER (PARTITION BY dept)) AS vs_dept
+FROM instructors
+ORDER BY dept, salary DESC;
+```
+
+Hannah Okoye earns 9,250 more than the CS average. that's the question GROUP BY can't answer in one go: a row's value next to its group's value.
+
+<Figure wide caption={<>four windows over the same eight rows. <code>()</code> is everyone. PARTITION BY gives each department its own window. ORDER BY makes each row see only the rows up to itself, so the count and the sum become <em>running</em> ones.</>}>
+<RunPick options={[{ key: "OVER", values: W }]} runs={windows} group="dept" trace={prov(trace)} />
+</Figure>
+
+- **PARTITION BY** splits the rows into independent groups, like GROUP BY's buckets, minus the folding. no PARTITION BY means one partition, the whole result.
+- **ORDER BY** lines up the rows inside each partition. ranking functions need it ([row_number, rank and dense_rank](/learn/analytics/ranking)), so do `lag` and `lead` ([the previous row](/learn/analytics/lag-and-lead)).
+
+and here's the surprise in the third run: adding ORDER BY to a `sum` turned it into a running total. an ORDER BY inside OVER also sets a default **frame**, "from the first row to this one", and the sum reads only its frame. that's on purpose, it's how running totals are written, and it's also the reason [window frames](/learn/analytics/window-frames) is a chapter of its own.
+
+<Predict options={["1 row: 8", "8 rows, each 8", "an error"]} answer={1}>
+```sql
+SELECT name, count(*) OVER () AS n
+FROM instructors;
+```
+<Explain>
+`count(*)` alone would fold the table into one row. with OVER it doesn't fold anything: every one of the eight rows gets the count of its window, and `()` is a window holding all eight. so 8 rows, each with n = 8.
+</Explain>
+</Predict>
+
+## where windows run
+
+windows have a fixed place in [the logical order](/learn/basics/logical-order): after FROM, WHERE, GROUP BY and HAVING, and before DISTINCT, ORDER BY and LIMIT. they see exactly the rows that survived the clauses before them, and nothing they compute is cut until the clauses after them.
+
+<Figure wide caption={<>step through. WHERE drops Hannah Okoye before the window exists, so Marco Rossi ranks first in CS. the window adds <code>dept_rank</code> to seven rows and removes none. ORDER BY can sort on it, and LIMIT cuts last, after every rank is decided.</>}>
+<ClauseStepper trace={trace} maxRows={9} />
+</Figure>
+
+two consequences you'll run into in your first week.
+
+**a window function can't go in WHERE**, because WHERE runs before windows exist. postgres says so by name:
+
+```sql run db=school expect=error
+SELECT name, dept, salary
+FROM instructors
+WHERE rank() OVER (PARTITION BY dept ORDER BY salary DESC) = 1;
+```
+
+the fix is the same as for an alias: compute it one level down, filter one level up.
+
+```sql run db=school
+SELECT name, dept, salary
+FROM (
+  SELECT name, dept, salary,
+         rank() OVER (PARTITION BY dept ORDER BY salary DESC) AS dept_rank
+  FROM instructors
+) AS ranked
+WHERE dept_rank = 1
+ORDER BY dept;
+```
+
+that's the shape of every "top n per group" query, and [top n per group](/learn/analytics/top-n-per-group) compares it with the other two ways. (HAVING is out for the same reason: it also runs before windows. some engines, duckdb for one, add a [QUALIFY](https://duckdb.org/docs/stable/sql/query_syntax/qualify) clause that filters after windows. postgres doesn't have it.)
+
+**a window can run over grouped rows.** since GROUP BY has already happened, a window can take the groups as its rows, aggregates included. a window sum of a group count is the classic "percent of total":
+
+```sql run db=school
+SELECT dept,
+       count(*) AS courses,
+       round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+FROM courses
+GROUP BY dept
+ORDER BY dept;
+```
+
+`count(*)` is the GROUP BY aggregate, one per department. `sum(...) OVER ()` is a window over the five grouped rows, adding up those counts. CS has 5 of the 12 courses: 41.7%.
+
+## naming a window
+
+when several functions share a window, write it once in a `WINDOW` clause and refer to it by name. it reads better, and postgres computes functions over the same window in one pass over one sort:
+
+```sql run db=school
+SELECT name, dept, salary,
+       rank()      OVER w AS dept_rank,
+       first_value(name) OVER w AS top_of_dept
+FROM instructors
+WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)
+ORDER BY dept, salary DESC;
+```
+
+the plan shows the pass: one `WindowAgg` node over one sort, for both functions:
+
+```sql run db=school
+EXPLAIN (COSTS OFF)
+SELECT name, rank() OVER w, first_value(name) OVER w
+FROM instructors
+WINDOW w AS (PARTITION BY dept ORDER BY salary DESC)
+ORDER BY dept, salary DESC;
+```
+
+one sort by `dept, salary DESC`, then one WindowAgg computing both. (the `Window:` line prints `ORDER BY salary` without the DESC; the Sort Key right under it has it. that's how postgres 18.6 prints it, on a real server too, not a different window.) different windows mean more sorts, one WindowAgg each, stacked. how postgres sorts is [sorting](/learn/execution/sorting)'s business.
+
+<Gotcha title="the window's ORDER BY doesn't order the result">
+`OVER (ORDER BY salary DESC)` decides the order rows are *considered in* for that window. it promises nothing about the order they come out in. often they happen to come out in that order, because the last sort was the window's. add a second window, or a join above, and they won't. the query's own ORDER BY is the only one that orders the output.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/tutorial-window.html" title="window functions (tutorial)">the manual's tutorial builds up the same ideas on an employee table: PARTITION BY, ORDER BY, the frame a running sum uses, and the rule that window functions are only allowed in the select list and ORDER BY.</Docs>
+
+<Interview q="what's the difference between GROUP BY and a window function?">
+GROUP BY folds each group of rows into one output row, so you lose the individual rows. a window function computes over a group of rows (its partition, and within that its frame) but returns a value for every input row, so nothing is folded. windows run after GROUP BY and HAVING, so they can't be used in WHERE; wrap the query in a subquery and filter outside. bonus point: a window can aggregate the results of GROUP BY, as in `sum(count(*)) OVER ()` for a percent of total.
+</Interview>
+
+<Keylines>
+- a window function computes across rows and keeps every row: n rows in, n rows out.
+- OVER says which rows: PARTITION BY splits them, ORDER BY lines them up.
+- ORDER BY inside OVER also turns aggregates into running ones (the default frame).
+- windows run after WHERE, GROUP BY and HAVING, before DISTINCT, ORDER BY and LIMIT.
+- to filter on a window function, compute it in a subquery and filter outside.
+</Keylines>

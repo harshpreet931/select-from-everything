@@ -1,0 +1,159 @@
+import trace from "./traces/records.pgtrace.json";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+
+{/* the WalStrip and the bars read traces/records (PGlite, the lab dataset): the same engine and
+    data as the run blocks, so the lengths match. */}
+
+export const all = trace.steps.flatMap((s) => s.wal.records);
+export const first = trace.steps[0].wal.records;
+export const second = trace.steps[1].wal.records;
+export const hot = trace.steps[2].wal.records;
+export const cold = trace.steps[3].wal.records;
+export const sum = (rs) => rs.reduce((a, r) => a + r.len, 0);
+
+<InShort>
+the WAL is one long stream of **records**, and an **LSN** (log sequence number) is just a byte position in it. every record names its **resource manager** (Heap, Btree, Transaction, XLOG, ...) and a record type, carries the xid that wrote it, and lists the blocks it touches. `pg_walinspect` reads them back from SQL: an INSERT is a heap record, one index record per index, and a commit record.
+</InShort>
+
+## the picture
+
+you know how people say "the WAL" like it's a mysterious binary blob only replicas understand? it's a list. a long, append-only list of small, self-describing records, each saying "on this page of this relation, do this". you can read it from SQL, and it's more readable than you'd think.
+
+think of a ship's log. every entry has a position in the book (the LSN), who made it (the xid), which department (the resource manager: engine room, galley, bridge), what kind of entry it is (the record type), and which compartments it's about (the block references). some entries carry a full sketch of a compartment as it looked (a full-page image). the commit entries are the captain's signature.
+
+<Figure caption={<>one WAL record, drawn by hand from postgres's xlogrecord.h. the header is 24 bytes; the rest depends on what's being logged.</>}>
+<Tree>{`
+XLogRecord header, 24 bytes #meta // the same for every record
+    xl_tot_len // total length of this record, header included
+    xl_xid // the transaction that wrote it (0 for bookkeeping)
+    xl_prev // the LSN of the record before it: the log is a chain
+    xl_info, xl_rmid // which resource manager, which record type
+    xl_crc // a CRC of the whole record: a torn or garbage record fails it
+block references #ref // zero or more
+    relation, fork, block number // which page this record changes
+    full-page image // optional: a copy of the page, holes left out
+main data // the change itself: the tuple, the key, the commit time
+`}</Tree>
+<Provenance drawn="after src/include/access/xlogrecord.h, postgres 18" />
+</Figure>
+
+## reading it back
+
+pg_walinspect reads the WAL between two LSNs. postgres 16 added `pg_get_wal_block_info`, which lists each record's block references, so a join tells you which relation each record touched. this block wraps that join in a small function, marks the current position, and inserts one row:
+
+```sql run db=lab session=rec
+CREATE FUNCTION wal_since(start pg_lsn)
+RETURNS TABLE (lsn pg_lsn, rmgr text, record_type text, len int4, fpi int4, rel name)
+LANGUAGE sql AS $$
+  SELECT r.start_lsn, r.resource_manager, r.record_type, r.record_length, r.fpi_length, c.relname
+  FROM pg_get_wal_records_info(start, pg_current_wal_insert_lsn()) AS r
+  LEFT JOIN pg_get_wal_block_info(start, pg_current_wal_insert_lsn()) AS b ON b.start_lsn = r.start_lsn
+  LEFT JOIN pg_class AS c ON c.relfilenode = b.relfilenode
+$$;
+SELECT set_config('my.start', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked,
+       set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS also;
+INSERT INTO accounts VALUES (4, 'dave', 10.00);
+SELECT * FROM wal_since(current_setting('my.lsn')::pg_lsn) ORDER BY lsn;
+```
+
+(`set_config` keeps the starting LSN in a session setting, so marking it doesn't write any WAL.)
+
+the last three rows are the INSERT. `Heap INSERT` put the tuple on page 0 of `accounts`. `Btree INSERT_LEAF` added its key to `accounts_pkey`. `Transaction COMMIT` made both count. the heap and btree records are big because each carries a **full-page image**: this is the first change to those pages since the dataset's last checkpoint ([full-page writes](/learn/wal/full-page-writes) is about why).
+
+the rows above them are a surprise: `XLOG FPI_FOR_HINT`, whole catalog pages. this is the session's first statement, so planning it read catalog rows nobody had read since the dataset was built, set their [hint bits](/learn/mvcc/commit-log-and-hint-bits), and, with checksums on, had to log those pages too. (a row with no name is a catalog whose file pg_class doesn't list by relfilenode: pg_class, pg_attribute, pg_proc and pg_type are "mapped".) reading wrote WAL. the second insert is clean:
+
+```sql run session=rec
+SELECT set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;
+INSERT INTO accounts VALUES (5, 'erin', 20.00);
+SELECT * FROM wal_since(current_setting('my.lsn')::pg_lsn) ORDER BY lsn;
+```
+
+the same three records, this time only the changes. here are both, and two updates, captured statement by statement:
+
+<Figure wide caption={<>step through four statements on lab's accounts. each record shows its LSN, length, resource manager and type, and the block it touched (<C k="ref">+FPI</C> when it carries the page). autocommit flushes at every COMMIT, so the <C k="live">flush line</C> follows the commit record.</>}>
+<WalStrip trace={trace} />
+</Figure>
+
+<Figure caption={<>record lengths in bytes, from the same capture. the first insert pays for two page images; the second is the change alone.</>}>
+<Bars
+  unit="B"
+  data={[
+    { label: "1st INSERT: heap", value: first[0].len, tone: "hot" },
+    { label: "1st INSERT: btree", value: first[1].len, tone: "hot" },
+    { label: "2nd INSERT: heap", value: second[0].len },
+    { label: "2nd INSERT: btree", value: second[1].len },
+    { label: "COMMIT", value: second[2].len },
+  ]}
+/>
+<Provenance trace={prov(trace)} />
+</Figure>
+
+{first[0].len} bytes against {second[0].len} for the same kind of row. the {first[0].fpiLen} bytes of difference is page 0 as it stood before the change (postgres leaves out the empty middle of the page, so a page with three small rows logs small). a commit record is {second[2].len} bytes: the commit time, plus a little bookkeeping.
+
+## an UPDATE, HOT or not
+
+<Predict question="UPDATE accounts SET id = 20 WHERE id = 2: how many WAL records, commit included?" options={["2: heap, commit", "3: heap, btree, commit", "4: delete, insert, btree, commit"]} answer={1}>
+```sql
+UPDATE accounts SET balance = balance + 10 WHERE id = 1;  -- heap, commit
+UPDATE accounts SET id = 20 WHERE id = 2;                 -- ?
+```
+<Explain>
+three. an UPDATE is one heap record however you slice it (the old version's xmax and the new version together), not a delete plus an insert. but `id` is the primary key, so the new version needs its own index entry: `Btree INSERT_LEAF`. the balance update didn't, because no indexed column changed and the new version fit on the same page. that's a [HOT update](/learn/mvcc/hot-updates): `Heap HOT_UPDATE`, no index record at all.
+</Explain>
+</Predict>
+
+```sql run session=rec
+SELECT set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;
+UPDATE accounts SET balance = balance + 10 WHERE id = 1;
+UPDATE accounts SET id = 20 WHERE id = 2;
+SELECT * FROM wal_since(current_setting('my.lsn')::pg_lsn) ORDER BY lsn;
+```
+
+`HOT_UPDATE` versus `UPDATE` plus `INSERT_LEAF`, {sum(hot) - hot[hot.length - 1].len} bytes against {sum(cold) - cold[cold.length - 1].len} before the commit records. on a table with five indexes the non-HOT update writes five index records. that's most of [what indexes cost](/learn/indexes/index-costs). (the unnamed `FPI_FOR_HINT` and `PRUNE_ON_ACCESS` rows at the top are catalog pages again, hinted and [pruned](/learn/mvcc/hot-updates) as the UPDATE was planned.)
+
+## resource managers
+
+every record belongs to a resource manager: the part of postgres that knows how to replay it. recovery reads a record, looks at its rmgr id, and hands it to that module's redo function.
+
+```sql run db=lab rows=8
+SELECT rm_id, rm_name FROM pg_get_wal_resource_managers() ORDER BY rm_id;
+```
+
+22 built in. `Heap` and `Heap2` split the heap's record types between them (the first ran out of room in the 4-bit type field), `Btree`, `Hash`, `Gin`, `Gist`, `SPGist` and `BRIN` are the index types, `Transaction` has COMMIT and ABORT, `XLOG` has checkpoints and page images, `Standby` tells replicas which transactions are running. extensions can register their own (that's what `rm_builtin` is for). `pg_get_wal_stats` sums any stretch of WAL by resource manager. here's everything this session has written since its first mark:
+
+```sql run session=rec
+SELECT "resource_manager/record_type" AS rmgr, count, record_size, fpi_size
+FROM pg_get_wal_stats(current_setting('my.start')::pg_lsn, pg_current_wal_insert_lsn())
+WHERE count > 0
+ORDER BY rmgr;
+```
+
+## an LSN is an address
+
+an LSN is a 64-bit byte offset into the WAL since the cluster was created, printed as two hex halves: the high 32 bits, a slash, the low 32. subtract two and you get bytes:
+
+```sql run db=lab
+SELECT pg_current_wal_insert_lsn() AS here,
+       pg_wal_lsn_diff(pg_current_wal_insert_lsn(), '0/0') AS bytes_since_initdb,
+       file_name, file_offset
+FROM pg_walfile_name_offset(pg_current_wal_insert_lsn());
+```
+
+the lab database is about 25 MB into its WAL (25,074,984 bytes). on disk the stream is cut into 16 MB segment files in `pg_wal/`, named after the timeline and the LSN they start at. `file_offset` is where in that file the position falls. every page header stores an LSN (pd_lsn), every replica reports how far it has got as an LSN, and `pg_wal_lsn_diff` between two of them is "how many bytes behind" ([streaming replication](/learn/wal/streaming-replication) uses exactly that).
+
+<Gotcha title="you can't read WAL that hasn't been flushed">
+pg_walinspect reads the WAL files, so it only sees records up to the flush pointer. inside an open transaction, asking for records up to `pg_current_wal_insert_lsn()` fails with "could not find a valid record": they exist only in wal_buffers. [the write-ahead rule](/learn/wal/write-ahead-rule) is about that gap. commit, or read up to `pg_current_wal_flush_lsn()`.
+</Gotcha>
+
+<Interview q="what's in a postgres WAL record, and how would you find out what's generating most of your WAL?">
+a header (total length, xid, the previous record's LSN, resource manager and record type, a CRC), then block references (relation, fork, block, optionally a full-page image), then the record's own data. to see what's writing WAL: pg_walinspect's pg_get_wal_stats over an interval gives counts and bytes per resource manager and record type, and fpi_size shows how much is full-page images (often most of it, right after a checkpoint). pg_stat_statements has wal_records, wal_fpi and wal_bytes per query, and EXPLAIN (ANALYZE, WAL) does the same for one statement. bonus point: a table with many indexes writes an index record per index per non-HOT row change, so index count and HOT ratio drive WAL volume.
+</Interview>
+
+<Keylines>
+- the WAL is an append-only stream of records. an LSN is a byte position in it.
+- each record has a resource manager, a type, an xid, block references and maybe a full-page image.
+- an INSERT is a heap record, one index record per index, and a commit record.
+- a HOT update writes one heap record. a non-HOT one adds an index record per index.
+- pg_get_wal_records_info, pg_get_wal_block_info and pg_get_wal_stats read it from SQL.
+</Keylines>

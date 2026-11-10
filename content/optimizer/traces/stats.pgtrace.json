@@ -1,0 +1,202 @@
+{
+ "v": 1,
+ "scenario": "content/optimizer/traces/stats.scenario.sql",
+ "title": "what ANALYZE wrote down about four columns of events, and what goes stale when rows arrive",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"}
+ },
+ "base": {"xid":795,"lsn":31474936},
+ "setup": "CREATE FUNCTION card(col text) RETURNS TABLE (stat text, value text) LANGUAGE sql AS $$\n  SELECT x.stat, x.value\n  FROM pg_stats AS s,\n       LATERAL (VALUES\n         (1, 'null_frac', s.null_frac::text),\n         (2, 'n_distinct', s.n_distinct::text),\n         (3, 'most_common_vals', coalesce(array_length(s.most_common_freqs, 1) || ' values, from ' || (s.most_common_vals::text::text[])[1], 'none')),\n         (4, 'most_common_freqs', coalesce(array_to_string(s.most_common_freqs[1:3], ', ') || CASE WHEN array_length(s.most_common_freqs, 1) > 3 THEN ', …' ELSE '' END, 'none')),\n         (5, 'histogram_bounds', coalesce(array_length(s.histogram_bounds::text::text[], 1) || ' bounds, ' || (s.histogram_bounds::text::text[])[1] || ' … ' || (s.histogram_bounds::text::text[])[array_length(s.histogram_bounds::text::text[], 1)], 'none')),\n         (6, 'correlation', s.correlation::text),\n         (7, 'avg_width', s.avg_width::text)\n       ) AS x(k, stat, value)\n  WHERE s.tablename = 'events' AND s.attname = col\n  ORDER BY x.k\n$$;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT * FROM card('kind')",
+   "note": "kind: five values, all of them common, so a full list of frequencies and no histogram.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"stat","type":"text"},{"name":"value","type":"text"}],
+    "data": [
+     ["null_frac","0"],
+     ["n_distinct","5"],
+     ["most_common_vals","5 values, from view"],
+     ["most_common_freqs","0.60448, 0.19536, 0.10956, …"],
+     ["histogram_bounds","none"],
+     ["correlation","0.43209264"],
+     ["avg_width","6"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT * FROM card('amount')",
+   "note": "amount: only purchases have one, so 93% of the rows are NULL.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"stat","type":"text"},{"name":"value","type":"text"}],
+    "data": [
+     ["null_frac","0.9294"],
+     ["n_distinct","1695"],
+     ["most_common_vals","70 values, from 9.57"],
+     ["most_common_freqs","8e-05, 8e-05, 8e-05, …"],
+     ["histogram_bounds","101 bounds, 5.03 … 199.97"],
+     ["correlation","-0.037639484"],
+     ["avg_width","6"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT * FROM card('user_id')",
+   "note": "user_id: 500 users, skewed. the busiest 100 in the MCV list, the rest in a histogram.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"stat","type":"text"},{"name":"value","type":"text"}],
+    "data": [
+     ["null_frac","0"],
+     ["n_distinct","500"],
+     ["most_common_vals","100 values, from 1"],
+     ["most_common_freqs","0.04536, 0.0184, 0.0154, …"],
+     ["histogram_bounds","101 bounds, 17 … 500"],
+     ["correlation","-0.0051777875"],
+     ["avg_width","4"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT * FROM card('occurred_at')",
+   "note": "occurred_at: every value distinct (n_distinct = -1), stored in time order (correlation 1).",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"stat","type":"text"},{"name":"value","type":"text"}],
+    "data": [
+     ["null_frac","0"],
+     ["n_distinct","-1"],
+     ["most_common_vals","none"],
+     ["most_common_freqs","none"],
+     ["histogram_bounds","101 bounds, 2026-03-01 00:00:18+00 … 2026-05-31 23:55:12+00"],
+     ["correlation","0.9999998"],
+     ["avg_width","8"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT v AS kind, f AS freq\nFROM pg_stats, unnest(most_common_vals::text::text[], most_common_freqs) AS u(v, f)\nWHERE tablename = 'events' AND attname = 'kind'\nORDER BY f DESC",
+   "note": "kind's most common values and their frequencies.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"kind","type":"text"},{"name":"freq","type":"float4"}],
+    "data": [["view","0.60448"],["click","0.19536"],["add_to_cart","0.10956"],["purchase","0.0706"],["signup","0.02"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "INSERT INTO events (user_id, kind, occurred_at)\nSELECT 1 + i % 500, 'signup', timestamptz '2026-06-01 00:00+00' + i * interval '1 minute'\nFROM generate_series(1, 4000) AS i\nORDER BY i",
+   "note": "4,000 signups arrive. nobody runs ANALYZE.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":4000,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT * FROM events WHERE kind = 'signup'",
+   "note": "the estimate still uses the old 2% for signup, times the table's new size.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "events",
+     "Alias": "events",
+     "Startup Cost": 0,
+     "Total Cost": 711.29,
+     "Plan Rows": 549,
+     "Plan Width": 78,
+     "Disabled": false,
+     "Filter": "(kind = 'signup'::text)"
+    }
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE kind = 'signup'",
+   "note": "the real count.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["4500"]]}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "ANALYZE events",
+   "note": "ANALYZE reads the table again.",
+   "status": "ok",
+   "result": {"command":"ANALYZE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT * FROM events WHERE kind = 'signup'",
+   "note": "now the estimate knows.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "events",
+     "Alias": "events",
+     "Startup Cost": 0,
+     "Total Cost": 730.5,
+     "Plan Rows": 4500,
+     "Plan Width": 72,
+     "Disabled": false,
+     "Filter": "(kind = 'signup'::text)"
+    }
+   }
+  }
+ ],
+ "db": "events"
+}

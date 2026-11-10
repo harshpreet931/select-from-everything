@@ -1,0 +1,150 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { btreeFromPages } from "@/lib/db/fromTrace";
+import { prov } from "@/lib/db/captured";
+import realTree from "./traces/real-tree.pgtrace.json";
+
+{/* the lab is the BTree model (fanout 4). the real tree is traces/real-tree.scenario.sql,
+    captured on PGlite: 200 int keys in an index built with fillfactor 10, so a small
+    index has a root and six leaves. */}
+
+export const real = btreeFromPages(realTree.steps[0].btree.t_id);
+// the lookup figure keeps two keys per leaf, so the whole root (and the path through it) fits
+export const slim = (n) => n.level > 0 ? n : { ...n, keys: [n.keys[0], n.keys[n.keys.length - 1]], tids: n.tids && [n.tids[0], n.tids[n.tids.length - 1]], dead: undefined, more: (n.more ?? 0) + n.keys.length - 2, moreAt: 1 };
+export const lookup = { ...real, nodes: Object.fromEntries(Object.entries(real.nodes).map(([k, n]) => [k, slim(n)])), path: ["b3", "b5"], hit: "115" };
+
+<InShort>
+a **B+tree** keeps every key in its **leaves**, in order, with the leaves linked left to right. the pages above them hold only **separator keys** that say which child to go down. it's wide (hundreds of keys a page) and short (three or four levels for millions of rows), and it grows **at the root**, so every leaf is always the same distance from the top.
+</InShort>
+
+## the picture
+
+you know how [an index](/learn/indexes/what-an-index-is) is a sorted copy of a column with an address per row? sorted is easy when it fits on one page. the trouble starts at page two. a sorted array would have to shift half its entries for every insert, and a plain binary tree would be twenty levels deep, one page read per level.
+
+a B+tree is the fix, and it's the shape of a phone book's thumb tabs. the tabs (the root) say "A to F, G to M, N to Z". each section (an inner page) has its own tabs. the actual names and numbers (the keys and their row addresses) are only on the bottom pages, the leaves, and when you finish one page you just turn to the next one (the sibling link) without going back to the tabs.
+
+build one. type a key and press insert, or pick a preset and step. the model holds 4 keys a page, so it splits often enough to watch.
+
+<Figure wide caption={<>insert keys and step. a full leaf splits in two and <C k="hot">copies</C> its first right-hand key up as a separator; a full inner page splits and <em>moves</em> its middle key up. when the root splits, a new root appears on top. try a range like <code>3..9</code>: one trip down, then right along the <C k="ref">sibling links</C>.</>}>
+<BTree lab={{ order: 4 }} />
+</Figure>
+
+three things to notice while you play:
+
+- **all the keys are in the leaves.** a separator like 5 in the root is a copy. the real 5 lives in a leaf, next to its row address. that's the "+" in B+tree. (a plain B-tree keeps each key exactly once, wherever it lands, inner pages included.)
+- **the tree never grows downward.** a leaf that fills up splits sideways, and pushes one key into its parent. only when the root itself splits does the tree get taller, and then every leaf gets one level deeper at once. that's why the height counter only moves when you see "root split", and why the tree is always balanced without anybody rebalancing it.
+- **a range scan goes down once.** after that it walks the leaf level left to right. no climbing back up.
+
+## why it stays so short
+
+the lab holds 4 keys a page. postgres holds hundreds. an int4 entry in a leaf is a 16-byte index tuple plus a 4-byte line pointer, so about 400 of them fit in an 8 KB page, and an inner page points at about as many children. every level multiplies the reach by a few hundred:
+
+```sql run ext=pageinspect
+CREATE TABLE k1 AS SELECT generate_series(1, 1000) AS id;
+CREATE TABLE k100 AS SELECT generate_series(1, 100000) AS id;
+CREATE TABLE k1m AS SELECT generate_series(1, 1000000) AS id;
+CREATE INDEX k1_id ON k1 (id);
+CREATE INDEX k100_id ON k100 (id);
+CREATE INDEX k1m_id ON k1m (id);
+SELECT i AS index, m.level + 1 AS levels,
+       pg_relation_size(i) / 8192 AS pages
+FROM unnest(ARRAY['k1_id', 'k100_id', 'k1m_id']) AS i,
+     bt_metap(i) AS m
+ORDER BY pages;
+```
+
+a thousand keys: a root over a few leaves. a hundred thousand: still two levels: 276 pages are the metapage, the root and 274 leaves. a million: three levels, 2,745 pages. (`bt_metap` counts levels from the leaves up, starting at 0, so the query adds 1.) three levels of int keys reach into the tens of millions before a fourth is needed. that's the whole trick: the height grows with the logarithm of the row count, base "a few hundred".
+
+<Predict question="a lookup by id in the 1,000,000-row index (three levels). how many index pages does it read?" options={["1", "about 4", "about 20", "about 2,745"]} answer={1}>
+```sql
+SELECT id FROM k1m WHERE id = 777777;
+```
+<Explain>
+four: the metapage (page 0, which says where the root is), the root, one inner page, one leaf. a binary search over a million sorted keys would take about 20 comparisons, but they happen inside pages that are already in memory. what costs is pages, and the tree is three pages deep.
+</Explain>
+</Predict>
+
+```sql run db=empty
+CREATE TABLE k1m AS SELECT generate_series(1, 1000000) AS id;
+CREATE INDEX k1m_id ON k1m (id);
+VACUUM ANALYZE k1m;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id FROM k1m WHERE id = 777777;
+```
+
+`Buffers: shared hit=1 read=3`: four pages, one of them (the metapage) already in memory. it's an [index-only scan](/learn/indexes/index-only-scans), so the table isn't touched at all.
+
+## a real one
+
+the lab is a model. here's the real thing: postgres's btree (the code calls it **nbtree**), 200 int keys, built with `fillfactor = 10` so that a tiny index spreads over several leaves instead of one.
+
+<Figure wide caption={<>a real nbtree: the root (page 3) over six leaves. every leaf but the last ends in a <C k="meta">high key</C>, the smallest key that can't be on that page. the root has one more <C k="ref">downlink</C> than separators: its first one has no key at all.</>}>
+<BTree trace={realTree} select="t_id" collapse={5} />
+</Figure>
+
+same shape as the lab: a root, a row of leaves, separators that are copies of leaf keys. the details are where postgres differs from the textbook. read the root raw:
+
+```sql run ext=pageinspect session=real
+CREATE TABLE t (id int);
+INSERT INTO t SELECT generate_series(1, 200);
+CREATE INDEX t_id ON t (id) WITH (fillfactor = 10);
+SELECT root, level FROM bt_metap('t_id');
+SELECT itemoffset, ctid AS downlink, data
+FROM bt_page_items('t_id', 3)
+ORDER BY itemoffset;
+```
+
+on an inner page, the `ctid` column isn't a row address: it's the child page number (the second number means nothing here). item 1 points at page 1 and has **no key**. that's the "minus infinity" item: everything smaller than the first real separator goes left, whatever it is, so there's nothing to store. the separators that follow are `27` hex (39), `4d` (77), `73` (115) and so on, little-endian ints padded to 8 bytes.
+
+now a leaf, its first and last items, and every page's sibling pointers:
+
+```sql run session=real
+SELECT itemoffset, ctid, htid, data
+FROM bt_page_items('t_id', 1)
+WHERE itemoffset <= 3 OR itemoffset >= 38
+ORDER BY itemoffset;
+SELECT blkno, type, live_items, btpo_prev AS prev, btpo_next AS next
+FROM bt_multi_page_stats('t_id', 1, -1)
+ORDER BY blkno;
+```
+
+item 1 of leaf 1 is **39**, and it has no `htid`: it doesn't point at a row. it's the page's **high key**, an upper bound. every key on the page is below it (the last real key is 38, at item 39), and 39 is where the next leaf starts. the stats show the other half: every page knows its left and right neighbour (`prev`, `next`, 0 meaning none), and the rightmost leaf (page 7) has no high key, which is why it has 10 items for 10 keys while the others have 39 for 38.
+
+<Figure wide caption={<>a lookup for 115 on the real tree: the root says 115 ≤ k &lt; 153, so <C k="hot">down to page 5</C>, where 115 is the first key. the separator in the root is a copy of it.</>}>
+<BTree view={lookup} collapse={6} pageCollapse={6} />
+<Provenance trace={prov(realTree)} />
+</Figure>
+
+## the textbook, and what postgres adds
+
+the textbook B+tree (Bayer and McCreight's B-tree, 1972, with the keys moved down to linked leaves) is what the lab draws under "textbook". switch the lab to "postgres nbtree" and three things change, all from one 1981 paper, Lehman and Yao's "efficient locking for concurrent operations on B-trees":
+
+| | textbook B+tree | postgres nbtree |
+| --- | --- | --- |
+| sibling links | leaves only, often one way | every level, both ways (`btpo_prev`, `btpo_next`) |
+| page bound | implied by the parent's separators | stored on the page: the **high key** |
+| the first child | a key per child, or a special case | a "minus infinity" downlink with no key |
+| ascending inserts | split 50/50, leaving half-empty leaves | split near the end, leaving the left page 90% full |
+| underfull pages | merged with a neighbour | left alone; only a completely empty page is removed, by VACUUM |
+| duplicates | one entry per row | one key with a list of row addresses (postgres 13+) |
+
+the right links and the high key exist for concurrency. a reader in the textbook tree has to lock a page and its parent on the way down, so a split can't happen under its feet. a reader in nbtree locks one page at a time: if a split moved its key away while it was between pages, the high key tells it ("115 is past my bound") and the right link says where to go. [b-trees under concurrency](/learn/index-internals/btree-concurrency) walks through it. the 90/10 split is [page splits](/learn/index-internals/page-splits), the duplicates are [deduplication](/learn/index-internals/dedup-and-bottom-up-deletion), and every field of every page is in [a real b-tree, page by page](/learn/index-internals/nbtree-pages).
+
+<Gotcha title="a B+tree is not a binary tree">
+"binary" is about two children. a B-tree page has hundreds, and that's the point: a binary tree over a million keys is about 20 levels, so 20 page reads per lookup when the data is on disk. the B in B-tree has never been officially explained (Bayer worked at Boeing, and "balanced" and "broad" are popular guesses). the useful way to read it is **block**: one node per disk page.
+</Gotcha>
+
+<Deep title="why separators are copies, and how postgres shortens them">
+a leaf split has to tell the parent where the new page starts, and the cleanest boundary is the first key of the right page. copying it up, instead of moving it, keeps the rule simple: every key is in exactly one leaf, and inner pages are only signposts. a separator doesn't even have to be a real key, just something between the last key on the left and the first on the right. postgres uses that <Since v={12} />: for a multicolumn index it keeps only as many columns as it needs to tell the two pages apart (suffix truncation), so inner pages hold more downlinks and the tree stays shorter. for one int column there's nothing to cut, which is why the separators above are exactly 39, 77, 115.
+</Deep>
+
+<Interview q="why do databases use B+trees instead of binary search trees or hash tables?">
+pages. a B+tree node is one disk page holding hundreds of keys, so the tree is three or four levels deep even for hundreds of millions of rows: three or four page reads per lookup, and the top levels are almost always cached. it stays balanced by construction (it grows at the root, so every leaf has the same depth), and because the leaves are sorted and linked, it serves ranges, ORDER BY, prefixes and min/max, which a hash table can't. bonus point: in postgres every level has right links and high keys (Lehman and Yao), so readers never lock more than one page and never wait for a split.
+</Interview>
+
+<Keylines>
+- a B+tree keeps every key in the leaves, sorted and linked; inner pages hold separator copies.
+- it grows at the root, so every leaf is always at the same depth.
+- hundreds of keys a page: a million int keys is three levels, four page reads.
+- a range scan goes down once, then walks right along the leaves.
+- postgres adds Lehman and Yao's right links and high keys on every level, plus a key-less first downlink.
+</Keylines>

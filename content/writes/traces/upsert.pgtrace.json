@@ -1,0 +1,405 @@
+{
+ "v": 1,
+ "scenario": "content/writes/traces/upsert.scenario.sql",
+ "title": "a stock table and every way an insert can meet an existing key",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "stock": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"},{"name":"seen","type":"date"}]
+  },
+  "stock_pkey": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"stock"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE stock (\n  sku  text PRIMARY KEY,\n  qty  int  NOT NULL,\n  seen date NOT NULL\n)",
+   "note": "a stock table keyed by sku.",
+   "status": "ok",
+   "result": {"command":"CREATE TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 10, '2026-03-01'), ('TEA-02', 5, '2026-03-01')",
+   "note": "two teas in stock.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT sku, qty, seen FROM stock ORDER BY sku",
+   "note": "the table.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"},{"name":"seen","type":"date"}],
+    "data": [["TEA-01","10","2026-03-01"],["TEA-02","5","2026-03-01"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-02')",
+   "note": "a plain INSERT of a sku that's already there: the primary key says no, and the whole statement fails.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"stock_pkey\"",
+    "detail": "Key (sku)=(TEA-01) already exists."
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT sku, qty, seen FROM stock ORDER BY sku",
+   "note": "nothing changed.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"},{"name":"seen","type":"date"}],
+    "data": [["TEA-01","10","2026-03-01"],["TEA-02","5","2026-03-01"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-02'), ('TEA-03', 7, '2026-03-02')\nON CONFLICT (sku) DO NOTHING",
+   "note": "DO NOTHING: TEA-01 conflicts and is skipped, TEA-03 is new and goes in. INSERT 0 1.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT sku, qty, seen FROM stock ORDER BY sku",
+   "note": "the table after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"},{"name":"seen","type":"date"}],
+    "data": [["TEA-01","10","2026-03-01"],["TEA-02","5","2026-03-01"],["TEA-03","7","2026-03-02"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-03'), ('TEA-04', 12, '2026-03-03')\nON CONFLICT (sku) DO UPDATE\nSET qty = stock.qty + EXCLUDED.qty, seen = EXCLUDED.seen",
+   "note": "DO UPDATE: TEA-01 exists, so its row is updated with EXCLUDED, the row you tried to insert. TEA-04 is new and inserted. INSERT 0 2 counts both.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT sku, qty, seen FROM stock ORDER BY sku",
+   "note": "the table after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"},{"name":"seen","type":"date"}],
+    "data": [
+     ["TEA-01","13","2026-03-03"],
+     ["TEA-02","5","2026-03-01"],
+     ["TEA-03","7","2026-03-02"],
+     ["TEA-04","12","2026-03-03"]
+    ]
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-02', 99, '2026-02-01')\nON CONFLICT (sku) DO UPDATE\nSET qty = EXCLUDED.qty, seen = EXCLUDED.seen\nWHERE EXCLUDED.seen > stock.seen",
+   "note": "a WHERE on DO UPDATE: this delivery note is older than what we already have, so the update is skipped. INSERT 0 0.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":0,"columns":[],"data":[]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SELECT sku, qty, seen FROM stock ORDER BY sku",
+   "note": "the table after it: TEA-02 kept its newer row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"},{"name":"seen","type":"date"}],
+    "data": [
+     ["TEA-01","13","2026-03-03"],
+     ["TEA-02","5","2026-03-01"],
+     ["TEA-03","7","2026-03-02"],
+     ["TEA-04","12","2026-03-03"]
+    ]
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-02', 1, '2026-03-04'), ('TEA-02', 2, '2026-03-04')\nON CONFLICT (sku) DO UPDATE\nSET qty = stock.qty + EXCLUDED.qty, seen = EXCLUDED.seen",
+   "note": "the same sku twice in one statement. the second would update the row the first just wrote, and postgres refuses.",
+   "status": "error",
+   "error": {"sqlstate":"21000","message":"ON CONFLICT DO UPDATE command cannot affect row a second time"}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "SELECT sku, qty, seen FROM stock ORDER BY sku",
+   "note": "nothing changed.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"},{"name":"seen","type":"date"}],
+    "data": [
+     ["TEA-01","13","2026-03-03"],
+     ["TEA-02","5","2026-03-01"],
+     ["TEA-03","7","2026-03-02"],
+     ["TEA-04","12","2026-03-03"]
+    ]
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT (sku) DO NOTHING\nRETURNING sku, qty",
+   "note": "(sku) names the primary key's column, so the primary key's index is the arbiter. TEA-01 conflicts and is skipped: no rows back.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 0,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"}],
+    "data": []
+   }
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT (sku) DO UPDATE SET qty = stock.qty + EXCLUDED.qty\nRETURNING sku, qty",
+   "note": "(sku) finds the primary key's index, TEA-01 conflicts, and the existing row is updated: 13 + 3.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 1,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"}],
+    "data": [["TEA-01","16"]]
+   }
+  },
+  {
+   "i": 18,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 19,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 20,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT ON CONSTRAINT stock_pkey DO NOTHING\nRETURNING sku, qty",
+   "note": "naming the constraint picks the same index, without listing its columns.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 0,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"}],
+    "data": []
+   }
+  },
+  {
+   "i": 21,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 22,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 23,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT ON CONSTRAINT stock_pkey DO UPDATE SET qty = stock.qty + EXCLUDED.qty\nRETURNING sku, qty",
+   "note": "the same update, the arbiter named by constraint.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 1,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"}],
+    "data": [["TEA-01","16"]]
+   }
+  },
+  {
+   "i": 24,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 25,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 26,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT (qty) DO NOTHING\nRETURNING sku, qty",
+   "note": "no unique index on (qty), so there's nothing to arbitrate with, and postgres refuses before inserting anything.",
+   "status": "error",
+   "error": {
+    "sqlstate": "42P10",
+    "message": "there is no unique or exclusion constraint matching the ON CONFLICT specification"
+   }
+  },
+  {
+   "i": 27,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 28,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 29,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT (qty) DO UPDATE SET qty = stock.qty + EXCLUDED.qty\nRETURNING sku, qty",
+   "note": "the same refusal: a conflict target must match a unique index or constraint.",
+   "status": "error",
+   "error": {
+    "sqlstate": "42P10",
+    "message": "there is no unique or exclusion constraint matching the ON CONFLICT specification"
+   }
+  },
+  {
+   "i": 30,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 31,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 32,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT DO NOTHING\nRETURNING sku, qty",
+   "note": "DO NOTHING without a target skips a conflict on any unique index the table has.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 0,
+    "columns": [{"name":"sku","type":"text"},{"name":"qty","type":"int4"}],
+    "data": []
+   }
+  },
+  {
+   "i": 33,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 34,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 35,
+   "session": "T1",
+   "sql": "INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-05')\nON CONFLICT DO UPDATE SET qty = stock.qty + EXCLUDED.qty\nRETURNING sku, qty",
+   "note": "DO UPDATE without a target is refused: postgres needs to know which conflict it's updating for.",
+   "status": "error",
+   "error": {"sqlstate":"42601","message":"ON CONFLICT DO UPDATE requires inference specification or constraint name"}
+  },
+  {
+   "i": 36,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  }
+ ]
+}

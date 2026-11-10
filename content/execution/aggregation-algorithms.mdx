@@ -1,0 +1,136 @@
+import { AggWalk } from "@/components/figures/execution/AggWalk";
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import trace from "./traces/aggregation.pgtrace.json";
+
+{/* every plan here reads traces/aggregation.scenario.sql, captured on PGlite with the events
+    dataset: twelve events and their real GROUP BY (steps 0, 1), events per user hashed, sorted
+    and over an index (2, 3, 8), ROLLUP (4), the predict's plan (5), and the 4MB and 64kB hash
+    tables (6, 7). the AggWalk figure is a model run on the twelve captured rows; its counts are
+    checked against step 1 before it renders. */}
+
+export const perUser = "SELECT user_id, count(*) FROM events GROUP BY user_id;";
+
+<InShort>
+postgres runs a GROUP BY one of two ways. **HashAggregate** reads the rows in any order and keeps a hash table with one entry per group; nothing comes out until the input ends. **GroupAggregate** needs its input **sorted** on the group key, and hands each group up the moment the key changes.
+
+a hash table that outgrows work_mem **spills to disk** in batches (since postgres 13). and an aggregate can be split in two, **Partial** then **Finalize**, so pieces of the table can be grouped separately and combined.
+</InShort>
+
+## the picture
+
+you know how `GROUP BY` sometimes adds a Sort to the plan and sometimes doesn't? same as counting votes. you can keep a tally sheet with a line per candidate and mark each ballot as it comes (a hash table). or, if the ballots arrive sorted by candidate, you just count until the name changes, write the total down, and start again (a sorted group).
+
+<Figure wide caption={<>twelve real events, grouped by kind, both ways. step through. HashAggregate keeps a <C k="hot">counter</C> per kind and hands everything up at the end. GroupAggregate needs the rows sorted, keeps one counter, and hands each group up as soon as the next kind starts.</>}>
+<AggWalk trace={trace} rows={0} result={1} />
+</Figure>
+
+the tally sheet needs memory for every group at once, and works on any input. the sorted count needs memory for one group, and needs sorted input. that's the whole trade-off, and the planner prices both.
+
+## three plans for one GROUP BY
+
+events per user, 25,000 rows into 500 groups:
+
+<Figure wide caption={<>the same GROUP BY three ways. with nothing sorted by user_id, postgres hashes (53kB). switch hash aggregation off and it sorts all 25,000 rows first. give it an index on user_id and the rows arrive sorted for free: a GroupAggregate with no Sort at all.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "plan", values: ["hashed", "sorted first", "index on user_id"] }]}
+  runs={{
+    hashed: 2,
+    "sorted first": 3,
+    "index on user_id": { step: 8, sql: `CREATE INDEX ON events (user_id);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${perUser}` },
+  }}
+  hot={["Aggregate", "Sort Method", "Batches"]}
+/>
+</Figure>
+
+hashing 25,000 rows into 500 entries is cheap, cheaper than sorting 25,000 rows (513kB of quicksort) just to count them. but sorted input you already have is free, and the GroupAggregate over the index needs no hash table and streams its groups, which also means a LIMIT above it can stop it early. the sort order an index provides is the same resource a [merge join](/learn/execution/merge-join) spends.
+
+<Predict question="GROUP BY user_id ORDER BY user_id, no index. what does postgres sort?" options={["all 25,000 rows, then groups", "the 500 groups, after hashing", "nothing"]} answer={1}>
+```sql
+SELECT user_id, count(*)
+FROM events
+GROUP BY user_id
+ORDER BY user_id;
+```
+<Explain>
+the 500 groups. it hashes first (one pass, 53kB), then sorts the 500 results for the ORDER BY: a sort of 500 rows in 32kB instead of 25,000 in 513kB. sorting first and streaming a GroupAggregate would also satisfy the ORDER BY, but it's the more expensive way round.
+</Explain>
+</Predict>
+
+```sql run db=events
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT user_id, count(*)
+FROM events
+GROUP BY user_id
+ORDER BY user_id;
+```
+
+## MixedAggregate
+
+[ROLLUP and GROUPING SETS](/learn/analytics/grouping-sets) ask for several groupings in one query. postgres can do them all in one pass over the input, with one hash table per grouping, and the grand total `()` needs no table at all, just a running total. a mix of hashed and plain groupings is a **MixedAggregate**:
+
+```sql run db=events
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT kind, user_id, count(*)
+FROM events
+GROUP BY ROLLUP (kind, user_id);
+```
+
+two `Hash Key:` lines (kind and user_id together, then kind alone) and a `Group Key: ()`: 2,441 rows out of one scan.
+
+## when the hash table doesn't fit <Since v={13} />
+
+a HashAggregate's table gets `work_mem × hash_mem_multiplier`, like a [hash join](/learn/execution/hash-join)'s. before postgres 13, a HashAggregate that had been planned kept growing in memory however wrong the estimate was. since 13, it spills: groups already in the table keep being updated, rows for new groups that don't fit are written to temp files, and those are aggregated in later batches.
+
+<Figure wide caption={<>a count and a sum per user at the default work_mem and at 64kB. at 64kB the table can't hold all 500 groups: <C k="hot">5 batches</C>, 240kB written to disk, and the same 500 rows at the end.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "work_mem", values: ["4MB", "64kB"] }]}
+  runs={{ "4MB": 6, "64kB": 7 }}
+  hot={["Batches", "temp read"]}
+  metric={{ label: "kB written to disk (Disk Usage)", re: /Disk Usage: (\d+)kB/, unit: "kB" }}
+/>
+</Figure>
+
+`Batches: 5  Memory Usage: 144kB  Disk Usage: 240kB`. three numbers to read: more than one batch means it spilled, memory usage is the peak (here a little over the 128kB budget), and disk usage is what went to temp files. same as a spilling sort or hash join, it's slower, not wrong.
+
+## partial and finalize
+
+an aggregate like `count(*)` can be computed in pieces: count each piece, then add up the counts. postgres splits it into a **Partial** aggregate that runs on each piece and a **Finalize** that combines the partial results. the pieces can be [parallel workers](/learn/execution/parallel-query), each reading part of the table, but they don't have to be. partitions work too, and that runs right here:
+
+```sql run db=events
+CREATE TABLE ev (user_id int, kind text, occurred_at timestamptz) PARTITION BY RANGE (occurred_at);
+CREATE TABLE ev_mar PARTITION OF ev FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
+CREATE TABLE ev_apr PARTITION OF ev FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
+CREATE TABLE ev_may PARTITION OF ev FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
+INSERT INTO ev SELECT user_id, kind, occurred_at FROM events ORDER BY id;
+ANALYZE ev;
+
+SET enable_partitionwise_aggregate = on;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT kind, count(*) FROM ev GROUP BY kind ORDER BY kind;
+```
+
+each month is grouped on its own by a `Partial HashAggregate` (5, 5 and 4 kinds: one kind never happened in may), the 14 partial rows are appended and sorted, and a `Finalize GroupAggregate` adds up each kind's partial counts into 5 rows. for `count` the combine step is a sum; for `avg` each partial carries a sum and a count; for `count(DISTINCT ...)` there's no way to combine, so it can't be split.
+
+<Quiz question="which aggregate can't be split into Partial and Finalize?" options={["sum(amount)", "avg(amount)", "count(DISTINCT user_id)"]} answer={2}>
+<Explain>
+count(DISTINCT user_id). two pieces can each have seen user 7, and their partial counts can't tell you that: you'd count user 7 twice. sum adds sums, avg carries a sum and a count per piece and divides at the end. a DISTINCT aggregate needs to see every value in one place.
+</Explain>
+</Quiz>
+
+<Gotcha title="HashAggregate doesn't keep any order">
+plenty of code relies on GROUP BY results coming out sorted, because with a GroupAggregate they happen to. they were never promised: a HashAggregate hands groups out in hash table order, and the next plan may be one. if you need an order, ask for it with ORDER BY. the planner will often sort just the groups, which is cheap.
+</Gotcha>
+
+<Interview q="how can GROUP BY be executed?">
+by hashing or by sorting. HashAggregate builds a hash table keyed on the group columns in one pass over unsorted input and emits all groups at the end; it needs memory per group and, since postgres 13, spills to disk in batches when it exceeds work_mem × hash_mem_multiplier. GroupAggregate needs input sorted on the group key (from a Sort or an index) and emits each group as the key changes, using memory for one group and streaming. MixedAggregate does several grouping sets in one pass. bonus points: aggregates can be split into Partial and Finalize for parallel workers or partitions, except DISTINCT aggregates, and GROUP BY output has no guaranteed order without ORDER BY.
+</Interview>
+
+<Keylines>
+- HashAggregate: a hash table entry per group, any input order, everything out at the end.
+- GroupAggregate: sorted input, one group in memory, each group out as soon as the key changes.
+- an index that provides the order makes GroupAggregate free; otherwise hashing usually wins.
+- a hash table past work_mem × hash_mem_multiplier spills: Batches > 1, Disk Usage.
+- Partial then Finalize: aggregate the pieces, then combine them. DISTINCT aggregates can't.
+</Keylines>

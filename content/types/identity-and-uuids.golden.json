@@ -1,0 +1,156 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f0a8a5d9d4d91606": {
+      "db": "empty",
+      "sql": "CREATE TABLE teas (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL);\nSELECT pg_get_serial_sequence('teas', 'id') AS sequence;\nSELECT data_type, start_value, increment_by, max_value FROM pg_sequences WHERE sequencename = 'teas_id_seq';",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["sequence", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "39ff7a73cf6b0df2",
+          "rows": [
+            ["public.teas_id_seq"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["data_type", "regtype", 2206],
+            ["start_value", "int8", 20],
+            ["increment_by", "int8", 20],
+            ["max_value", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "8128db90f0126a72",
+          "rows": [
+            ["integer", "1", "1", "2147483647"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c51b944c766c4eee": {
+      "db": "empty",
+      "sql": "CREATE TABLE teas (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL);\nINSERT INTO teas (id, name) VALUES (10, 'oolong');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "428C9",
+            "message": "cannot insert a non-DEFAULT value into column \"id\"",
+            "detail": "Column \"id\" is an identity column defined as GENERATED ALWAYS.",
+            "hint": "Use OVERRIDING SYSTEM VALUE to override."
+          },
+          "digest": "f12b4c6b603f60a4"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "428C9",
+        "message": "cannot insert a non-DEFAULT value into column \"id\"",
+        "detail": "Column \"id\" is an identity column defined as GENERATED ALWAYS.",
+        "hint": "Use OVERRIDING SYSTEM VALUE to override.",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "2840cbf31e9da3d9": {
+      "db": "empty",
+      "sql": "SELECT pg_column_size('019a2b64-7f20-7b3c-9a1d-4e5f60718293'::uuid) AS as_uuid,\n       pg_column_size('019a2b64-7f20-7b3c-9a1d-4e5f60718293'::text) AS as_text;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["as_uuid", "int4", 23],
+            ["as_text", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "c65bdab8d48a2884",
+          "rows": [
+            ["16", "40"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f96e4eda299a64dd": {
+      "db": "empty",
+      "sql": "WITH made AS (\n  SELECT i, uuidv7() AS v7, gen_random_uuid() AS v4\n  FROM generate_series(1, 1000) AS i\n)\nSELECT bool_and(v7 > prev_v7) AS v7_always_increasing,\n       bool_and(v4 > prev_v4) AS v4_always_increasing\nFROM (\n  SELECT v7, v4, lag(v7) OVER (ORDER BY i) AS prev_v7, lag(v4) OVER (ORDER BY i) AS prev_v4\n  FROM made\n) AS pairs\nWHERE prev_v7 IS NOT NULL;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["v7_always_increasing", "bool", 16],
+            ["v4_always_increasing", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "9aaf08c216bd6aee",
+          "rows": [
+            ["t", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "28cb1c333bc7aa40": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'UTC';\nSELECT uuid_extract_version(uuidv7()) AS v7, uuid_extract_version(gen_random_uuid()) AS v4,\n       uuid_extract_timestamp(uuidv7()) > now() - interval '1 minute' AS v7_time_is_now,\n       uuid_extract_timestamp(gen_random_uuid()) IS NULL AS v4_has_no_time;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["v7", "int2", 21],
+            ["v4", "int2", 21],
+            ["v7_time_is_now", "bool", 16],
+            ["v4_has_no_time", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "40a2e0faf922397b",
+          "rows": [
+            ["7", "4", "t", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

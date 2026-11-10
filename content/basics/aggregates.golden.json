@@ -1,0 +1,171 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "52e0e4bdf95ef822": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS orders,\n       count(shipped_at) AS shipped,\n       count(DISTINCT status) AS statuses\nFROM orders\nWHERE customer_id = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["orders", "int8", 20],
+            ["shipped", "int8", 20],
+            ["statuses", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "f0fdf668ca6427d8",
+          "rows": [
+            ["7", "5", "4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5fdda92f10e3d6cf": {
+      "db": "shop",
+      "sql": "SELECT count(*), count(city), count(DISTINCT city) FROM customers;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20],
+            ["count", "int8", 20],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "d5e76cb6861084d2",
+          "rows": [
+            ["2000", "1945", "28"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "60114cc87a905198": {
+      "db": "shop",
+      "sql": "SELECT sum(qty) AS units, avg(qty) AS avg_qty, pg_typeof(sum(qty)) AS sum_type, pg_typeof(avg(qty)) AS avg_type\nFROM order_items;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["units", "int8", 20],
+            ["avg_qty", "numeric", 1700],
+            ["sum_type", "regtype", 2206],
+            ["avg_type", "regtype", 2206]
+          ],
+          "rowCount": 1,
+          "digest": "f0c9d8db53bd52ce",
+          "rows": [
+            ["47590", "1.9080266217624890", "bigint", "numeric"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2f6fff6d25d3fb07": {
+      "db": "shop",
+      "sql": "SELECT min(name) AS first, max(name) AS last,\n       string_agg(name, ', ' ORDER BY id) AS first_five\nFROM customers\nWHERE id <= 5;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["first", "text", 25],
+            ["last", "text", 25],
+            ["first_five", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "d677dff65ee1ee71",
+          "rows": [
+            ["Grace Okafor", "Zoë Martin", "Maya Chen, Grace Okafor, Sam Lee, Zoë Martin, Zoe Martin"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ff1a9e1f63e7bed1": {
+      "db": "shop",
+      "sql": "SELECT count(*), sum(price), max(price)\nFROM products\nWHERE price < 0;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20],
+            ["sum", "numeric", 1700],
+            ["max", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "989dbec83b5ef786",
+          "rows": [
+            ["0", null, null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a1ad1d92323e70fb": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM customers WHERE count(*) > 1;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42803",
+            "message": "aggregate functions are not allowed in WHERE",
+            "position": 38
+          },
+          "digest": "6d753a8465bc9da8"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42803",
+        "message": "aggregate functions are not allowed in WHERE",
+        "position": 38,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "73ead64280c0d90e": {
+      "db": "shop",
+      "sql": "SELECT max(count(*)) FROM orders;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42803",
+            "message": "aggregate function calls cannot be nested",
+            "position": 12
+          },
+          "digest": "eebebd32be92e96c"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42803",
+        "message": "aggregate function calls cannot be nested",
+        "position": 12,
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

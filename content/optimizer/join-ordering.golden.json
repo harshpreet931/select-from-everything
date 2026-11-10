@@ -1,0 +1,141 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b2e85c1e5f338459": {
+      "db": "empty",
+      "sql": "SELECT n, factorial(n) AS orders, (2 ^ n)::bigint - 1 AS subsets\nFROM generate_series(2, 14) AS n\nORDER BY n;",
+      "statements": [
+        {
+          "tag": "SELECT 13",
+          "command": "SELECT",
+          "columns": [
+            ["n", "int4", 23],
+            ["orders", "numeric", 1700],
+            ["subsets", "int8", 20]
+          ],
+          "rowCount": 13,
+          "digest": "07a902f893008430",
+          "rows": [
+            ["2", "2", "3"],
+            ["3", "6", "7"],
+            ["4", "24", "15"],
+            ["5", "120", "31"],
+            ["6", "720", "63"],
+            ["7", "5040", "127"],
+            ["8", "40320", "255"],
+            ["9", "362880", "511"],
+            ["10", "3628800", "1023"],
+            ["11", "39916800", "2047"],
+            ["12", "479001600", "4095"],
+            ["13", "6227020800", "8191"],
+            ["14", "87178291200", "16383"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a4b67f31b73e6979": {
+      "db": "empty",
+      "sql": "SELECT name, setting FROM pg_settings\nWHERE name IN ('join_collapse_limit', 'from_collapse_limit', 'geqo', 'geqo_threshold')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "7f9df6586b8d93cd",
+          "rows": [
+            ["from_collapse_limit", "8"],
+            ["geqo", "on"],
+            ["geqo_threshold", "12"],
+            ["join_collapse_limit", "8"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "173f76d44f0c7f9d": {
+      "db": "empty",
+      "sql": "DO $$\nBEGIN\n  FOR i IN 1..14 LOOP\n    EXECUTE format('CREATE TABLE t%s (id int PRIMARY KEY, next_id int, v int)', i);\n    EXECUTE format('INSERT INTO t%s SELECT g, (g * 7) %% %s + 1, g %% (%s + 2) FROM generate_series(1, %s) AS g ORDER BY g', i, 100 * (15 - i), i, 100 * i);\n    EXECUTE format('ANALYZE t%s', i);\n  END LOOP;\nEND $$;\nCREATE FUNCTION chain(n int) RETURNS text LANGUAGE sql AS $$\n  SELECT 'SELECT count(*) FROM t1' || string_agg(format(' JOIN t%s ON t%s.id = t%s.next_id AND t%s.v < %s', i, i, i - 1, i, i % 4 + 1), '' ORDER BY i)\n  FROM generate_series(2, n) AS i\n$$;\nCREATE FUNCTION plan_cost(q text) RETURNS numeric LANGUAGE plpgsql AS $$\nDECLARE j json;\nBEGIN\n  EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;\n  RETURN (j->0->'Plan'->>'Total Cost')::numeric;\nEND $$;\nSET join_collapse_limit = 20;\nSELECT n, plan_cost(chain(n)) AS cost FROM generate_series(10, 14) AS n ORDER BY n;\nSET geqo = off;\nSELECT n, plan_cost(chain(n)) AS cost FROM generate_series(10, 14) AS n ORDER BY n;",
+      "statements": [
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "digest": "10ece52cc1035a86"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e913721f0f0ddd54"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "954d8a2dba64af1b"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8c303177f03a58ae"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["n", "int4", 23],
+            ["cost", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "cd3e5c102064b874",
+          "rows": [
+            ["10", "34.68"],
+            ["11", "35.16"],
+            ["12", "39.76"],
+            ["13", "44.68"],
+            ["14", "80.00"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a7a021393239946c"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["n", "int4", 23],
+            ["cost", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "566aa4e1c74d5782",
+          "rows": [
+            ["10", "34.68"],
+            ["11", "35.16"],
+            ["12", "35.61"],
+            ["13", "36.58"],
+            ["14", "37.20"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

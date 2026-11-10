@@ -1,0 +1,192 @@
+{
+ "v": 1,
+ "scenario": "content/basics/traces/filtering-rows.scenario.sql",
+ "title": "WHERE on school's tables: one row at a time, and an OR without parentheses",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "instructors": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"dept","type":"text"},
+    {"name":"office","type":"text"},
+    {"name":"salary","type":"numeric"}
+   ]
+  },
+  "instructors_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"instructors"},
+  "students": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"year","type":"int2"},
+    {"name":"advisor_id","type":"int4"}
+   ]
+  },
+  "students_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"students"},
+  "students_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"students"},
+  "courses": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"code","type":"text"},
+    {"name":"title","type":"text"},
+    {"name":"dept","type":"text"},
+    {"name":"credits","type":"int2"},
+    {"name":"instructor_id","type":"int4"}
+   ]
+  },
+  "courses_pkey": {"kind":"index","am":"btree","columns":[{"name":"code","type":"text"}],"on":"courses"},
+  "enrollments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"student_id","type":"int4"},
+    {"name":"course_code","type":"text"},
+    {"name":"term","type":"text"},
+    {"name":"grade","type":"bpchar"}
+   ]
+  },
+  "enrollments_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"student_id","type":"int4"},{"name":"course_code","type":"text"},{"name":"term","type":"text"}],
+   "on": "enrollments"
+  },
+  "prerequisites": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"course_code","type":"text"},{"name":"requires_code","type":"text"}]
+  },
+  "prerequisites_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"course_code","type":"text"},{"name":"requires_code","type":"text"}],
+   "on": "prerequisites"
+  },
+  "enrollments_flat": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"student_name","type":"text"},
+    {"name":"student_email","type":"text"},
+    {"name":"course_code","type":"text"},
+    {"name":"course_title","type":"text"},
+    {"name":"instructor_name","type":"text"},
+    {"name":"instructor_office","type":"text"},
+    {"name":"term","type":"text"},
+    {"name":"grade","type":"bpchar"}
+   ]
+  }
+ },
+ "base": {"xid":798,"lsn":26653464},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT code, title\nFROM courses\nWHERE credits = 4 AND dept <> 'CS'\nORDER BY code",
+   "note": "4-credit courses outside CS",
+   "status": "ok",
+   "stages": [
+    {
+     "clause": "FROM",
+     "note": "FROM hands over all 12 courses, drawn with the three that will survive on top, so you can watch the other 9 go.",
+     "sql": "SELECT code, dept, credits, title FROM courses ORDER BY (credits = 4 AND dept <> 'CS') DESC, code",
+     "columns": ["code","dept","credits","title"],
+     "types": ["text","text","int2","text"],
+     "data": [
+      ["MATH101","MATH","4","Calculus I"],
+      ["PHYS101","PHYS","4","Mechanics"],
+      ["PHYS201","PHYS","4","Electromagnetism"],
+      ["CS101","CS","4","Intro to Programming"],
+      ["CS201","CS","4","Data Structures"],
+      ["CS301","CS","4","Databases"],
+      ["CS350","CS","4","Operating Systems"],
+      ["CS401","CS","4","Database Internals"],
+      ["CS499","GEN","6","Senior Thesis"],
+      ["HIST101","HIST","3","History of Computing"],
+      ["MATH201","MATH","3","Discrete Math"],
+      ["MATH301","MATH","3","Linear Algebra"]
+     ]
+    },
+    {
+     "clause": "WHERE",
+     "note": "WHERE asks every row the same question, on its own: 4 credits, and not CS? 3 rows say true. the five CS courses pass the first test and fail the second, and they're as gone as the 3-credit ones.",
+     "sql": "SELECT code, dept, credits, title FROM courses WHERE credits = 4 AND dept <> 'CS' ORDER BY code",
+     "columns": ["code","dept","credits","title"],
+     "types": ["text","text","int2","text"],
+     "data": [
+      ["MATH101","MATH","4","Calculus I"],
+      ["PHYS101","PHYS","4","Mechanics"],
+      ["PHYS201","PHYS","4","Electromagnetism"]
+     ]
+    },
+    {
+     "clause": "SELECT",
+     "note": "SELECT keeps the two columns asked for. dept and credits did their job in WHERE, and don't have to be in the output.",
+     "sql": "SELECT code, title FROM courses WHERE credits = 4 AND dept <> 'CS' ORDER BY code",
+     "columns": ["code","title"],
+     "types": ["text","text"],
+     "data": [["MATH101","Calculus I"],["PHYS101","Mechanics"],["PHYS201","Electromagnetism"]]
+    }
+   ],
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"code","type":"text"},{"name":"title","type":"text"}],
+    "data": [["MATH101","Calculus I"],["PHYS101","Mechanics"],["PHYS201","Electromagnetism"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT code, dept, credits\nFROM courses\nWHERE dept = 'CS' OR dept = 'MATH' AND credits = 3\nORDER BY code",
+   "note": "without parentheses, AND goes first: every CS course, plus the MATH courses with 3 credits. seven rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"code","type":"text"},{"name":"dept","type":"text"},{"name":"credits","type":"int2"}],
+    "data": [
+     ["CS101","CS","4"],
+     ["CS201","CS","4"],
+     ["CS301","CS","4"],
+     ["CS350","CS","4"],
+     ["CS401","CS","4"],
+     ["MATH201","MATH","3"],
+     ["MATH301","MATH","3"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT code, dept, credits\nFROM courses\nWHERE (dept = 'CS' OR dept = 'MATH') AND credits = 3\nORDER BY code",
+   "note": "with parentheses around the OR: CS or MATH first, then 3 credits. no CS course has 3, so two rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"code","type":"text"},{"name":"dept","type":"text"},{"name":"credits","type":"int2"}],
+    "data": [["MATH201","MATH","3"],["MATH301","MATH","3"]]
+   }
+  }
+ ],
+ "db": "school"
+}

@@ -1,0 +1,180 @@
+{
+ "v": 1,
+ "scenario": "content/mvcc/traces/lab-update.scenario.sql",
+ "title": "one UPDATE on the lab's accounts table, captured in the browser's engine",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"}
+ },
+ "base": {"xid":753,"lsn":26051992},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "",
+   "note": "before: three rows, three tuples, one page. all written by the same transaction.",
+   "status": "ok",
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 24933680,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","owner":"carol","balance":"50.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"752":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = balance + 10 WHERE id = 1",
+   "note": "after: alice has a second tuple. the old one is still in slot 1, with T1's xid in xmax and a t_ctid that points at slot 4.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8032,
+      "special": 8192,
+      "lsn": 26052272,
+      "pruneXid": 753,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 752,
+        "xmax": 753,
+        "ctid": [0,4],
+        "infomask": 258,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","owner":"carol","balance":"50.00"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8032,
+        "len": 39,
+        "xmin": 753,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"752":"committed","753":"committed"}
+  }
+ ],
+ "db": "lab"
+}

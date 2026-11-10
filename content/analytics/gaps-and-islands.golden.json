@@ -1,0 +1,137 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "aca023cdbc2c1085": {
+      "db": "events",
+      "sql": "WITH days AS (\n  SELECT DISTINCT occurred_at::date AS day\n  FROM events\n  WHERE user_id = 54 AND occurred_at < '2026-03-20'\n)\nSELECT min(day) AS first, max(day) AS last, count(*) AS days\nFROM (\n  SELECT day,\n         day - row_number() OVER (ORDER BY day)::int AS grp\n  FROM days\n) AS numbered\nGROUP BY grp\nORDER BY first;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["first", "date", 1082],
+            ["last", "date", 1082],
+            ["days", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "2d575734e1bcc390",
+          "rows": [
+            ["2026-03-01", "2026-03-03", "3"],
+            ["2026-03-05", "2026-03-07", "3"],
+            ["2026-03-10", "2026-03-12", "3"],
+            ["2026-03-15", "2026-03-15", "1"],
+            ["2026-03-18", "2026-03-18", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "23fe919872626ab2": {
+      "db": "empty",
+      "sql": "SELECT v, row_number() OVER (ORDER BY v) AS rn, v - row_number() OVER (ORDER BY v) AS grp\nFROM unnest(ARRAY[1, 2, 3, 5, 6, 9, 10]) AS v\nORDER BY v;",
+      "statements": [
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["v", "int4", 23],
+            ["rn", "int8", 20],
+            ["grp", "int8", 20]
+          ],
+          "rowCount": 7,
+          "digest": "b3d4691a24ea0214",
+          "rows": [
+            ["1", "1", "0"],
+            ["2", "2", "0"],
+            ["3", "3", "0"],
+            ["5", "4", "1"],
+            ["6", "5", "1"],
+            ["9", "6", "3"],
+            ["10", "7", "3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c5cdb914f546ba04": {
+      "db": "events",
+      "sql": "WITH days AS (SELECT DISTINCT user_id, occurred_at::date AS day FROM events),\nislands AS (\n  SELECT user_id, day,\n         day - row_number() OVER (PARTITION BY user_id ORDER BY day)::int AS grp\n  FROM days\n)\nSELECT user_id, min(day) AS first, max(day) AS last, count(*) AS days\nFROM islands\nGROUP BY user_id, grp\nORDER BY days DESC, user_id\nLIMIT 6;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["user_id", "int4", 23],
+            ["first", "date", 1082],
+            ["last", "date", 1082],
+            ["days", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "c5549948d1b25bb4",
+          "rows": [
+            ["1", "2026-04-15", "2026-05-31", "47"],
+            ["2", "2026-04-15", "2026-05-31", "47"],
+            ["3", "2026-04-15", "2026-05-31", "47"],
+            ["5", "2026-04-15", "2026-05-31", "47"],
+            ["1", "2026-03-01", "2026-04-13", "44"],
+            ["2", "2026-03-01", "2026-04-13", "44"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ca5e0e381b3e5c91": {
+      "db": "events",
+      "sql": "WITH days AS (SELECT DISTINCT occurred_at::date AS day FROM events WHERE user_id = 17),\nislands AS (\n  SELECT min(day) AS first, max(day) AS last\n  FROM (SELECT day, day - row_number() OVER (ORDER BY day)::int AS grp FROM days) AS d\n  GROUP BY grp\n)\nSELECT last + 1 AS gap_from,\n       lead(first) OVER (ORDER BY first) - 1 AS gap_to\nFROM islands\nORDER BY first;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["gap_from", "date", 1082],
+            ["gap_to", "date", 1082]
+          ],
+          "rowCount": 2,
+          "digest": "5c3e225a4b07807d",
+          "rows": [
+            ["2026-05-05", "2026-05-05"],
+            ["2026-05-21", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "651f66621fb082cc": {
+      "db": "events",
+      "sql": "SELECT id,\n       sum(CASE WHEN occurred_at - lag(occurred_at) OVER w <= interval '30 minutes'\n                THEN 0 ELSE 1 END) OVER w AS session\nFROM events\nWHERE user_id = 1\nWINDOW w AS (ORDER BY occurred_at, id);",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P20",
+            "message": "window function calls cannot be nested",
+            "position": 47
+          },
+          "digest": "71c15b57bee25088"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P20",
+        "message": "window function calls cannot be nested",
+        "position": 47,
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,161 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ccc300ed99b92c95": {
+      "db": "events",
+      "sql": "SELECT count(*) FROM events;\nSELECT buffers_evicted FROM pg_buffercache_evict_relation('events');\nSELECT pg_stat_force_next_flush();\nSELECT pg_stat_reset_shared('io');\nSELECT sum(length(kind)) FROM events;\nSELECT pg_stat_force_next_flush();\nSELECT reads, read_bytes, round(read_bytes / reads / 1024.0, 1) AS kb_per_read\nFROM pg_stat_io\nWHERE backend_type = 'client backend' AND object = 'relation' AND context = 'normal';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "19f5d9a655d71fc4",
+          "rows": [
+            ["25000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["buffers_evicted", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "2a1ec0718fd0b266",
+          "rows": [
+            ["335"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "6866e0034cd95cd8",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_reset_shared", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "25e44cb946ef34e0",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["sum", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "4636ee1cec97d8ac",
+          "rows": [
+            ["132117"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "b7e4a8b8897b9367",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["reads", "int8", 20],
+            ["read_bytes", "numeric", 1700],
+            ["kb_per_read", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "48c37665035d72c9",
+          "rows": [
+            ["38", "2859008", "73.5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b7475b31ac28a84d": {
+      "db": "empty",
+      "sql": "SELECT name, setting, unit, enumvals FROM pg_settings\nWHERE name IN ('io_method', 'io_workers', 'io_combine_limit', 'io_max_combine_limit',\n               'effective_io_concurrency', 'maintenance_io_concurrency')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25],
+            ["unit", "text", 25],
+            ["enumvals", "text[]", 1009]
+          ],
+          "rowCount": 6,
+          "digest": "4c30b702d9f2763f",
+          "rows": [
+            ["effective_io_concurrency", "16", null, null],
+            ["io_combine_limit", "16", "8kB", null],
+            ["io_max_combine_limit", "16", "8kB", null],
+            ["io_method", "worker", null, "{sync,worker}"],
+            ["io_workers", "3", null, null],
+            ["maintenance_io_concurrency", "16", null, null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "8f5116e9f470f6c0": {
+      "db": "lab",
+      "sql": "SHOW io_method;\nSHOW effective_io_concurrency;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["io_method", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e788dfa3ddc135ef",
+          "rows": [
+            ["sync"]
+          ]
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["effective_io_concurrency", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "4bd200b858bb893e",
+          "rows": [
+            ["16"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

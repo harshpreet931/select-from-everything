@@ -1,0 +1,108 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f412e1e2660c6859": {
+      "db": "lab",
+      "sql": "SHOW autovacuum;\nSELECT backend_type, count(*) FROM pg_stat_activity GROUP BY backend_type ORDER BY backend_type;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["autovacuum", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "8792c3889733a67b",
+          "rows": [
+            ["on"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["backend_type", "text", 25],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "9f0ddcc564e72fba",
+          "rows": [
+            ["standalone backend", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9ea9f33db7af1aff": {
+      "db": "lab",
+      "sql": "DELETE FROM notes WHERE id <= 100;\nSELECT pg_stat_force_next_flush();\nSELECT n_dead_tup, last_autovacuum, autovacuum_count\nFROM pg_stat_user_tables WHERE relname = 'notes';",
+      "statements": [
+        {
+          "tag": "DELETE 100",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 100,
+          "digest": "bc152e633af84c03"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "bdfab559805fd973",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_dead_tup", "int8", 20],
+            ["last_autovacuum", "timestamptz", 1184],
+            ["autovacuum_count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "e981b88c338214ba",
+          "rows": [
+            ["100", null, "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a8b4f025dd1960ec": {
+      "db": "lab",
+      "sql": "ALTER TABLE notes SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 1000);\nSELECT relname, reloptions FROM pg_class WHERE relname = 'notes';",
+      "statements": [
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "629b316cd6a106b5"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["reloptions", "text[]", 1009]
+          ],
+          "rowCount": 1,
+          "digest": "f9404a5c119beb07",
+          "rows": [
+            ["notes", "{autovacuum_vacuum_scale_factor=0.01,autovacuum_vacuum_threshold=1000}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

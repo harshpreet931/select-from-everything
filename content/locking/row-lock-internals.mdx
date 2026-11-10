@@ -1,0 +1,124 @@
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import { LockBits } from "@/components/figures/locking/LockBits";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import tupleLock from "./traces/tuple-lock.pgtrace.json";
+import golden from "./row-lock-internals.golden.json";
+
+{/* the three-session figure and the pgrowlocks output are captured on a real postgres 18.6
+    server (traces/tuple-lock.scenario.sql). the bit strip is drawn from this chapter's own
+    golden: the runnable block's t_infomask and t_infomask2 values. */}
+
+export const bitsBlock = Object.values(golden.blocks).find((b) => b.sql.includes("heap_tuple_infomask_flags"));
+export const bitRows = bitsBlock.statements.find((s) => s.rows && s.rows.length === 4).rows;
+export const rowlocks = resultOf(tupleLock, 1);
+export const xidT1 = tupleLock.steps[0].xids.T1.xid;
+
+<InShort>
+postgres doesn't keep row locks in its lock table. a row lock is written **into the row**: the locker's transaction id goes in the tuple's **xmax**, and a few **infomask** bits say it's only a lock (**HEAP_XMAX_LOCK_ONLY**) and how strong. so locking a million rows costs no lock-table memory. the lock table only hears about a row when someone has to **wait** for it.
+</InShort>
+
+## the picture
+
+you know how `SELECT ... FOR UPDATE` on a million rows works fine, while `max_locks_per_transaction` is 64? if each row lock were an entry in shared memory, that would run out fast. it doesn't, because there's no entry.
+
+think of a library book with a slip inside the cover. to reserve it you write your name on the slip (xmax) and tick a box saying "reserved, not checked out" (LOCK_ONLY). the front desk's list (the lock table) doesn't mention the book at all. only when a second person wants the same book does the desk get involved: they leave their name at the desk and wait for you (your transaction id), not for the book.
+
+## four strengths, a few bits
+
+[SELECT ... FOR UPDATE](/learn/transactions/row-locking-clauses) has four strengths. here they are on one page, one row each, in one transaction, read straight off the page with pageinspect:
+
+```sql run ext=pageinspect
+CREATE TABLE t (id int PRIMARY KEY, note text NOT NULL);
+INSERT INTO t VALUES (1, 'key share'), (2, 'share'), (3, 'no key update'), (4, 'update');
+BEGIN;
+SELECT id FROM t WHERE id = 1 FOR KEY SHARE;
+SELECT id FROM t WHERE id = 2 FOR SHARE;
+SELECT id FROM t WHERE id = 3 FOR NO KEY UPDATE;
+SELECT id FROM t WHERE id = 4 FOR UPDATE;
+SELECT lp, t_xmax, t_infomask, t_infomask2,
+       (heap_tuple_infomask_flags(t_infomask, t_infomask2)).combined_flags AS combined,
+       (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags AS raw
+FROM heap_page_items(get_raw_page('t', 0))
+ORDER BY lp;
+ROLLBACK;
+```
+
+every row has the same xmax: this transaction's id. what tells them apart is the flags. the four strengths are encoded with just three bits in `t_infomask` and one in `t_infomask2`:
+
+<Figure caption={<>the lock bits of each row, from the golden of the block above. every row has <C k="meta">LOCK_ONLY</C> (the xid in xmax locked the row, it didn't delete it). KEYSHR alone is FOR KEY SHARE, EXCL alone is FOR NO KEY UPDATE, both together are FOR SHARE (pageinspect calls the pair HEAP_XMAX_SHR_LOCK), and FOR UPDATE adds <C k="hot">KEYS_UPDATED</C> from t_infomask2.</>}>
+<LockBits rows={bitRows.map((r) => [r[0], r[2], r[3]])} labels={["FOR KEY SHARE", "FOR SHARE", "FOR NO KEY UPDATE", "FOR UPDATE"]} />
+</Figure>
+
+that last bit is the clever part. FOR UPDATE sets the same KEYS_UPDATED flag a key-changing UPDATE or a DELETE would. so the conflict rules for "someone might change this row's key" are one rule, whether it was a lock or a real update. a [MultiXact](/learn/mvcc/multixacts) adds one more bit, HEAP_XMAX_IS_MULTI, when two transactions share a row and xmax has to point at a list instead of one xid.
+
+<Predict question="a transaction locks 1,000 rows FOR UPDATE. how many row entries appear in pg_locks?" options={["1,000", "1 per page", "none"]} answer={2}>
+```sql
+BEGIN;
+SELECT count(*) FROM (SELECT id FROM accounts FOR UPDATE) AS locked;
+SELECT locktype, count(*) FROM pg_locks GROUP BY locktype;
+```
+<Explain>
+none. the rows are locked by writing this transaction's xid into each one's xmax, on the page. pg_locks only shows the table lock (ROW SHARE), the transaction id lock that waiters would queue on, and the virtual xid. try it below on bank's 1,000 accounts.
+</Explain>
+</Predict>
+
+```sql run db=bank
+BEGIN;
+SELECT count(*) AS locked FROM (SELECT id FROM accounts FOR UPDATE) AS l;
+SELECT locktype, mode, count(*) FROM pg_locks
+WHERE pid = pg_backend_pid() AND (relation IS NULL OR relation <> 'pg_locks'::regclass)
+GROUP BY locktype, mode ORDER BY locktype, mode;
+ROLLBACK;
+```
+
+1,000 rows locked, and pg_locks lists a handful of entries, none of them rows. the price is a write: every locked tuple's header changes, so the page is dirtied and WAL is written. locking is an update to the header.
+
+## pgrowlocks reads the page
+
+pgrowlocks is an extension that scans a table and reports rows whose xmax says "locked". it's not in the browser build, so this is from a real postgres 18.6 server, with T1 holding alice FOR UPDATE:
+
+<Figure caption={<>pgrowlocks on accounts while T1 holds row (0,1). locker is T1's xid ({xidT1}), <code>multi</code> is false (one locker, a plain xid), and the mode comes from the infomask bits. it reads the heap, so on a big table it's a full scan.</>}>
+<ResultTable columns={rowlocks.columns} rows={rowlocks.rows} />
+<Provenance trace={prov(tupleLock)} />
+</Figure>
+
+## when the lock table does get involved
+
+nothing about a row lock is in shared memory until somebody waits. then two kinds of entry show up:
+
+<Figure wide caption={<>step through, with pg_locks on the right. while T1 alone holds the row there's no tuple entry at all. T2 arrives: it takes the <C k="meta">tuple</C> lock (it's first in line) and waits on T1's <C k="meta">transaction id</C>. T3 arrives and waits for the tuple lock itself, behind T2. when T1 commits, T2 gets the row, and T3 moves up to wait on T2's xid.</>}>
+<LockLanes trace={tupleLock} noObs locks={{ types: ["tuple", "transactionid"] }} sideTitle="row-related locks (pg_locks)" />
+</Figure>
+
+so a row lock wait is two locks deep:
+
+<Figure caption={<>where everything lives while T1 holds a row and T2, T3 want it.</>}>
+<Tree>{`
+heap page, tuple (0,1) #meta // xmax = T1's xid, LOCK_ONLY + EXCL + KEYS_UPDATED
+lock table
+    transactionid T1 // ExclusiveLock, held by T1 from its first write or row lock
+        T2 waits ShareLock #hot // "wake me when T1 ends"
+    tuple accounts (0,1)
+        T2 holds #meta // first in line for this row
+        T3 waits #hot // everyone after the first queues here
+`}</Tree>
+</Figure>
+
+why both? waiting on the xid is how you learn the holder is done: a transaction holds an exclusive lock on its own xid until it ends, so a ShareLock request on it sleeps until then. the tuple lock is the line-keeper: without it, when T1 committed, T2 and T3 would wake together and race for the row, and an unlucky waiter could lose every race forever. with it, the first waiter in line gets the row, the rest queue in order. it's held only while waiting, never once the row is yours, which is why it disappears from pg_locks after T2 gets the row.
+
+<Gotcha title="a waiter waits for the transaction, not the row">
+T2 is waiting for T1's whole transaction to end, not for T1 to be done with alice. if T1 locks alice and then spends a minute on something else, T2 waits a minute. keep transactions that lock rows short.
+</Gotcha>
+
+<Interview q="where does postgres store row-level locks, and why?">
+in the tuple header, not in the shared lock table. the locker's xid goes into xmax with HEAP_XMAX_LOCK_ONLY set, and the strength is encoded in the infomask bits (KEYSHR, EXCL, both for FOR SHARE, plus KEYS_UPDATED for FOR UPDATE). several share-lockers get a MultiXact id in xmax. that way locking any number of rows costs no shared memory; the lock table only holds an entry when someone waits: a ShareLock on the holder's transaction id, plus a tuple lock that keeps waiters in order. bonus point: the cost is that a row lock is a write: it dirties the page and generates WAL, so SELECT FOR UPDATE on a big set isn't free, and it shows up in pgrowlocks, not in pg_locks.
+</Interview>
+
+<Keylines>
+- a row lock is xmax = your xid, plus HEAP_XMAX_LOCK_ONLY and a strength in the infomask.
+- KEYSHR, EXCL, both (SHARE), and KEYS_UPDATED for FOR UPDATE. two share-lockers make a MultiXact.
+- no lock-table entry per row, so a million row locks fit. locking writes the page, though.
+- a waiter waits on the holder's transaction id. the tuple lock keeps the waiters in line.
+- pg_locks shows a row only while someone waits. pgrowlocks reads the page instead.
+</Keylines>

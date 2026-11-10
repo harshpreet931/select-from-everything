@@ -1,0 +1,325 @@
+import { NormalizeLab } from "@/components/figures/design/NormalizeLab";
+import { ErDiagram } from "@/components/figures/design/ErDiagram";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/normalize.pgtrace.json";
+
+{/* the lab's rows come from traces/normalize.scenario.sql (PGlite, one session): the wide table
+    and the two tables it splits into. the reader's edits stay in the page; the run blocks below
+    do the same edits on the real engine. */}
+
+export const wide = resultOf(trace, 1);
+export const custs = resultOf(trace, 3);
+export const lines = resultOf(trace, 4);
+export const source = prov(trace);
+
+<InShort>
+**one fact, one place.** when a table stores the same fact in many rows (a customer's address on every order line), the copies can disagree. that's the **update anomaly**, and it comes with two siblings: you can't store a fact until something unrelated exists (**insert**), and deleting one thing deletes another (**delete**).
+
+the normal forms are a checklist for finding those copies. **3NF** (or **BCNF**, which is nearly always the same table) is the everyday target. the cure is always the same move: split the table along a [functional dependency](/learn/design/functional-dependencies).
+</InShort>
+
+## the picture
+
+you know the spreadsheet everyone starts with? one row per order line, and every row spells out the customer's name, email and address, because that's what the invoice needs. it reads well. it also stores Ada's address four times, and nothing in the table says those four have to match.
+
+think of writing your friend's address on the back of every photo you've sent her (the order lines), instead of keeping it once in your address book (a customers table). the day she moves, you have to find every photo. miss one, and you now know two addresses for her, with no way to tell which is current.
+
+<Figure wide caption={<>the same five order lines, two ways. in <em>one wide table</em>, edit Ada&apos;s address on one row: the copies now <C k="dead">disagree</C>. press × on Grace&apos;s only row, or add Ming Li, who hasn&apos;t ordered. then switch to <em>split in two</em> and edit the address once: every line reads it from the one row.</>}>
+<NormalizeLab wide={wide} customers={custs} lines={lines} newcomer={["Ming Li", "9 Canal St, Manchester"]} trace={source} />
+</Figure>
+
+the lab edits rows in your browser. the three anomalies are real postgres behaviour though, so here they are on the engine.
+
+## three anomalies, for real
+
+the wide table, keyed by (order_id, sku), the way the lab shows it:
+
+```sql run session=wide title="orders_wide.sql"
+CREATE TABLE orders_wide (
+  order_id   int  NOT NULL,
+  sku        text NOT NULL,
+  qty        int  NOT NULL,
+  product    text NOT NULL,
+  list_price numeric(8,2) NOT NULL,
+  ordered_on date NOT NULL,
+  email      text NOT NULL,
+  customer   text NOT NULL,
+  address    text NOT NULL,
+  PRIMARY KEY (order_id, sku)
+);
+INSERT INTO orders_wide VALUES
+  (101, 'TEA-01', 2, 'assam tea', 6.50, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),
+  (101, 'MUG-02', 1, 'blue mug',  9.00, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),
+  (102, 'TEA-01', 1, 'assam tea', 6.50, '2026-03-03', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),
+  (103, 'TEA-02', 3, 'green tea', 5.00, '2026-03-04', 'grace@example.com', 'Grace Okafor', '4 Elm Rd, Leeds'),
+  (104, 'MUG-02', 2, 'blue mug',  9.00, '2026-03-05', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London');
+```
+
+<Predict options={["one address", "two addresses", "an error"]} answer={1}>
+```sql
+-- Ada moved. the support agent fixes her latest order.
+UPDATE orders_wide SET address = '3 Kew Gardens, London'
+WHERE order_id = 104;
+
+SELECT DISTINCT address FROM orders_wide
+WHERE email = 'ada@example.com';
+```
+<Explain>
+two. the UPDATE did exactly what it was told: one row. the other three rows still say Byron St, and nothing in the schema connects them. the database is now sure of two different addresses for one person.
+</Explain>
+</Predict>
+
+the **update anomaly**:
+
+```sql run session=wide
+UPDATE orders_wide SET address = '3 Kew Gardens, London' WHERE order_id = 104;
+
+SELECT DISTINCT address FROM orders_wide WHERE email = 'ada@example.com' ORDER BY address;
+```
+
+`UPDATE 1`, and two answers. the fix "just update every row with her email" works until the day someone forgets, or two people edit at once, or the email itself is the thing that changed.
+
+the **insert anomaly**: Ming Li signs up but hasn't ordered. every row is an order line, so to store her address you need an order id and a sku, and a key column can't be NULL:
+
+```sql run session=wide expect=error
+INSERT INTO orders_wide (email, customer, address)
+VALUES ('ming@example.com', 'Ming Li', '9 Canal St, Manchester');
+```
+
+the **delete anomaly**: Grace cancels her only order, and the shop forgets she exists. green tea goes too, since order 103 was the only row that knew its name and price:
+
+```sql run session=wide
+DELETE FROM orders_wide WHERE order_id = 103;
+
+SELECT count(*) FILTER (WHERE email = 'grace@example.com') AS grace_rows,
+       count(*) FILTER (WHERE sku = 'TEA-02') AS green_tea_rows
+FROM orders_wide;
+```
+
+three different symptoms, one disease: the table holds facts about *several things* (order lines, orders, products, customers), and each fact is stored once per row of the thing it isn't about.
+
+## the cure: split along the dependencies
+
+a [functional dependency](/learn/design/functional-dependencies) X → Y says "rows that agree on X agree on Y". this table has four groups of them, and the key is (order_id, sku):
+
+<Figure caption={<>the decomposition, one step per normal form. each split moves a dependency into a table where its left side is the key. <C k="dead">dead</C> marks the dependency that breaks the form at that step, <C k="live">live</C> the tables each split produces.</>}>
+<Tree>{`
+orders_wide (order_id, sku, ...)        // key: (order_id, sku)
+    1NF: one value per cell             // already true here, see below
+    2NF: nothing hangs off part of the key
+        sku → product, list_price       #dead // only half the key
+        order_id → ordered_on, email     #dead // the other half
+        products (sku, product, list_price) #live
+        orders (order_id, ordered_on, email, customer, address)
+        order_lines (order_id, sku, qty) #live
+    3NF: no key → non-key → non-key
+        email → customer, address       #dead // inside orders
+        customers (id, email, name, address) #live
+        orders (order_id, ordered_on, customer_id) #live
+`}</Tree>
+</Figure>
+
+### 1NF: one value per cell
+
+first normal form asks that every cell hold one value, and that rows have a key. the classic violation is a list in a string:
+
+```sql run
+CREATE TABLE orders_csv (order_id int PRIMARY KEY, skus text);
+INSERT INTO orders_csv VALUES (101, 'TEA-01,MUG-02'), (102, 'TEA-01');
+
+SELECT order_id, sku
+FROM orders_csv, string_to_table(skus, ',') AS sku
+ORDER BY order_id, sku;
+```
+
+you can split it at read time, as above, but you can't put a foreign key on part of a string, can't index "orders containing MUG-02" with a plain b-tree, and can't stop `'TEA-01,,tea-01'`. one row per item is 1NF. ([schema anti-patterns](/learn/design/anti-patterns) has the full damage report.)
+
+"one value" is fuzzier than it sounds. a date has a year inside it, an address has a city, and postgres happily stores [arrays](/learn/types/arrays) and [jsonb](/learn/types/jsonb). the working rule: if you'll query, constrain or join on the parts, they're separate values. if the whole thing is only ever read and written as one, it's one.
+
+### 2NF: the whole key
+
+second normal form only bites when the key has several columns. it says no non-key column may depend on *part* of the key. here product and list_price depend on sku alone, and ordered_on, email, customer and address on order_id alone. postgres can check the first claim: if any sku had two product names, this would return it.
+
+```sql run session=wide
+SELECT sku, count(DISTINCT (product, list_price)) AS versions
+FROM orders_wide
+GROUP BY sku
+HAVING count(DISTINCT (product, list_price)) > 1
+ORDER BY sku;
+```
+
+no rows: sku → (product, list_price) holds in this data. so products get their own table, keyed by sku, and the line keeps only what depends on the whole (order_id, sku): qty.
+
+### 3NF: nothing but the key
+
+the orders table after 2NF still says (order_id → email) and (email → customer, address). the address depends on the key only *through* email, a **transitive dependency**. third normal form says a non-key column must depend on the key directly, so customers move out. the old mnemonic: every non-key column depends on the key, the whole key, and nothing but the key.
+
+here's the whole decomposition, filled from the wide table (a fresh copy, before the edits above):
+
+```sql run session=split hidden
+CREATE TABLE orders_wide (
+  order_id int NOT NULL, sku text NOT NULL, qty int NOT NULL, product text NOT NULL,
+  list_price numeric(8,2) NOT NULL, ordered_on date NOT NULL, email text NOT NULL,
+  customer text NOT NULL, address text NOT NULL, PRIMARY KEY (order_id, sku)
+);
+INSERT INTO orders_wide VALUES
+  (101, 'TEA-01', 2, 'assam tea', 6.50, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),
+  (101, 'MUG-02', 1, 'blue mug',  9.00, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),
+  (102, 'TEA-01', 1, 'assam tea', 6.50, '2026-03-03', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),
+  (103, 'TEA-02', 3, 'green tea', 5.00, '2026-03-04', 'grace@example.com', 'Grace Okafor', '4 Elm Rd, Leeds'),
+  (104, 'MUG-02', 2, 'blue mug',  9.00, '2026-03-05', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London');
+```
+
+```sql run session=split title="normalized.sql"
+CREATE TABLE customers (
+  id      int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email   text NOT NULL UNIQUE,
+  name    text NOT NULL,
+  address text NOT NULL
+);
+CREATE TABLE products (sku text PRIMARY KEY, name text NOT NULL, list_price numeric(8,2) NOT NULL);
+CREATE TABLE orders (
+  id          int PRIMARY KEY,
+  ordered_on  date NOT NULL,
+  customer_id int NOT NULL REFERENCES customers
+);
+CREATE TABLE order_lines (
+  order_id int  NOT NULL REFERENCES orders,
+  sku      text NOT NULL REFERENCES products,
+  qty      int  NOT NULL,
+  PRIMARY KEY (order_id, sku)
+);
+
+INSERT INTO customers (email, name, address)
+SELECT DISTINCT email, customer, address FROM orders_wide ORDER BY email;
+INSERT INTO products SELECT DISTINCT sku, product, list_price FROM orders_wide ORDER BY sku;
+INSERT INTO orders
+SELECT DISTINCT w.order_id, w.ordered_on, c.id
+FROM orders_wide AS w JOIN customers AS c USING (email) ORDER BY 1;
+INSERT INTO order_lines SELECT order_id, sku, qty FROM orders_wide ORDER BY 1, 2;
+
+SELECT (SELECT count(*) FROM customers) AS customers, (SELECT count(*) FROM products) AS products,
+       (SELECT count(*) FROM orders) AS orders, (SELECT count(*) FROM order_lines) AS lines;
+```
+
+<Figure wide caption={<>the result: four tables, each about one thing. every <C k="ref">line</C> is a foreign key ending at the key it points to; the crow&apos;s foot is the many side. a customer can have zero orders now, which is the insert anomaly gone.</>}>
+<ErDiagram
+  height={250}
+  entities={[
+    { name: "customers", at: [0, 20], cols: [{ name: "id", pk: true }, { name: "email", type: "unique" }, { name: "name" }, { name: "address" }] },
+    { name: "orders", at: [250, 20], cols: [{ name: "id", pk: true }, { name: "ordered_on" }, { name: "customer_id", fk: true }] },
+    { name: "order_lines", at: [250, 140], cols: [{ name: "order_id", pk: true, fk: true }, { name: "sku", pk: true, fk: true }, { name: "qty" }] },
+    { name: "products", at: [520, 140], cols: [{ name: "sku", pk: true }, { name: "name" }, { name: "list_price" }] },
+  ]}
+  links={[
+    { from: "orders", fromCol: "customer_id", to: "customers", fromEnd: "zero-many", toEnd: "one" },
+    { from: "order_lines", fromCol: "order_id", to: "orders", fromEnd: "many", toEnd: "one" },
+    { from: "order_lines", fromCol: "sku", to: "products", fromEnd: "zero-many", toEnd: "one" },
+  ]}
+/>
+</Figure>
+
+a split is only safe if it's **lossless**: joining the pieces back gives exactly the original rows, no more and no fewer. it is, because every split went along a dependency whose left side became a key. ask postgres both directions of the difference:
+
+```sql run session=split
+WITH rejoined AS (
+  SELECT l.order_id, l.sku, l.qty, p.name AS product, p.list_price, o.ordered_on, c.email, c.name AS customer, c.address
+  FROM order_lines AS l
+  JOIN orders AS o ON o.id = l.order_id
+  JOIN products AS p USING (sku)
+  JOIN customers AS c ON c.id = o.customer_id
+)
+SELECT (SELECT count(*) FROM (TABLE rejoined EXCEPT TABLE orders_wide) AS x) AS extra,
+       (SELECT count(*) FROM (TABLE orders_wide EXCEPT TABLE rejoined) AS x) AS missing;
+```
+
+zero and zero. now the three anomalies again, on the split tables. one UPDATE, one row, one address; Ming Li without an order; order 103 gone while Grace and green tea stay:
+
+```sql run session=split
+UPDATE customers SET address = '3 Kew Gardens, London' WHERE email = 'ada@example.com';
+INSERT INTO customers (email, name, address) VALUES ('ming@example.com', 'Ming Li', '9 Canal St, Manchester');
+DELETE FROM order_lines WHERE order_id = 103;
+DELETE FROM orders WHERE id = 103;
+
+SELECT c.name, c.address, count(o.id) AS orders
+FROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.id
+GROUP BY c.id
+ORDER BY c.id;
+```
+
+<Deep title="the price on the order line is not a copy">
+the shop dataset keeps `unit_price` on order_items even though products has a price, and that's correct. the product's price is "what it costs today". the line's price is "what this customer paid on that day". two different facts, so storing both is not redundancy: when the product's price changes, old orders must not. a value that looks repeated but means something different at a different time is history, and [history, audit and soft delete](/learn/design/history-and-soft-delete) is about keeping it on purpose.
+</Deep>
+
+## BCNF: when a non-key decides part of the key
+
+3NF has a loophole. it allows X → Y when Y is part of *some* candidate key. Boyce-Codd normal form closes it: for every non-trivial X → Y, X must be a superkey. tables that are 3NF but not BCNF are rare, and they all look alike: overlapping candidate keys. the textbook one is tutoring, where each tutor teaches one subject, and each student has one tutor per subject:
+
+```sql run session=tutor
+CREATE TABLE tutoring (
+  student text NOT NULL,
+  subject text NOT NULL,
+  tutor   text NOT NULL,
+  PRIMARY KEY (student, subject)
+);
+INSERT INTO tutoring VALUES
+  ('Maya', 'math', 'Tomás'), ('Liam', 'math', 'Yuki'),
+  ('Maya', 'physics', 'Amara'), ('Liam', 'physics', 'Amara');
+
+SELECT tutor, subject, count(*) AS rows FROM tutoring GROUP BY tutor, subject ORDER BY tutor;
+```
+
+tutor → subject holds, but tutor isn't a key (Amara has two rows). so "Amara teaches physics" is stored twice, and one bad UPDATE can make her teach two subjects. it's 3NF (subject is part of the key), and not BCNF.
+
+the BCNF split is tutors(tutor → subject) and lessons(student, tutor). and here's the catch: the rule "one tutor per student per subject" spanned both columns of the old key, and now the two columns live in different tables. no key can enforce it anymore:
+
+```sql run session=tutor
+CREATE TABLE tutors (tutor text PRIMARY KEY, subject text NOT NULL);
+CREATE TABLE lessons (student text, tutor text REFERENCES tutors, PRIMARY KEY (student, tutor));
+INSERT INTO tutors SELECT DISTINCT tutor, subject FROM tutoring ORDER BY tutor;
+INSERT INTO lessons SELECT student, tutor FROM tutoring ORDER BY 1, 2;
+
+-- Maya gets a second math tutor. nothing objects.
+INSERT INTO lessons VALUES ('Maya', 'Yuki');
+
+SELECT l.student, t.subject, count(*) AS tutors
+FROM lessons AS l JOIN tutors AS t USING (tutor)
+GROUP BY l.student, t.subject
+ORDER BY l.student, t.subject;
+```
+
+that's the trade, and it's provable: some 3NF tables can't be decomposed into BCNF without losing a dependency. you pick between redundancy (stay at 3NF, the key keeps the rule) and a rule you enforce some other way, usually a [trigger](/learn/writes/triggers). most designers stay at 3NF here, and say so in a comment.
+
+<Quiz question="a table enrollments(student_id, course_code, term, grade, course_title) is keyed by (student_id, course_code, term). which form does course_title break first?" options={["1NF", "2NF", "3NF"]} answer={1}>
+<Explain>
+2NF. course_title depends on course_code alone, which is only part of the key. every enrollment row repeats the title, so renaming a course means updating every enrollment in it. move it to courses(code, title), which is exactly what the school dataset does (and what its enrollments_flat table, built unnormalized on purpose, doesn't).
+</Explain>
+</Quiz>
+
+## which forms matter
+
+| form | the rule, plainly | in practice |
+| --- | --- | --- |
+| 1NF | one value per cell, rows have a key | always. arrays and jsonb are fine when the value is read and written whole |
+| 2NF | non-key columns depend on the whole key | only matters with composite keys. a surrogate id key is 2NF for free, which is also how people hide 2NF problems |
+| 3NF | ... and on nothing but the key | the everyday target. most anomalies you'll meet are 3NF violations |
+| BCNF | every determinant is a key | the same tables as 3NF almost always. the exceptions have overlapping candidate keys |
+| 4NF, 5NF | no independent multi-valued facts in one table, no join dependencies | rare. a table like (person, skill, language) storing two unrelated lists is the 4NF case |
+
+the forms past BCNF exist and are real, but you'll recognize their problems as "this table is about two unrelated lists" long before you name them. design to 3NF, check for the BCNF case when a table has two overlapping candidate keys, and then [denormalize on purpose](/learn/design/denormalization) where a measured query needs it.
+
+<Gotcha title="a surrogate key hides the duplicates">
+give orders_wide an `id` identity column, and it's technically 2NF: one-column key, nothing can depend on part of it. every anomaly above still happens. the forms are about dependencies between real attributes, so find the candidate keys first ([primary keys, natural and surrogate](/learn/design/keys)), then check, and don't let an id column end the conversation.
+</Gotcha>
+
+<Interview q="what is normalization, and why would you ever not do it?">
+normalization removes redundancy by splitting a table so each fact is stored once, along its functional dependencies: 2NF removes dependencies on part of a composite key, 3NF removes transitive ones through a non-key column, BCNF requires every determinant to be a key. the payoff is no update, insert or delete anomalies, and the split is lossless when each piece is keyed by a dependency's left side. you'd denormalize when a read path is measurably too slow or too expensive and you can keep the copy honest (a trigger, a materialized view, a counter updated in the same transaction). bonus point: some 3NF tables can't reach BCNF without losing a dependency, so 3NF is the pragmatic target.
+</Interview>
+
+<Keylines>
+- a fact stored in many rows can disagree with itself: update, insert and delete anomalies.
+- split along a functional dependency, its left side becomes the new table's key, and the join is lossless.
+- 2NF: the whole key. 3NF: nothing but the key. BCNF: every determinant is a key.
+- 3NF is the everyday target; BCNF can cost you a constraint.
+- a surrogate id doesn't normalize anything.
+</Keylines>

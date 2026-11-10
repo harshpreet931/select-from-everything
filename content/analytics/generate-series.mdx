@@ -1,0 +1,171 @@
+import { MonthGrid } from "@/components/figures/analytics/MonthGrid";
+import { resultOf, runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/generate-series.pgtrace.json";
+
+{/* the calendar, the count(*) switch and the histogram read traces/generate-series.scenario.sql,
+    captured on PGlite against the events dataset (no events at all on 2026-04-14). */}
+
+export const sparse = resultOf(trace, 0);
+export const full = resultOf(trace, 1);
+export const counts = runsOf(trace, ["count(*)", "count(e.id)"], 2);
+export const buckets = resultOf(trace, 4).rows.map(([b, n]) => ({ label: `${(Number(b) - 1) * 20} to ${Number(b) * 20}`, value: Number(n) }));
+
+<InShort>
+**generate_series(start, stop, step)** is a function that returns rows: numbers, timestamps, or (with a cast) dates. it's how you make rows that aren't in any table.
+
+its best trick is the **date spine**: generate every day first, then LEFT JOIN the data to it, so a day with no data still gets a row (and a 0, if you count the right thing). and with a hash of the row number instead of random(), it makes fake data that comes out the same every run.
+</InShort>
+
+## the picture
+
+you know how a "purchases per day" chart quietly skips the days nobody bought anything, and the line just connects the day before to the day after as if nothing happened? GROUP BY can only make a row for a day that has rows. a day with nothing has no row to group.
+
+think of a wall calendar. you don't wait for something to happen before you print a page for the day: the calendar has every day already, and you write the counts in. the empty days stay on the wall, with nothing (or a 0) written in them.
+
+<Figure wide caption={<>april 2026, purchases per day. with the events only, GROUP BY makes 29 rows, and the 14th is just <span className="text-faint">absent</span>. with a calendar first, every day has a row, and the 14th shows its <C k="hot">0</C>.</>}>
+<MonthGrid sparse={sparse} full={full} unit="purchases" trace={prov(trace)} />
+</Figure>
+
+the events table really has nothing on 2026-04-14. a chart drawn from the first query would show a smooth line through it. one drawn from the second shows a hole in the business, which is the true story.
+
+## rows from nothing
+
+generate_series lives in FROM, like a table, and hands back one row per value:
+
+```sql run
+SELECT n FROM generate_series(1, 10, 3) AS n ORDER BY n;
+```
+
+1, 4, 7, 10: start, step, and it stops at the last value that doesn't pass `stop`. the step is optional for numbers (default 1) and required for timestamps, where it's an interval:
+
+```sql run
+SELECT t
+FROM generate_series(timestamptz '2026-03-28 00:00+00',
+                     timestamptz '2026-03-29 12:00+00',
+                     interval '12 hours') AS t
+ORDER BY t;
+```
+
+there's no date version. `generate_series(date, date, interval)` quietly turns the dates into timestamps (with time zone, here), so cast back with `::date` if you want dates:
+
+```sql run
+SELECT d, pg_typeof(d) AS type, d::date AS day
+FROM generate_series(date '2026-04-13', date '2026-04-15', interval '1 day') AS d
+ORDER BY d;
+```
+
+## the date spine
+
+the calendar is the left side of a LEFT JOIN, so every day survives whether or not any event matches. the events join in where they can:
+
+```sql run db=events
+SELECT d::date AS day, count(e.id) AS purchases
+FROM generate_series(date '2026-04-12', date '2026-04-16', interval '1 day') AS d
+LEFT JOIN events AS e
+       ON e.occurred_at::date = d::date AND e.kind = 'purchase'
+GROUP BY d
+ORDER BY d;
+```
+
+the 14th is back, with 0. two details carry the whole thing:
+
+- **the kind filter is in ON, not WHERE.** in WHERE it would run after the join and throw away the 14th's padded row (its `e.kind` is NULL). ON decides what matches; WHERE decides what survives. ([outer joins](/learn/joins/outer-joins) has that rule.)
+- **count(e.id), not count(\*)**. look:
+
+<Figure wide caption={<>switch the count. <code>count(*)</code> counts rows, and the LEFT JOIN made one row for the empty day: the calendar day padded with NULLs. so the 14th, with no purchases, says 1. <code>count(e.id)</code> skips NULLs and says 0.</>}>
+<RunPick options={[{ key: "count", values: ["count(*)", "count(e.id)"] }]} runs={counts} hot={["count(*)", "count(e.id)"]} trace={prov(trace)} />
+</Figure>
+
+<Predict options={["0", "1", "NULL"]} answer={1}>
+```sql
+-- the 14th has no events
+SELECT d::date, count(*)
+FROM generate_series(date '2026-04-14', date '2026-04-14', interval '1 day') AS d
+LEFT JOIN events AS e ON e.occurred_at::date = d::date
+GROUP BY d;
+```
+<Explain>
+1. the LEFT JOIN keeps the calendar day and pads the event columns with NULL, so there's one row in the group. count(*) counts rows. count(e.id) would count non-NULL ids: 0. ([aggregates](/learn/basics/aggregates) has the count(*) vs count(col) rule.)
+</Explain>
+</Predict>
+
+the same spine makes [lag](/learn/analytics/lag-and-lead) honest: once every day has a row, "the previous row" really is yesterday, and a moving average by ROWS really covers the days it says.
+
+## series per row
+
+a set-returning function in FROM can use columns from tables to its left: it's [lateral](/learn/joins/lateral-joins) without the keyword. every order gets its own series of days, from ordering to shipping:
+
+```sql run db=shop
+SELECT o.id, d::date AS day
+FROM orders AS o
+CROSS JOIN generate_series(o.ordered_at::date, o.shipped_at::date, interval '1 day') AS d
+WHERE o.id IN (1, 3, 11)
+ORDER BY o.id, day;
+```
+
+order 3 spans two calendar days, order 11 four. order 1 isn't there at all: it was cancelled, so its `shipped_at` is NULL, a series with a NULL end is empty, and the CROSS JOIN drops the order.
+
+<Gotcha title="daily steps across a clock change">
+a `timestamptz` plus one day means one *calendar* day in the session's time zone. this page runs in UTC, where every day is 24 hours. ask for midnights in Paris across the night the clocks went forward (2026-03-29), and it matters which zone does the stepping. postgres 16 added a fourth argument for exactly that ([release notes](https://www.postgresql.org/docs/release/16.0/)):
+
+```sql run
+SELECT t AS utc_step,
+       t2 AS paris_step
+FROM generate_series(timestamptz '2026-03-28 00:00 Europe/Paris',
+                     timestamptz '2026-03-31 00:00 Europe/Paris',
+                     interval '1 day') WITH ORDINALITY AS a (t, i)
+FULL JOIN generate_series(timestamptz '2026-03-28 00:00 Europe/Paris',
+                     timestamptz '2026-03-31 00:00 Europe/Paris',
+                     interval '1 day', 'Europe/Paris') WITH ORDINALITY AS b (t2, i) USING (i)
+ORDER BY i;
+```
+
+stepping in UTC, the third value is 23:00 UTC, which is 01:00 in Paris after the change: not midnight. and the fourth Paris midnight (22:00 UTC on the 30th) is missing, because 23:00 is past the end. stepping in Paris, every value is a Paris midnight. ([timestamptz](/learn/types/timestamptz) is the long version.)
+</Gotcha>
+
+## fake data that's the same every run
+
+need 1,000 orders to test a query? generate_series gives you the rows; you still need values. `random()` gives different ones every run:
+
+```sql run volatile
+SELECT round(random()::numeric, 4) AS today, round(random()::numeric, 4) AS also_today;
+```
+
+(this page marks that block volatile: its golden can't be compared, only its shape.) two ways to make it repeatable.
+
+**seed it.** `setseed()` fixes random()'s sequence for the rest of the session, so the same script gives the same numbers. on the same major version, that is: postgres 15 changed the algorithm, and its [release notes](https://www.postgresql.org/docs/release/15.0/) warn that results differ from earlier versions "even for the same seed value":
+
+```sql run
+SELECT setseed(0.42);
+SELECT round(random()::numeric, 4) AS r FROM generate_series(1, 3) ORDER BY 1;
+```
+
+**hash it.** better: compute each value from the row number with a hash, so any row can be recomputed on its own, in any order, with no session state. this is how every dataset on this site is built (`datasets/*/data.sql`):
+
+```sql run
+SELECT i,
+       (hashint4(i)::bigint + 2147483648) % 100 AS pick_0_to_99,
+       (ARRAY['ios', 'android', 'web'])[1 + (hashint4(i * 7)::bigint + 2147483648) % 3] AS device
+FROM generate_series(1, 5) AS i
+ORDER BY i;
+```
+
+the `+ 2147483648` moves hashint4's result (any int4, negative too) into 0 to 4,294,967,295 before the modulo; `abs()` would overflow on the one value with no positive twin. squaring a uniform value skews it toward small, which is roughly what real order totals look like:
+
+<Figure caption={<>1,000 fake order totals, <code>200 × u²</code> with u from hashint4, in buckets of 20. the same bars on every run, on every machine.</>}>
+<Bars data={buckets} unit="orders" />
+</Figure>
+
+<Docs href="https://www.postgresql.org/docs/18/functions-srf.html" title="set returning functions">generate_series for integers, numerics and timestamps (with the optional time zone), and generate_subscripts for walking an array's indexes.</Docs>
+
+<Interview q="how do you report daily totals including days with no sales?">
+generate a calendar with generate_series(start, end, interval '1 day'), LEFT JOIN the sales to it on the day, and aggregate with count(sales.id) or coalesce(sum(amount), 0). put any filter on the sales side in the ON clause, not WHERE, or the empty days get filtered back out. bonus point: count(*) would say 1 for an empty day, because the LEFT JOIN made a padded row; and mention time zones, since "a day" depends on the zone you cut it in.
+</Interview>
+
+<Keylines>
+- generate_series makes rows from nothing: numbers, timestamps, dates (via a cast).
+- a date spine LEFT JOINed to the data gives every day a row, empty ones included.
+- count(col), not count(*), and filters on the data side in ON, not WHERE.
+- in FROM it's lateral: a series per row of the table to its left.
+- for fake data, hash the row number. random() needs setseed, and differs across versions.
+</Keylines>

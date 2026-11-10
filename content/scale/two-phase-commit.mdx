@@ -1,0 +1,107 @@
+import { TwoPhase } from "@/components/figures/scale/TwoPhase";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/orphan-prepared.pgtrace.json";
+import { traceLanes } from "@/lib/db/fromTrace";
+
+{/* the lanes, pg_prepared_xacts, pg_locks and VACUUM VERBOSE lines all come from
+    traces/orphan-prepared.scenario.sql, on a throwaway native postgres 18.6 with
+    max_prepared_transactions = 10 (the browser's postgres has it at 0, so PREPARE TRANSACTION
+    can't run there). the protocol figure is drawn by hand. */}
+
+export const xacts = resultOf(trace, 7);
+export const locks = resultOf(trace, 8);
+export const vac = (i) => trace.steps[i].log.filter((l) => /tuples:|removable cutoff/.test(l)).map((l) => l.trim());
+export const before = vac(11);
+export const after = vac(13);
+export const recovered = trace.steps[6].log.find((l) => l.includes("recovering prepared transaction"));
+export const balances = resultOf(trace, 14);
+export const lanes = traceLanes(trace);
+
+<InShort>
+**two-phase commit** makes one transaction atomic across several databases. phase one: the coordinator asks every participant to **prepare** (make the work durable and promise to commit on request), and each votes. phase two: if all voted yes, it tells them all to commit, otherwise to roll back. in postgres that's `PREPARE TRANSACTION` and `COMMIT PREPARED`. the weak spot: a participant that prepared and then lost its coordinator can't decide alone, and it waits, **holding its locks**, possibly forever.
+</InShort>
+
+## the picture
+
+you know how a transfer between two banks has to debit one and credit the other, and doing one without the other is the one outcome nobody accepts? each bank's database can make its own half atomic. nothing makes the two halves atomic together, unless someone coordinates.
+
+think of a wedding (the coordinator is the officiant). "do you?" to each partner, separately: that's phase one, and a "yes" is binding. only when both have said yes does the officiant declare it done, and that declaration is phase two. if the officiant collapses between the vows and the declaration, the couple is stuck in a strange state: neither can declare it done, and neither can walk away.
+
+<Figure wide caption={<>a coordinator and two participants. step through the happy path, a <C k="dead">no</C> vote, and a coordinator that dies after everyone voted. the state to watch is <C k="hot">prepared</C>: promised, not finished.</>}>
+<TwoPhase />
+</Figure>
+
+## in postgres
+
+postgres provides the participant's half. `PREPARE TRANSACTION 'gid'` ends the current transaction's session involvement: the work is written to WAL and to disk, the session is free to do other things, and the transaction waits, under its global id, for someone to say `COMMIT PREPARED 'gid'` or `ROLLBACK PREPARED 'gid'`, from any session. the coordinator (a transaction manager, an application, a sharding layer such as postgres_fdw or citus) is not postgres's job.
+
+it's off by default, because a forgotten prepared transaction is dangerous. `max_prepared_transactions` is 0, and in the browser that's what you get:
+
+```sql run expect=error
+SHOW max_prepared_transactions;
+BEGIN;
+CREATE TABLE t (id int);
+PREPARE TRANSACTION 'transfer-7';
+```
+
+on a real server with `max_prepared_transactions = 10`, here's one participant whose coordinator never comes back. T1 prepares half a transfer; then the whole server crashes and restarts; then other sessions try to get on with their day:
+
+<Figure wide caption={<>a real postgres 18.6. the prepared transaction survives T1's session, a crash and a restart. T2 <C k="dead">gives up</C> waiting for alice's row, and VACUUM can't remove dead rows anywhere until someone runs COMMIT PREPARED.</>}>
+<SessionLanes sessions={trace.sessions} steps={lanes} side="none" provenance={<Provenance trace={prov(trace)} />} />
+</Figure>
+
+three things in that run are worth staring at.
+
+**it outlives everything.** after the restart, recovery logs <code>{recovered?.replace(/^LOG:\s+/, "")}</code>, and `pg_prepared_xacts` lists it again: a transaction with no session, no process and no client.
+
+<Figure caption={<>pg_prepared_xacts after the restart, and the locks it still holds. the lock rows have no pid: no process is behind them.</>}>
+<ResultTable columns={xacts.columns} rows={xacts.rows} dense />
+<ResultTable columns={locks.columns} rows={locks.rows} rowTones={locks.rows.map(() => "meta")} dense />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+**it keeps its locks.** T2 wants alice's row and waits for a transaction nobody is running. here T2 had `lock_timeout = '200ms'` and gave up with `55P03`; without one it would wait until a human intervenes. and since the lock isn't held by a backend, the usual tools for killing a blocker (`pg_terminate_backend`) have nothing to terminate.
+
+**it pins the xmin horizon.** a prepared transaction counts as running, so its xid holds back the [xmin horizon](/learn/mvcc/xmin-horizon) like any long transaction: no dead row created after it can be removed, in any table of the cluster. three updates to an unrelated counters table, then VACUUM:
+
+<SqlPanel code={before.join("\n")} lang="text" nolines file="server log" className="font-mono text-12" />
+
+after `COMMIT PREPARED 'transfer-7'`, the same VACUUM:
+
+<SqlPanel code={after.join("\n")} lang="text" nolines file="server log" className="font-mono text-12" />
+
+and the final balances show the prepared half committed, and T2's update never happened: {balances.rows.map((r) => `${r[1]} ${r[2]}`).join(", ")}.
+
+<Predict question="a prepared transaction has been sitting in pg_prepared_xacts for a week. nobody remembers what it was. what's happening to the database?" options={["nothing, it's idle", "its locks block writers, and vacuum can't clean up", "postgres rolled it back at restart"]} answer={1}>
+```sql
+SELECT gid, prepared, age(transaction) FROM pg_prepared_xacts;
+```
+<Explain>
+it still holds every lock it took, so anything touching those rows or tables waits, and its xid holds the xmin horizon back, so dead tuples pile up cluster-wide and eventually threaten wraparound. restarts don't help: prepared transactions survive them by design. someone has to decide, with `COMMIT PREPARED` or `ROLLBACK PREPARED`, after finding out what the coordinator intended.
+</Explain>
+</Predict>
+
+## why it blocks, and what fixes that
+
+once a participant votes yes, it has given away its right to abort: the coordinator may already have told someone else to commit. and it can't commit either: someone else may have voted no. only the coordinator's decision settles it, so while the coordinator is down, the participant waits. that's not a postgres bug, it's the protocol. the classic textbook answer is **three-phase commit**, which avoids blocking only under timing assumptions real networks break. what real systems do instead:
+
+- **make the coordinator's decision durable and replicated.** if the decision is stored with [consensus](/learn/scale/consensus), a new coordinator can read it and finish the job. spanner and CockroachDB do roughly this: 2PC across shards, with every participant and the decision itself replicated by Paxos or Raft.
+- **monitor and resolve.** in plain postgres, alert on any row in `pg_prepared_xacts` older than a few seconds, and have the transaction manager's recovery log say which way each gid went.
+- **avoid it.** design so that one business operation touches one database ([shard by](/learn/scale/sharding) the key that keeps it local), or replace atomic commit with a saga: a sequence of local transactions with compensating actions when a later step fails.
+
+<Gotcha title="leave max_prepared_transactions at 0 unless something uses it">
+if no transaction manager is going to run COMMIT PREPARED, nothing should be able to run PREPARE TRANSACTION. a stray one from a test or a misconfigured driver blocks quietly and survives restarts. when you do turn it on, set it to at least `max_connections` (the manual's advice when you use prepared transactions), and watch `pg_prepared_xacts`.
+</Gotcha>
+
+<Interview q="what's the problem with two-phase commit?">
+it blocks. after a participant votes yes in the prepare phase, it can neither commit nor abort on its own, so if the coordinator fails before sending the decision, the participant waits, holding its locks, until the coordinator comes back or someone resolves it by hand. it also adds a round of messages and a forced log write to every distributed commit. bonus points: in postgres an orphaned prepared transaction survives restarts and pins the xmin horizon, so vacuum stops cleaning up; systems like spanner make the coordinator's state fault tolerant by replicating it with consensus.
+</Interview>
+
+<Keylines>
+- phase one: prepare and vote. phase two: commit if all said yes, else roll back.
+- a prepared participant has promised; it can't decide alone.
+- coordinator down = participants stuck, holding locks.
+- in postgres, prepared transactions survive restarts and pin the xmin horizon.
+- keep max_prepared_transactions at 0 unless a transaction manager owns them.
+</Keylines>

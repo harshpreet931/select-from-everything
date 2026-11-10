@@ -1,0 +1,117 @@
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/order-by.pgtrace.json";
+
+{/* every plan here reads traces/order-by.scenario.sql, captured on PGlite: orders with no
+    secondary index, then an index on ordered_at, one on shipped_at, one on customer_id. */}
+
+export const pg = (i) => trace.steps[i].explain.Plan["Shared Hit Blocks"] + trace.steps[i].explain.Plan["Shared Read Blocks"];
+export const seqPages = trace.steps[0].explain.Plan.Plans[0].Plans[0]["Shared Hit Blocks"] + trace.steps[0].explain.Plan.Plans[0].Plans[0]["Shared Read Blocks"];
+
+<InShort>
+a b-tree index is already sorted. if a query's `ORDER BY` matches the index's order, postgres reads the index in that order and the **Sort node disappears**. with a `LIMIT` on top, it stops after the first few entries: the newest 10 orders in **{pg(2)} page reads** instead of reading and sorting all 10,000.
+
+it works backwards too, but only for the exact reverse, NULLs included.
+</InShort>
+
+## the picture
+
+you know how a leaderboard shows the top 10 without anyone sorting a million scores every time you look? it's kept in order. reading the first ten lines of something already sorted is the cheapest query there is.
+
+<Figure wide caption={<>the 10 newest orders. without an index, postgres reads all {seqPages} pages of the table, sorts as it goes (a top-N heapsort that only keeps the best 10), and returns 10. with an index on ordered_at it reads the index from its newest end, one leaf, one heap page, and stops: {pg(2)} pages.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="index"
+  pages
+  plans={[
+    { label: "none", step: 0 },
+    { label: "on ordered_at", step: 2 },
+  ]}
+/>
+</Figure>
+
+the `Limit` node asks the scan for one row at a time, and stops asking after 10. a Sort can't work that way: it has to see every row before it can hand out the first ([the iterator model](/learn/execution/iterator-model)). an index scan in the right order can, so `LIMIT` turns into "read 10 entries". that's the whole trick, and it's also why [top-N per group](/learn/analytics/top-n-per-group) and [keyset pagination](/learn/indexes/keyset-pagination) are fast with the right index.
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, customer_id, ordered_at FROM orders ORDER BY ordered_at DESC LIMIT 10;
+CREATE INDEX orders_ordered_at ON orders (ordered_at);
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, customer_id, ordered_at FROM orders ORDER BY ordered_at DESC LIMIT 10;
+```
+
+`Index Scan Backward`: the leaf pages are linked both ways, so the same index serves `ASC` (forwards) and `DESC` (backwards). you don't need a second index for the other direction.
+
+## directions and NULLs
+
+a b-tree index has one order: by default `ASC NULLS LAST`. reading it backwards gives exactly the reverse, `DESC NULLS FIRST`, and those are the two orders it can produce without sorting. `shipped_at` is NULL for orders that haven't shipped, so it's a good column to watch:
+
+<Figure wide caption={<>an index on shipped_at (ASC NULLS LAST, the default) and four ways to order by it. forwards and backwards, no Sort. the two orders that put NULLs at the other end need a Sort over the whole table: {pg(6)} pages instead of {pg(4)}.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="ORDER BY shipped_at"
+  pages
+  plans={[
+    { label: "ASC", step: 4 },
+    { label: "DESC", step: 5 },
+    { label: "DESC NULLS LAST", step: 6 },
+    { label: "ASC NULLS FIRST", step: 7 },
+  ]}
+/>
+</Figure>
+
+<Predict question="ORDER BY shipped_at DESC LIMIT 5: the five most recently shipped orders?" options={["yes", "five unshipped orders", "an error"]} answer={1}>
+```sql
+SELECT id, shipped_at FROM orders ORDER BY shipped_at DESC LIMIT 5;
+```
+<Explain>
+five unshipped orders. `DESC` means `DESC NULLS FIRST` by default, so the NULLs come first, and there are 430 of them. that's the SQL default, not an index quirk: the index just reproduces it. write `DESC NULLS LAST` for the most recently shipped, and to keep that fast, create the index in that order: `CREATE INDEX ON orders (shipped_at DESC NULLS LAST)`.
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT count(*) FILTER (WHERE shipped_at IS NULL) AS unshipped FROM orders;
+SELECT id, shipped_at FROM orders ORDER BY shipped_at DESC, id LIMIT 5;
+SELECT id, shipped_at FROM orders ORDER BY shipped_at DESC NULLS LAST, id LIMIT 5;
+```
+
+the first five are all NULLs, which is rarely what "latest shipped" meant. ([NULLs in ORDER BY](/learn/basics/order-by) has the default rules.)
+
+## several columns
+
+for an index on `(a, b)` the rule is the same, per column: the index can produce `a ASC, b ASC` and its exact reverse `a DESC, b DESC`. a mixed order, `a ASC, b DESC`, needs an index declared that way: `(a, b DESC)`. and an `ORDER BY` can use a leading prefix of the index (`ORDER BY a`), or skip columns that the `WHERE` fixes with equality: with `WHERE customer_id = 42`, an index on `(customer_id, ordered_at)` serves `ORDER BY ordered_at DESC` directly.
+
+```sql run db=shop
+CREATE INDEX orders_customer_at ON orders (customer_id, ordered_at);
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, ordered_at FROM orders WHERE customer_id = 42 ORDER BY ordered_at DESC LIMIT 3;
+```
+
+Ada's last three orders: no Sort, a backward scan inside her slice of the index.
+
+## half a match: incremental sort
+
+if the index matches only the first column of the `ORDER BY`, postgres doesn't throw it away. it reads rows in index order, which are already grouped by the first column, and sorts each group by the rest as it goes: an **Incremental Sort**. with a LIMIT, it stops as soon as enough groups are done.
+
+<Figure wide caption={<>an index on customer_id alone, and <code>ORDER BY customer_id, ordered_at DESC LIMIT 10</code>. the index supplies customer_id order (<code>Presorted Key</code>), and only each customer's handful of orders gets sorted. the scan stopped after {trace.steps[10].explain.Plan.Plans[0].Plans[0]["Actual Rows"]} rows.</>}>
+<PlanTree plan={trace.steps[10].explain} show={["actual", "buffers"]} provenance={<Provenance trace={prov(trace)} />} />
+</Figure>
+
+a full sort of 10,000 rows became a few tiny sorts of one customer's orders each. ([sorting and work_mem](/learn/execution/sorting) has the sort methods, including the top-N heapsort above.)
+
+<Gotcha title="an index for ORDER BY only helps with a LIMIT, or a small result">
+without a `LIMIT`, `ORDER BY ordered_at` over the whole table still reads every row. an index scan in order then fetches heap pages in index order, one per row, and postgres will often prefer a seq scan and a sort: reading in order and sorting in memory is cheaper than random heap fetches ([when postgres uses an index](/learn/indexes/index-or-scan)). the index wins when only the first few rows are wanted, or when the order is needed for a merge join or a GroupAggregate further up.
+</Gotcha>
+
+<Interview q="how can an index make ORDER BY ... LIMIT 10 fast?">
+a b-tree is stored in key order, so an index scan returns rows already sorted, and the plan needs no Sort node. under a Limit, the scan is pulled one row at a time and stops after 10, so postgres reads a couple of index pages and the heap pages for those 10 rows instead of the whole table. the index has to match the ORDER BY: the same columns in the same order, and either the declared directions or their exact reverse (backward scan), NULLS FIRST/LAST included. bonus points: equality conditions in WHERE can satisfy leading index columns, a partial match gives an Incremental Sort, and mixed directions need an index declared with them, like (a, b DESC).
+</Interview>
+
+<Keylines>
+- an index in ORDER BY order removes the Sort, and LIMIT then stops after a few entries.
+- the same index serves the exact reverse: backward scan, NULLS flipped too.
+- DESC means NULLS FIRST by default. match the index to the NULLS you want.
+- mixed directions need an index declared that way, like (a, b DESC).
+- a partial match still helps: Incremental Sort sorts within each group.
+</Keylines>

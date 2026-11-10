@@ -1,0 +1,278 @@
+import { PruneStrip } from "@/components/figures/scale/PruneStrip";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import tr from "./traces/pruning.pgtrace.json";
+import golden from "./partitioning.golden.json";
+
+{/* the pruning figure reads traces/pruning.scenario.sql (PGlite, events dataset), so its plans are
+    the plans the run buttons produce. the per-partition counts for list and hash come from this
+    chapter's own golden. */}
+
+export const plan = (i) => { const e = tr.steps[i].explain; return (Array.isArray(e) ? e[0] : e).Plan; };
+export const partRows = tr.steps[0].result.data;
+export const pruneOf = (i) => {
+  const seen = {};
+  let removed = 0;
+  const walk = (n) => {
+    if (n["Subplans Removed"]) removed += n["Subplans Removed"];
+    if (String(n["Relation Name"] ?? "").startsWith("ev_")) seen[n["Relation Name"]] = n;
+    (n.Plans ?? []).forEach(walk);
+  };
+  walk(plan(i));
+  const fate = {};
+  const rows = {};
+  for (const [name] of partRows) {
+    const n = seen[name];
+    fate[name] = n ? (n["Actual Loops"] === 0 ? "never" : "scanned") : removed ? "init" : "plan";
+    if (n) rows[name] = n["Actual Rows"];
+  }
+  return { fate, rows };
+};
+export const strip = [
+  { label: "april 1 to 15", i: 1 },
+  { label: "april 25 to may 5", i: 2 },
+  { label: "user_id = 17", i: 3 },
+  { label: "$1 (generic plan)", i: 5 },
+  { label: "a subquery", i: 6 },
+].map((r) => ({ label: r.label, sql: tr.steps[r.i].sql.trim(), note: tr.steps[r.i].note, ...pruneOf(r.i) }));
+export const lastOf = (frag) => { const b = Object.values(golden.blocks).find((x) => x.sql.includes(frag)); const st = b.statements[b.statements.length - 1]; return st.rows; };
+export const listRows = lastOf("CREATE TABLE ev_k_browse");
+export const hashRows = lastOf("CREATE TABLE ev_h0");
+export const sumBy = (rows) => Object.entries(rows.reduce((m, r) => ({ ...m, [r[0]]: (m[r[0]] ?? 0) + Number(r[2]) }), {}));
+
+<InShort>
+a **partitioned table** is one table name over several real tables (partitions), split by a **partition key**: ranges of a date, lists of values, or a hash. queries that filter on the key skip partitions that can't match (**partition pruning**), at plan time or at run time, and old data leaves by detaching a partition instead of deleting rows. every unique index must include the key.
+</InShort>
+
+## the picture
+
+you know how a table of events grows forever, and the queries only ever look at last week, and deleting last year takes an afternoon and leaves bloat behind? partitioning is the filing cabinet answer: one drawer per month (a partition). you open the drawer for the month you want, and throwing out a year is pulling out twelve drawers.
+
+here are the 25,000 events of the events dataset in three monthly partitions. pick a WHERE and see which drawers postgres opens:
+
+<Figure wide caption={<>one partitioned table, three partitions, five queries. every tile comes from that query's real plan: <C k="hot">read</C>, struck out (pruned before anything ran), or dashed (started but never executed). three different moments to skip a partition.</>}>
+<PruneStrip parts={partRows.map(([name, rows]) => ({ name, rows: Number(rows), label: name.replace("ev_", "").replace("_", "-") }))} runs={strip} trace={prov(tr)} />
+</Figure>
+
+## building one
+
+the parent says how to split, each partition says which slice it holds. the parent has no storage of its own; rows go to whichever partition their key belongs to.
+
+```sql run db=events session=r
+SET TimeZone = 'UTC';
+CREATE TABLE ev (
+  id          bigint NOT NULL,
+  user_id     int NOT NULL,
+  kind        text NOT NULL,
+  occurred_at timestamptz NOT NULL,
+  amount      numeric(10,2)
+) PARTITION BY RANGE (occurred_at);
+
+CREATE TABLE ev_2026_03 PARTITION OF ev FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
+CREATE TABLE ev_2026_04 PARTITION OF ev FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');
+CREATE TABLE ev_2026_05 PARTITION OF ev FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
+
+INSERT INTO ev SELECT id, user_id, kind, occurred_at, amount FROM events ORDER BY id;
+ANALYZE ev;
+```
+
+`tableoid` says which partition each row physically lives in. ranges include the lower bound and exclude the upper, so midnight on april 1 belongs to april:
+
+```sql run session=r
+SELECT tableoid::regclass AS partition, count(*) AS rows, min(occurred_at)::date AS first, max(occurred_at)::date AS last
+FROM ev
+GROUP BY tableoid
+ORDER BY partition;
+```
+
+## pruning, at three moments
+
+**while planning.** when the WHERE compares the key to constants, the planner checks each partition's bounds and leaves out the ones that can't match. they're not in the plan at all:
+
+```sql run session=r
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM ev
+WHERE occurred_at >= '2026-04-01' AND occurred_at < '2026-04-15';
+```
+
+**when the executor starts.** a prepared statement with a [generic plan](/learn/optimizer/generic-plans) doesn't know `$1` while planning, so the plan keeps every partition. once the value arrives, the executor drops the ones that can't match before running anything, and EXPLAIN says how many with `Subplans Removed`:
+
+```sql run session=r
+PREPARE by_day(timestamptz) AS
+  SELECT count(*) FROM ev WHERE occurred_at >= $1 AND occurred_at < $1 + interval '1 day';
+SET plan_cache_mode = force_generic_plan;
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF) EXECUTE by_day('2026-04-20');
+```
+
+**while running.** when the value only exists once part of the query has run (a subquery, or the outer side of a nested loop), every partition is set up, and the ones that turn out not to match are skipped. EXPLAIN marks them `(never executed)`:
+
+```sql run session=r
+RESET plan_cache_mode;
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM ev
+WHERE occurred_at >= (SELECT max(occurred_at) FROM events) - interval '1 day';
+```
+
+all three need one thing: a condition on the **partition key** that postgres can compare with the bounds. without one, there's nothing to prune with.
+
+<Predict options={["one partition", "all three", "an error"]} answer={1}>
+```sql
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM ev WHERE user_id = 17;
+```
+<Explain>
+all three. the table is split by `occurred_at`, and user 17's events could be in any month. a query that doesn't filter on the key reads every partition (an Append over all of them), which can be slower than one unpartitioned table, since each partition is planned and scanned separately.
+</Explain>
+</Predict>
+
+```sql run session=r
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM ev WHERE user_id = 17;
+```
+
+## list and hash
+
+**list** partitions name their values. useful when the values are few and known, and queries ask for one of them:
+
+```sql run db=events session=l
+CREATE TABLE ev_k (LIKE events INCLUDING DEFAULTS) PARTITION BY LIST (kind);
+CREATE TABLE ev_k_browse PARTITION OF ev_k FOR VALUES IN ('view', 'click');
+CREATE TABLE ev_k_buy    PARTITION OF ev_k FOR VALUES IN ('add_to_cart', 'purchase');
+CREATE TABLE ev_k_signup PARTITION OF ev_k FOR VALUES IN ('signup');
+INSERT INTO ev_k SELECT * FROM events ORDER BY id;
+ANALYZE ev_k;
+SELECT tableoid::regclass AS partition, kind, count(*) FROM ev_k GROUP BY tableoid, kind ORDER BY partition, kind;
+```
+
+**hash** partitions take a hash of the key modulo n. no natural ranges, just a spread, and pruning only for equality on the key:
+
+```sql run db=events session=h
+CREATE TABLE ev_h (LIKE events) PARTITION BY HASH (user_id);
+CREATE TABLE ev_h0 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE ev_h1 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE ev_h2 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE ev_h3 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+INSERT INTO ev_h SELECT * FROM events ORDER BY id;
+CREATE TABLE users_h (user_id int PRIMARY KEY, events int NOT NULL) PARTITION BY HASH (user_id);
+CREATE TABLE users_h0 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE users_h1 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE users_h2 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE users_h3 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+INSERT INTO users_h SELECT user_id, count(*) FROM events GROUP BY user_id ORDER BY user_id;
+ANALYZE ev_h, users_h;
+SELECT tableoid::regclass AS partition, count(*) AS rows, count(DISTINCT user_id) AS users FROM ev_h GROUP BY tableoid ORDER BY partition;
+```
+
+<Figure caption={<>rows per partition, from the blocks above. months are close to even; list partitions are as uneven as the values (views dominate); hash spreads 500 users fairly evenly, but not their events, because a few users are much busier than the rest.</>}>
+<Bars data={[
+  ...partRows.map(([n, v]) => ({ label: `range: ${n}`, value: Number(v) })),
+  ...sumBy(listRows).map(([n, v]) => ({ label: `list: ${n}`, value: v })),
+  ...hashRows.map((r) => ({ label: `hash: ${r[0]}`, value: Number(r[1]) })),
+]} />
+<Provenance trace={prov(tr)} />
+</Figure>
+
+## partitionwise join and aggregate
+
+when every partition holds whole groups, postgres can aggregate each partition on its own and just append the answers. it's off by default (it makes planning more expensive), so turn it on where it pays:
+
+```sql run session=l
+SET enable_partitionwise_aggregate = on;
+EXPLAIN (COSTS OFF)
+SELECT kind, count(*) FROM ev_k GROUP BY kind;
+```
+
+the same for joins: two tables partitioned the same way on the join key can be joined partition by partition, four small hash joins instead of one big one:
+
+```sql run session=h
+SET enable_partitionwise_join = on;
+EXPLAIN (COSTS OFF)
+SELECT u.user_id, u.events, max(e.occurred_at)
+FROM users_h AS u JOIN ev_h AS e USING (user_id)
+GROUP BY u.user_id, u.events;
+```
+
+## the rules that bite
+
+a row whose key fits no partition is refused:
+
+```sql run session=r expect=error
+INSERT INTO ev VALUES (25001, 42, 'view', '2026-06-01 09:00+00', NULL);
+```
+
+a **default partition** catches everything that fits nowhere else. handy, until you create the partition those rows should have gone to, and postgres finds rows in the default that now belong elsewhere:
+
+```sql run session=r
+CREATE TABLE ev_default PARTITION OF ev DEFAULT;
+INSERT INTO ev VALUES (25001, 42, 'view', '2026-06-01 09:00+00', NULL);
+SELECT tableoid::regclass AS partition, id FROM ev WHERE id = 25001;
+```
+
+```sql run session=r expect=error
+CREATE TABLE ev_2026_06 PARTITION OF ev FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
+```
+
+an index created on the parent is created on every partition, and on partitions added later. but a **unique** index is only enforced inside each partition, so it has to include the partition key, or two partitions could each hold the same id:
+
+```sql run session=r expect=error
+ALTER TABLE ev ADD PRIMARY KEY (id);
+```
+
+```sql run session=r
+ALTER TABLE ev ADD PRIMARY KEY (id, occurred_at);
+CREATE INDEX ev_user_idx ON ev (user_id);
+SELECT tablename, indexname FROM pg_indexes WHERE tablename LIKE 'ev%' ORDER BY tablename, indexname;
+```
+
+and the payoff: old data leaves by **detaching** its partition. `DETACH PARTITION ... CONCURRENTLY` <Since v={14} /> takes only a weak lock on the parent, so queries keep running while it happens. it refuses when there's a default partition, and it can't run inside a transaction block:
+
+```sql run session=r expect=error
+ALTER TABLE ev DETACH PARTITION ev_2026_03 CONCURRENTLY;
+```
+
+```sql run session=r
+DELETE FROM ev_default;
+DROP TABLE ev_default;
+ALTER TABLE ev DETACH PARTITION ev_2026_03 CONCURRENTLY;
+SELECT count(*) AS still_in_ev FROM ev WHERE occurred_at < '2026-04-01';
+SELECT count(*) AS now_standalone FROM ev_2026_03;
+```
+
+march is now an ordinary table: archive it, dump it, or drop it in an instant, with no DELETE, no dead tuples and no [VACUUM](/learn/mvcc/vacuum) afterwards.
+
+<Figure wide caption={<>the life of a monthly partition. hover a stage.</>}>
+<Flow stages={[
+  { label: "create ahead", sub: "next month's partition", note: "make it before the first row arrives, so nothing lands in a default partition (or fails)." },
+  { label: "fill", sub: "inserts route by key", note: "the newest partition takes every insert; its indexes stay small and hot." },
+  { label: "query", sub: "pruned by the key", note: "queries that filter on occurred_at touch only the months they ask for." },
+  { label: "detach", sub: "CONCURRENTLY", note: "a weak lock on the parent; queries keep running. not inside a transaction, not with a default partition." },
+  { label: "archive or drop", sub: "a whole table", note: "dropping a table is instant. deleting the same rows would leave a dead tuple each, and work for VACUUM." },
+]} />
+</Figure>
+
+## when it doesn't help
+
+partitioning makes a query faster only when it filters on the key and the skipped partitions were worth skipping. with an index on `occurred_at`, a one-table query for one day already reads only that day's pages. what partitioning really buys is operational: dropping old data instantly, vacuuming and reindexing one month at a time, indexes that stay small. it costs planning time (each partition is one more relation to consider), and queries without the key now visit every partition. a few large partitions beat thousands of tiny ones. and every partition still lives on one server: spreading them across machines is [sharding](/learn/scale/sharding).
+
+<Gotcha title="the key has to be in the WHERE, bare">
+pruning compares the condition with the bounds. wrap the key in a cast and it can't: `occurred_at::date` is a different expression, so both remaining months are scanned for one day.
+
+```sql run session=r
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM ev WHERE occurred_at::date = '2026-04-20';
+```
+
+write `occurred_at >= '2026-04-20' AND occurred_at < '2026-04-21'` instead. the same rule as [expression indexes](/learn/indexes/expression-indexes): conditions on the bare column work.
+</Gotcha>
+
+<Interview q="when would you partition a table?">
+when there's a natural key most queries filter on (usually time), and the table is big enough that dropping, vacuuming and indexing it as one unit hurts. the big wins are retention by detaching or dropping a partition instead of a huge DELETE, maintenance per partition, and pruning for queries on the key. bonus points: unique constraints must include the partition key, queries without the key scan every partition, and DETACH CONCURRENTLY refuses to run while a default partition exists.
+</Interview>
+
+<Keylines>
+- one table name, many real tables, split by a key: range, list or hash.
+- pruning skips partitions at plan time, at executor start (Subplans Removed) or at run time (never executed).
+- no condition on the key, no pruning: every partition is read.
+- unique indexes must include the partition key.
+- retention becomes DETACH CONCURRENTLY and DROP, not DELETE and VACUUM.
+</Keylines>

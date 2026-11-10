@@ -1,0 +1,212 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b78e916365677f69": {
+      "db": "shop",
+      "sql": "SET TimeZone = 'UTC';\nSELECT name, created_at FROM customers WHERE id = 12;\nSET TimeZone = 'Asia/Kolkata';\nSELECT name, created_at FROM customers WHERE id = 12;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["created_at", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "96b064a73aa2c4b5",
+          "rows": [
+            ["Ravi Kumar", "2026-03-29 01:30:00+00"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1e914ba1b0835f7f"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["created_at", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "ea523fffc6284696",
+          "rows": [
+            ["Ravi Kumar", "2026-03-29 07:00:00+05:30"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bddb0924aa96d51f": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'UTC';\nSELECT timestamp   '2026-03-29 01:30+05:30' AS plain,\n       timestamptz '2026-03-29 01:30+05:30' AS with_tz;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["plain", "timestamp", 1114],
+            ["with_tz", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "323d9bc78aaffe7d",
+          "rows": [
+            ["2026-03-29 01:30:00", "2026-03-28 20:00:00+00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6644a9d59bffec40": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'Europe/Paris';\nSELECT timestamptz '2026-10-25 02:30'             AS typed,\n       timestamptz '2026-10-25 00:30+00'          AS first_0230,\n       timestamptz '2026-10-25 01:30+00'          AS second_0230;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["typed", "timestamptz", 1184],
+            ["first_0230", "timestamptz", 1184],
+            ["second_0230", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "e067acbfa5736634",
+          "rows": [
+            ["2026-10-25 02:30:00+01", "2026-10-25 02:30:00+02", "2026-10-25 02:30:00+01"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d673dad2fa65c80a": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'Europe/Paris';\nSELECT timestamptz '2026-03-28 12:00' + interval '1 day'    AS plus_day,\n       timestamptz '2026-03-28 12:00' + interval '24 hours' AS plus_24h;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["plus_day", "timestamptz", 1184],
+            ["plus_24h", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "93824bf0b0f49c9b",
+          "rows": [
+            ["2026-03-29 12:00:00+02", "2026-03-29 13:00:00+02"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8aeae6e48e565bdc": {
+      "db": "shop",
+      "sql": "SET TimeZone = 'UTC';\nSELECT count(*) AS signed_up_on_the_29th FROM customers WHERE created_at::date = '2026-03-29';\nSET TimeZone = 'America/New_York';\nSELECT count(*) AS signed_up_on_the_29th FROM customers WHERE created_at::date = '2026-03-29';",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["signed_up_on_the_29th", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "3d8a957c0de29214",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1e914ba1b0835f7f"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["signed_up_on_the_29th", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "1a2847782b3325bd",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "35558ea146d4a79d": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'UTC+5';\nSELECT timestamptz '2026-01-01 12:00+00' AS noon_utc;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["noon_utc", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "a9cc9d2f6eeeb302",
+          "rows": [
+            ["2026-01-01 07:00:00-05"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

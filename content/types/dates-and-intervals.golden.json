@@ -1,0 +1,169 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "daa7d3d432fbcc6f": {
+      "db": "empty",
+      "sql": "SELECT n, (date '2026-01-31' + n * interval '1 month')::date AS renews_on\nFROM generate_series(0, 4) AS n\nORDER BY n;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["n", "int4", 23],
+            ["renews_on", "date", 1082]
+          ],
+          "rowCount": 5,
+          "digest": "dd29ff7a8dc18418",
+          "rows": [
+            ["0", "2026-01-31"],
+            ["1", "2026-02-28"],
+            ["2", "2026-03-31"],
+            ["3", "2026-04-30"],
+            ["4", "2026-05-31"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "03cf73a49468fc7f": {
+      "db": "empty",
+      "sql": "SELECT date '2026-01-31' + 1                  AS next_day,\n       date '2026-03-01' - date '2026-02-01'  AS days_in_february,\n       pg_typeof(date '2026-01-31' + 1)       AS type;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["next_day", "date", 1082],
+            ["days_in_february", "int4", 23],
+            ["type", "regtype", 2206]
+          ],
+          "rowCount": 1,
+          "digest": "cac4c13e8380f57b",
+          "rows": [
+            ["2026-02-01", "28", "date"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "02ec34b37d23b116": {
+      "db": "empty",
+      "sql": "SELECT date '2026-01-31' + interval '1 month' AS plus_month,\n       pg_typeof(date '2026-01-31' + interval '1 month') AS type;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["plus_month", "timestamp", 1114],
+            ["type", "regtype", 2206]
+          ],
+          "rowCount": 1,
+          "digest": "f35e86ddbd3f8207",
+          "rows": [
+            ["2026-02-28 00:00:00", "timestamp without time zone"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9d14fc6b1efa4de3": {
+      "db": "empty",
+      "sql": "SELECT (date_trunc('month', date '2026-02-17') + interval '1 month - 1 day')::date AS last_of_feb;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["last_of_feb", "date", 1082]
+          ],
+          "rowCount": 1,
+          "digest": "62d63e49cb537cf1",
+          "rows": [
+            ["2026-02-28"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bb0095d14cf59193": {
+      "db": "empty",
+      "sql": "SELECT interval '1 month' = interval '30 days'            AS equal,\n       timestamp '2026-02-01' + interval '1 month'        AS plus_a_month,\n       timestamp '2026-02-01' + interval '30 days'        AS plus_30_days;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["equal", "bool", 16],
+            ["plus_a_month", "timestamp", 1114],
+            ["plus_30_days", "timestamp", 1114]
+          ],
+          "rowCount": 1,
+          "digest": "8f83b5f969c7e82c",
+          "rows": [
+            ["t", "2026-03-01 00:00:00", "2026-03-03 00:00:00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "79433af38a4c564c": {
+      "db": "empty",
+      "sql": "SELECT date '2026-03-31' - date '2026-02-28'      AS days,\n       age(date '2026-03-31', date '2026-02-28')  AS age;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["days", "int4", 23],
+            ["age", "interval", 1186]
+          ],
+          "rowCount": 1,
+          "digest": "0e9a1dc1e6b49dc4",
+          "rows": [
+            ["31", "1 mon 3 days"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a627b22d61ae9d20": {
+      "db": "events",
+      "sql": "SET TimeZone = 'UTC';\nSELECT date_trunc('week', occurred_at)::date AS week, count(*) AS events\nFROM events\nWHERE occurred_at < '2026-03-30'\nGROUP BY 1\nORDER BY 1;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["week", "date", 1082],
+            ["events", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "6ca1f25075cc201a",
+          "rows": [
+            ["2026-02-23", "275"],
+            ["2026-03-02", "1922"],
+            ["2026-03-09", "1924"],
+            ["2026-03-16", "1923"],
+            ["2026-03-23", "1923"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

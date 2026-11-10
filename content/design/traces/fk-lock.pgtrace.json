@@ -1,0 +1,144 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/fk-lock.scenario.sql",
+ "title": "inserting a child row key-share locks the parent: updates of the parent go through, a delete waits",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"city","type":"text"}]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"customer_id","type":"int4"},{"name":"total","type":"numeric"}]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"}
+ },
+ "base": {"xid":761,"lsn":23254024},
+ "setup": "CREATE TABLE customers (id int PRIMARY KEY, name text NOT NULL, city text);\nCREATE TABLE orders (id int PRIMARY KEY, customer_id int NOT NULL REFERENCES customers, total numeric(8,2) NOT NULL);\nINSERT INTO customers VALUES (42, 'Ada Lovelace', 'london'), (7, 'Ming Li', 'manchester');\nVACUUM customers;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nINSERT INTO orders VALUES (1, 42, 22.00)",
+   "note": "T1 places an order for customer 42 and doesn't commit yet. the foreign key check locks Ada's row FOR KEY SHARE, so nobody can delete her, or change her id, before T1 is done.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"customers","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"customers_pkey","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"orders","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "obs",
+   "sql": "SELECT locked_row, modes FROM pgrowlocks('customers')",
+   "note": "pgrowlocks reads the lock off Ada's row: one locker, mode For Key Share.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"locked_row","type":"tid"},{"name":"modes","type":"_text"}],
+    "data": [["(0,1)","{\"For Key Share\"}"]]
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"customers","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"customers_pkey","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"orders","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "UPDATE customers SET city = 'bristol' WHERE id = 42",
+   "note": "T2 changes Ada's city. an UPDATE that doesn't touch a key column takes FOR NO KEY UPDATE, which doesn't conflict with KEY SHARE. no wait.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"customers","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"customers_pkey","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"orders","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "DELETE FROM customers WHERE id = 42",
+   "note": "T2 tries to delete Ada. a DELETE needs FOR UPDATE on the row, the one mode KEY SHARE blocks. T2 waits for T1.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"761","mode":"ShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"customers","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"customers_pkey","mode":"RowShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"orders","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"customers","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"customers_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"763","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"tuple","target":"customers (0,3)","mode":"AccessExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"761","mode":"ShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits: order 1 now really points at Ada. T2 wakes, re-checks, finds a referencing row, and fails with 23503.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [
+    {
+     "session": "T2",
+     "step": 3,
+     "error": {
+      "sqlstate": "23503",
+      "message": "update or delete on table \"customers\" violates foreign key constraint \"orders_customer_id_fkey\" on table \"orders\"",
+      "detail": "Key (id)=(42) is still referenced from table \"orders\"."
+     }
+    }
+   ],
+   "locks": []
+  }
+ ]
+}

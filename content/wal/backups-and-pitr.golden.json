@@ -1,0 +1,43 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "93f86af0b25bda02": {
+      "db": "lab",
+      "sql": "SELECT name, setting FROM pg_settings\nWHERE name IN ('archive_mode', 'archive_command', 'wal_level', 'summarize_wal', 'restore_command')\nORDER BY name;\nSELECT pg_walfile_name(pg_current_wal_lsn()) AS current_segment;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "292eeadb992469a2",
+          "rows": [
+            ["archive_command", "(disabled)"],
+            ["archive_mode", "off"],
+            ["restore_command", ""],
+            ["summarize_wal", "off"],
+            ["wal_level", "replica"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["current_segment", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "2cc58715d1a4d5a6",
+          "rows": [
+            ["000000010000000000000001"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

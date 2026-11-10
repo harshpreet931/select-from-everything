@@ -1,0 +1,160 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "e9d6877999810841": {
+      "db": "empty",
+      "sql": "CREATE TABLE t (id int PRIMARY KEY, note text NOT NULL);\nINSERT INTO t VALUES (1, 'key share'), (2, 'share'), (3, 'no key update'), (4, 'update');\nBEGIN;\nSELECT id FROM t WHERE id = 1 FOR KEY SHARE;\nSELECT id FROM t WHERE id = 2 FOR SHARE;\nSELECT id FROM t WHERE id = 3 FOR NO KEY UPDATE;\nSELECT id FROM t WHERE id = 4 FOR UPDATE;\nSELECT lp, t_xmax, t_infomask, t_infomask2,\n       (heap_tuple_infomask_flags(t_infomask, t_infomask2)).combined_flags AS combined,\n       (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags AS raw\nFROM heap_page_items(get_raw_page('t', 0))\nORDER BY lp;\nROLLBACK;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 4",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "456641ddbdad5ac9"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "00febf7369608a09",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "dc298c5ad45f2a35",
+          "rows": [
+            ["2"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "356761b51fe32a61",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "e3d5e966cb05c9c5",
+          "rows": [
+            ["4"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmax", "xid", 28],
+            ["t_infomask", "int4", 23],
+            ["t_infomask2", "int4", 23],
+            ["combined", "text[]", 1009],
+            ["raw", "text[]", 1009]
+          ],
+          "rowCount": 4,
+          "digest": "46b8702603ce85b7",
+          "rows": [
+            ["1", "755", "402", "2", "{}", "{HEAP_HASVARWIDTH,HEAP_XMAX_KEYSHR_LOCK,HEAP_XMAX_LOCK_ONLY,HEAP_XMIN_COMMITTED}"],
+            ["2", "755", "466", "2", "{HEAP_XMAX_SHR_LOCK}", "{HEAP_HASVARWIDTH,HEAP_XMAX_KEYSHR_LOCK,HEAP_XMAX_EXCL_LOCK,HEAP_XMAX_LOCK_ONLY,HEAP_XMIN_COMMITTED}"],
+            ["3", "755", "450", "2", "{}", "{HEAP_HASVARWIDTH,HEAP_XMAX_EXCL_LOCK,HEAP_XMAX_LOCK_ONLY,HEAP_XMIN_COMMITTED}"],
+            ["4", "755", "450", "8194", "{}", "{HEAP_HASVARWIDTH,HEAP_XMAX_EXCL_LOCK,HEAP_XMAX_LOCK_ONLY,HEAP_XMIN_COMMITTED,HEAP_KEYS_UPDATED}"]
+          ]
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4ef7bcd98f13f377"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f8c70a26e8013407": {
+      "db": "bank",
+      "sql": "BEGIN;\nSELECT count(*) AS locked FROM (SELECT id FROM accounts FOR UPDATE) AS l;\nSELECT locktype, mode, count(*) FROM pg_locks\nWHERE pid = pg_backend_pid() AND (relation IS NULL OR relation <> 'pg_locks'::regclass)\nGROUP BY locktype, mode ORDER BY locktype, mode;\nROLLBACK;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["locked", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "0097be58b69a8bce",
+          "rows": [
+            ["1000"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["mode", "text", 25],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "1e45e22b84d70580",
+          "rows": [
+            ["relation", "RowShareLock", "2"],
+            ["transactionid", "ExclusiveLock", "1"],
+            ["virtualxid", "ExclusiveLock", "1"]
+          ]
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8948f71c140383d6"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,349 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "6e06bcfa6ca9f04c": {
+      "db": "empty",
+      "sql": "CREATE SCHEMA reporting;\nCREATE TABLE public.orders (id int, note text);\nCREATE TABLE reporting.orders (id int, note text);\nINSERT INTO public.orders VALUES (1, 'the live table');\nINSERT INTO reporting.orders VALUES (1, 'last night''s copy');\n\nSELECT current_schemas(true) AS searched, note FROM orders;\nSET search_path = reporting, public;\nSELECT current_schemas(true) AS searched, note FROM orders;",
+      "statements": [
+        {
+          "tag": "CREATE SCHEMA",
+          "command": "CREATE SCHEMA",
+          "columns": null,
+          "rowCount": null,
+          "digest": "091ad4fa1a5ed4b2"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["searched", "name[]", 1003],
+            ["note", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "f068bbba18919a4a",
+          "rows": [
+            ["{pg_catalog,public}", "the live table"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4fb5a04ba467901b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["searched", "name[]", 1003],
+            ["note", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "e90f99d2e3ad3572",
+          "rows": [
+            ["{pg_catalog,reporting,public}", "last night's copy"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8759c0908cce9145": {
+      "db": "empty",
+      "sql": "CREATE TABLE people (name varchar(40));\nINSERT INTO people VALUES ('Ada Lovelace');\nSELECT lower(name) FROM people;\n\n-- someone with CREATE on public adds this:\nCREATE FUNCTION public.lower(varchar) RETURNS text LANGUAGE sql AS $$ SELECT 'gotcha: ' || $1 $$;\n\nSELECT lower(name) FROM people;\nSELECT pg_catalog.lower(name) FROM people;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lower", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "6ae2ec5ec3c7f0f6",
+          "rows": [
+            ["ada lovelace"]
+          ]
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c1bc3c4899a392aa"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lower", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "3e010c7376025c0a",
+          "rows": [
+            ["gotcha: Ada Lovelace"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lower", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "7801695f7e6210ef",
+          "rows": [
+            ["ada lovelace"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "afeaf95c058a221d": {
+      "db": "empty",
+      "sql": "CREATE TABLE prices (sku text PRIMARY KEY, price numeric(8,2));\nINSERT INTO prices VALUES ('TEA-01', 6.50);\nCREATE ROLE grants_reader;\n\nSET ROLE grants_reader;\nSELECT * FROM prices;\nCREATE TABLE public.scratch (x int);\nRESET ROLE;\n\nGRANT SELECT ON prices TO grants_reader;\nSET ROLE grants_reader;\nSELECT sku, price FROM prices;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "CREATE ROLE",
+          "command": "CREATE ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1148337a58e0be7f"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8c303177f03a58ae"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42501",
+            "message": "permission denied for table prices"
+          },
+          "digest": "c2c60fbb3065524a"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42501",
+            "message": "permission denied for schema public",
+            "position": 14
+          },
+          "digest": "4a33500498628f48"
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a36053b395c2e4d8"
+        },
+        {
+          "tag": "GRANT",
+          "command": "GRANT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b604919e78d82e88"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7adb874a8214cec1"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["sku", "text", 25],
+            ["price", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "8753e3c74c1d15da",
+          "rows": [
+            ["TEA-01", "6.50"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42501",
+        "message": "permission denied for table prices",
+        "statement": 4
+      },
+      "txn": "I"
+    },
+    "969641471e9f6b49": {
+      "db": "empty",
+      "sql": "CREATE ROLE rls_writer;\nCREATE TABLE notes (id int PRIMARY KEY, tenant text NOT NULL, body text NOT NULL);\nGRANT SELECT, INSERT ON notes TO rls_writer;\nALTER TABLE notes ENABLE ROW LEVEL SECURITY;\nCREATE POLICY see_own ON notes FOR SELECT USING (tenant = current_setting('app.tenant', true));\nCREATE POLICY write_any ON notes FOR INSERT WITH CHECK (true);\n\nSET app.tenant = 'acme';\nSET ROLE rls_writer;\nINSERT INTO notes VALUES (5, 'globex', 'hello');\nSELECT count(*) AS visible_to_me FROM notes;\nRESET ROLE;\nSELECT count(*) AS really_there FROM notes;",
+      "statements": [
+        {
+          "tag": "CREATE ROLE",
+          "command": "CREATE ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c4b1bbc61c534b3d"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "GRANT",
+          "command": "GRANT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "42ec40d57fad6b91"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c9df9cfa72a1225e"
+        },
+        {
+          "tag": "CREATE POLICY",
+          "command": "CREATE POLICY",
+          "columns": null,
+          "rowCount": null,
+          "digest": "236b1f948721303f"
+        },
+        {
+          "tag": "CREATE POLICY",
+          "command": "CREATE POLICY",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f062d7c1ac73479a"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4fb5a04ba467901b"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bd547621e41e6e1a"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e06b575e091ea8a5"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["visible_to_me", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "5a47916eaf7f7a3b",
+          "rows": [
+            ["0"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "33cc2267b58646b7"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["really_there", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "ff7531bc9f990d49",
+          "rows": [
+            ["1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,108 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { RwCycle } from "@/components/figures/transactions/RwCycle";
+import wsRR from "./traces/ws-rr.pgtrace.json";
+import wsSer from "./traces/ws-serializable.pgtrace.json";
+import wsLock from "./traces/ws-for-update.pgtrace.json";
+
+{/* the three runs are captured on a real postgres 18.6 server with two sessions
+    (traces/ws-*.scenario.sql). the doctors table beside the lanes is what a new transaction
+    would see after each step, read off the heap page. the error text below is the capture's. */}
+
+export const serErr = wsSer.steps.find((s) => s.error).error;
+export const errText = `ERROR:  ${serErr.message}\nDETAIL:  ${serErr.detail}`;
+
+<InShort>
+**write skew**: two transactions read the same rows, each decides it's safe to act, and each writes a *different* row. no row is written twice, so nobody waits and nothing conflicts. both commit, and the rule both of them checked is broken. postgres's REPEATABLE READ (**snapshot isolation**) allows it. **SERIALIZABLE** catches it and fails one of them with 40001. so does locking the rows the rule reads, with FOR UPDATE.
+</InShort>
+
+## the picture
+
+you know the on-call rule: at least one person holds the pager. two engineers feel ill on the same evening, both open the rota, both see someone else on call, both hand back the pager. the textbook tells it with doctors, so here are two: asha and ben, both on call, and the rule is that at least one stays on.
+
+each of them is right, on what they saw. that's what makes write skew nasty: there's no bad read and no bad write, only two good decisions that can't both be true. like two people each taking "the last" slice of cake because each counted two slices before reaching for one.
+
+<Figure wide caption={<>switch the level and step through. under <C k="dead">repeatable read</C> both go off call and nobody is left. under serializable, T2's COMMIT fails with 40001. with FOR UPDATE at read committed, T2 waits, then sees only ben on call and backs off.</>}>
+<TxLanes
+  option="run it at"
+  side="db"
+  runs={[
+    { label: "repeatable read", trace: wsRR, verdict: { ok: false, what: "write skew", text: "both counted 2, both went off call, both committed. 0 doctors on call, and no statement failed." } },
+    { label: "serializable", trace: wsSer, verdict: { ok: true, what: "write skew", text: "T2's COMMIT failed with 40001 and its change was rolled back. ben is still on call." } },
+    { label: "FOR UPDATE", trace: wsLock, verdict: { ok: true, what: "write skew", text: "T2's locking read waited for T1, then returned only ben. one on call, so T2 rolled back. ben stays." } },
+  ]}
+/>
+</Figure>
+
+## why snapshot isolation misses it
+
+REPEATABLE READ gives each transaction one snapshot and protects one thing on writes: if a row you update was changed by someone who committed after your snapshot, you get 40001 ("could not serialize access due to concurrent update"). that's how it stops [lost updates](/learn/transactions/lost-updates). here, T1 updates asha's row and T2 updates ben's. different rows. there's no concurrent update to complain about, and no row lock to wait for.
+
+what went wrong is in the reads. T1 read ben's row (on call) and T2 then changed it. T2 read asha's row and T1 then changed it. each one's decision depended on something the other one overwrote. draw that as arrows and you get a cycle:
+
+<Figure caption={<>each <C k="dead">arrow</C> is "read something the other one then changed". with a cycle, no one-at-a-time order fits: run T1 first and T2 would have seen 1 doctor; run T2 first and T1 would have.</>}>
+<RwCycle />
+</Figure>
+
+a cycle like that is the definition of not serializable. if T1 had really run first, T2's count would have been 1 and ben would have stayed. if T2 had run first, asha would have. the actual result (both off) matches neither order. ([schedules and serializability](/learn/locking/serializability) is the theory, with precedence graphs.)
+
+## SERIALIZABLE: track the reads too
+
+at SERIALIZABLE, postgres also remembers what each transaction read (with **SIRead locks**, which block nothing; they're just notes) and watches for exactly those read-then-overwritten arrows between transactions that overlap. when it finds the dangerous pattern, it fails one of them. here's what T2 got:
+
+<Figure caption={<>T2's error, SQLSTATE 40001, as the server sent it. note which statement got it.</>}>
+<SqlPanel code={errText} lang="text" nolines file="T2: COMMIT" />
+</Figure>
+
+<Predict question="at SERIALIZABLE, which statement of the schedule fails?" options={["T2's UPDATE", "T1's COMMIT", "T2's COMMIT"]} answer={2}>
+```sql
+/* T1 */ BEGIN ISOLATION LEVEL SERIALIZABLE;  SELECT count(*) FROM doctors WHERE on_call;
+/* T2 */ BEGIN ISOLATION LEVEL SERIALIZABLE;  SELECT count(*) FROM doctors WHERE on_call;
+/* T1 */ UPDATE doctors SET on_call = false WHERE name = 'asha';
+/* T2 */ UPDATE doctors SET on_call = false WHERE name = 'ben';
+/* T1 */ COMMIT;
+/* T2 */ COMMIT;
+```
+<Explain>
+T2's COMMIT. every statement before it succeeded. postgres only cancels a transaction once the pattern is complete and one side has committed, and here that's at T2's commit attempt (the DETAIL says "during commit attempt"). so a COMMIT can fail with 40001, which means the COMMIT has to be inside your retry loop, and nothing the transaction "did" counts until COMMIT returns. which statement gets it depends on the timing; it could have been the UPDATE with a different interleaving.
+</Explain>
+</Predict>
+
+run on its own, the same transaction is perfectly fine. this is the browser's postgres, one session, nobody else around:
+
+```sql run
+CREATE TABLE doctors (name text PRIMARY KEY, on_call boolean NOT NULL);
+INSERT INTO doctors VALUES ('asha', true), ('ben', true);
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT count(*) FROM doctors WHERE on_call;
+UPDATE doctors SET on_call = false WHERE name = 'asha';
+COMMIT;
+SELECT name, on_call FROM doctors ORDER BY name;
+```
+
+that's the deal SERIALIZABLE offers: if each transaction is correct when it runs alone, the mix is correct too, or one of them gets 40001. you don't have to find the anomalies yourself. you do have to [retry](/learn/transactions/retry-loops). how the tracking works (SIRead locks, rw-antidependencies, the pivot named in that DETAIL) is in [serializable snapshot isolation](/learn/locking/ssi).
+
+## or: lock what the rule reads
+
+the third run doesn't use SERIALIZABLE at all. the rule depends on the on-call rows, so read them `FOR UPDATE`: T1 locks both rows, and T2's identical read waits. when T1 commits, T2's read re-checks each row's newest version against `WHERE on_call`, asha drops out, and T2 gets one row back. the app sees one doctor and says no.
+
+that works when the rows the rule depends on exist. it doesn't when the rule is about rows that *don't* exist yet: "no two bookings for this room overlap" reads zero rows, and you can't lock a row that isn't there. that's phantom-shaped write skew, and the fixes are SERIALIZABLE, an [exclusion constraint](/learn/design/constraints), or a row you create on purpose for both sides to lock (one per room per day, say).
+
+<Gotcha title="SERIALIZABLE only protects transactions that use it">
+the read tracking runs only for SERIALIZABLE transactions. if asha's request runs at SERIALIZABLE and an admin script at READ COMMITTED takes ben off call at the same moment, nothing notices. if you rely on it, make it the default for the whole application (`default_transaction_isolation`), not a flag on the transactions you happened to think of. and expect some 40001s that weren't real conflicts: the tracking is coarser than your rows (it can lock a whole page, or the whole table after a seq scan), so it errs toward failing.
+</Gotcha>
+
+<Deep title="why not just make everything serializable?">
+it costs something, and how much depends on the workload. every serializable transaction keeps its read notes until the transactions it overlapped with finish, and the 40001 rate climbs with contention. long read-only reports can avoid both: `BEGIN ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE` waits at its first read until it can get a snapshot that's guaranteed safe, then runs with no tracking and can never fail with 40001. for most apps the answer is: SERIALIZABLE everywhere plus a retry loop is simpler to get right than proving each transaction safe at a lower level. measure the retry rate.
+</Deep>
+
+<Interview q="what is write skew, and does REPEATABLE READ prevent it in postgres?">
+two transactions read an overlapping set of rows, each makes a decision based on it, and each updates a different row, so together they break an invariant neither broke alone. the on-call example: both see two doctors, each takes themselves off. postgres's REPEATABLE READ is snapshot isolation, which only checks write-write conflicts on the same row, so it allows write skew. SERIALIZABLE prevents it by tracking read/write dependencies (SSI) and failing one transaction with 40001, often at COMMIT. without SERIALIZABLE, lock the rows the invariant reads with SELECT ... FOR UPDATE. bonus point: if the invariant is about rows that don't exist yet (overlapping bookings), FOR UPDATE has nothing to lock; use SERIALIZABLE or an exclusion constraint.
+</Interview>
+
+<Keylines>
+- write skew: two reads, two decisions, two different rows written. nothing waits, both commit.
+- REPEATABLE READ is snapshot isolation. it allows write skew.
+- SERIALIZABLE tracks reads, finds the cycle, and fails one transaction with 40001.
+- the 40001 can arrive at COMMIT. the retry loop has to include it.
+- without SERIALIZABLE: lock the rows the rule reads. if they don't exist yet, that's not enough.
+</Keylines>

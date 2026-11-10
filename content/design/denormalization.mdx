@@ -1,0 +1,147 @@
+import { TableSteps } from "@/components/figures/design/TableSteps";
+import { framesOf } from "@/components/figures/design/frames";
+import { prov } from "@/lib/db/captured";
+import counter from "./traces/counter.pgtrace.json";
+import hot from "./traces/hot-counter.pgtrace.json";
+
+{/* the stepper reads traces/counter.scenario.sql (PGlite, one session). a row turns dead when
+    its stored comment_count differs from the real count postgres computed in the same query.
+    the lanes read traces/hot-counter.scenario.sql: two real sessions on a native postgres 18.6. */}
+
+export const cell = (c) => (c !== null && typeof c === "object" ? c.v : c);
+export const steps = framesOf(counter, [
+  { label: "start", state: 1 },
+  { label: "app bumps it", stmt: 2, state: 3 },
+  { label: "a script forgets", stmt: 4, state: 5 },
+  { label: "add a trigger", stmt: 6, state: 7 },
+  { label: "script again", stmt: 8, state: 9 },
+], "id").map((f) => ({ ...f, rowTones: f.rows.map((r, i) => (cell(r[2]) !== cell(r[3]) ? "dead" : f.rowTones[i])) }));
+export const source = prov(counter);
+
+<InShort>
+**denormalizing** is storing a fact twice on purpose: a count next to the rows it counts, a total on the order, a copy of a name in a search table. reads get cheaper, and every write that touches the original now has to update the copy too.
+
+the copy is only worth having if something **guarantees** it stays right: a **trigger** in the same transaction, a **materialized view** you refresh, or a cache you're willing to have be stale. "the app remembers" isn't a guarantee.
+</InShort>
+
+## the picture
+
+you know the comment count under every post? counting comments on every page view is a query per post, so sites store the number. then one day the count says 3 and the post has 2, and nobody can say when it went wrong.
+
+think of a shop's till total written on a whiteboard at the end of each sale (the copy), next to the till roll (the original). reading the whiteboard is instant. but if anyone ever rings up a refund without updating the board, the board is wrong forever, and only re-adding the roll finds out.
+
+<Figure wide caption={<>a stored comment_count next to the real count, computed by postgres in the same query. step through. the app keeps it right while it remembers; a script that doesn&apos;t makes the rows <C k="dead">drift</C>. after a trigger takes over, the same careless script can&apos;t break it.</>}>
+<TableSteps frames={steps} table="posts" file="comments.sql" trace={source} />
+</Figure>
+
+## why bother: the read you're saving
+
+the bank dataset keeps `accounts.balance`, which is the opening balance plus every transfer in, minus every transfer out. that's a denormalization: the balance is derivable from transfers. first, is it right?
+
+```sql run db=bank
+SELECT count(*) AS accounts,
+       count(*) FILTER (WHERE a.balance <> a.opening_balance + coalesce(i.total, 0) - coalesce(o.total, 0)) AS wrong
+FROM accounts AS a
+LEFT JOIN (SELECT to_id, sum(amount) AS total FROM transfers GROUP BY to_id) AS i ON i.to_id = a.id
+LEFT JOIN (SELECT from_id, sum(amount) AS total FROM transfers GROUP BY from_id) AS o ON o.from_id = a.id;
+```
+
+all 1,000 right. now the price of not having it. computing one account's balance from transfers (no index on from_id or to_id, as in most schemas that "will add one later") reads every transfer:
+
+```sql run db=bank
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT a.opening_balance
+       + coalesce((SELECT sum(amount) FROM transfers WHERE to_id = a.id), 0)
+       - coalesce((SELECT sum(amount) FROM transfers WHERE from_id = a.id), 0)
+FROM accounts AS a WHERE a.id = 500;
+```
+
+two seq scans of 20,000 transfers, for one number that's sitting in `balance`, one primary key lookup away. with indexes on from_id and to_id the computed version gets fast again, until an account has a million transfers. that's the trade: denormalize when the derivation is expensive *and* read far more often than the inputs change.
+
+## keeping the copy honest
+
+the figure's trigger is the core pattern: the copy is updated **in the same transaction** as the original, so they commit or roll back together. a crash, a rollback, a second app or a psql session can't split them.
+
+<Predict options={["1", "2", "3"]} answer={0}>
+```sql
+-- the trigger from the figure is in place. comment_count is 0.
+BEGIN;
+INSERT INTO comments (post_id, body) VALUES (1, 'a'), (1, 'b');
+ROLLBACK;
+INSERT INTO comments (post_id, body) VALUES (1, 'c');
+SELECT comment_count FROM posts WHERE id = 1;
+```
+<Explain>
+1. the trigger's two UPDATEs ran inside the rolled-back transaction, so they rolled back with the inserts. only 'c' committed, with its own +1. an app-side cache (a counter in redis, say) bumped twice before the rollback would now say 3.
+</Explain>
+</Predict>
+
+```sql run session=trig hidden
+CREATE TABLE posts (id int PRIMARY KEY, title text NOT NULL, comment_count int NOT NULL DEFAULT 0);
+CREATE TABLE comments (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, post_id int NOT NULL REFERENCES posts, body text NOT NULL);
+INSERT INTO posts (id, title) VALUES (1, 'why pages are 8 KB');
+CREATE FUNCTION bump_comment_count() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE posts SET comment_count = comment_count + 1 WHERE id = NEW.post_id;
+  ELSE
+    UPDATE posts SET comment_count = comment_count - 1 WHERE id = OLD.post_id;
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER comments_count AFTER INSERT OR DELETE ON comments
+FOR EACH ROW EXECUTE FUNCTION bump_comment_count();
+```
+
+```sql run session=trig
+BEGIN;
+INSERT INTO comments (post_id, body) VALUES (1, 'a'), (1, 'b');
+ROLLBACK;
+INSERT INTO comments (post_id, body) VALUES (1, 'c');
+SELECT comment_count, (SELECT count(*) FROM comments) AS real_count FROM posts WHERE id = 1;
+```
+
+a row trigger fires once per row, so a bulk insert of 10,000 comments runs 10,000 UPDATEs on posts. for bulk paths, a statement-level trigger with a [transition table](/learn/writes/triggers) does one grouped UPDATE instead. and a trigger misses what bypasses triggers: TRUNCATE doesn't fire row triggers, and `session_replication_role = replica` (used by some loaders) skips them. ([triggers](/learn/writes/triggers) has the details.)
+
+## the hot row
+
+a counter in one row is one row lock. every transaction that bumps it has to wait for the previous one to commit:
+
+<Figure wide caption={<>two real sessions on a postgres 18.6 server, both adding a comment to post 1. T2&apos;s UPDATE waits (dashed) until T1 commits, then applies its +1 on top of T1&apos;s. correct, and strictly one at a time. the panel is pg_locks.</>}>
+<SessionLanes sessions={["T1", "T2"]} trace={hot} side="locks" />
+</Figure>
+
+the increments are never lost (an `UPDATE ... SET n = n + 1` re-reads the newest version after the wait, see [lost updates](/learn/transactions/lost-updates)). but the counter has become a queue. if a transaction holds it for 50 ms, that row can absorb about 20 writes a second, no matter how many cores you have. fixes, from simplest:
+
+- keep transactions that touch the counter short, and bump it last.
+- **split the counter**: N rows per post (`post_id, slot, n`), each writer picks a slot, readers `sum(n)`. N times the throughput, slightly costlier reads.
+- **don't keep it live**: insert one row per event (no contention), and roll up periodically or with a materialized view.
+
+## the menu
+
+<Figure caption={<>ways to keep a derived value, from always-correct to fastest. each step down trades freshness or effort for read speed.</>}>
+<Flow stages={[
+  { label: "compute at read", sub: "always right", note: "count(*) or sum() when asked. with the right index this is often fast enough, and it's the default to beat." },
+  { label: "trigger-kept column", sub: "right at commit", note: "updated in the same transaction as the source. reads are one row; writes pay the trigger, and a hot row serializes them." },
+  { label: "materialized view", sub: "right as of refresh", note: "a stored query result you REFRESH on a schedule. no write cost, stale between refreshes. see views and materialized views." },
+  { label: "app cache", sub: "right-ish", note: "redis or memory. fastest, outside the transaction, so it can disagree after a rollback or a crash. needs expiry." },
+]} />
+</Figure>
+
+some "copies" aren't denormalization at all. the price on an order line is the price *then*, a different fact from the product's price now, and it must not follow the product ([normal forms](/learn/design/normal-forms) has the long version). the shop dataset keeps both on purpose.
+
+<Gotcha title="denormalize after measuring, and write down the invariant">
+the copy is a second source of truth, and the bug it invites is silent. before adding one, have the slow query and its plan. when you add it, write the invariant as a query (like the bank check above: "rows where balance differs from the sum") and run it in tests or on a schedule. a denormalization you can't check is one you'll discover is wrong from a customer.
+</Gotcha>
+
+<Interview q="when would you denormalize, and how do you keep it consistent?">
+when a derived value (a count, a sum, a joined field) is expensive to compute and read much more often than its inputs change, and indexes or a better query don't fix it. keep it consistent in the database: a trigger that updates the copy in the same transaction as the source, so they commit or roll back together, or a materialized view refreshed on a schedule when staleness is acceptable. watch for hot rows, since a single counter row serializes every writer; split it into slots or aggregate asynchronously. bonus point: have a query that checks the invariant, and run it.
+</Interview>
+
+<Keylines>
+- denormalizing stores a derivable fact twice, to make reads cheaper.
+- the copy is only as good as what keeps it in sync: a trigger in the same transaction is the strong option.
+- a counter kept by hand drifts the first time some code path forgets.
+- one counter row is one lock: every writer waits in line.
+- measure first, then write the invariant as a query and keep checking it.
+</Keylines>

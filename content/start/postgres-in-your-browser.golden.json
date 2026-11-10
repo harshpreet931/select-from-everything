@@ -1,0 +1,362 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "fee05b4ebd522b34": {
+      "db": "empty",
+      "sql": "SELECT version();",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["version", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "df867a600faf136d",
+          "rows": [
+            ["PostgreSQL 18.6 (PGlite 0.5.12) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4fc5cc33d9630090": {
+      "db": "shop",
+      "sql": "TRUNCATE customers CASCADE;\nSELECT count(*) AS customers FROM customers;",
+      "statements": [
+        {
+          "tag": "TRUNCATE TABLE",
+          "command": "TRUNCATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "notices": [
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "truncate cascades to table \"orders\""
+            },
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "truncate cascades to table \"order_items\""
+            }
+          ],
+          "digest": "a3a2d54e5835ffc1"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customers", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "2dcd723097256e54",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bc1b2a80d35fa30c": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS customers FROM customers;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customers", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "f2d3d983a0e6f929",
+          "rows": [
+            ["2000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c0de62f15da3d89b": {
+      "db": "lab",
+      "sql": "SELECT extname\nFROM pg_extension\nORDER BY extname;",
+      "statements": [
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["extname", "name", 19]
+          ],
+          "rowCount": 7,
+          "digest": "a3d59ae20c8052e0",
+          "rows": [
+            ["amcheck"],
+            ["pageinspect"],
+            ["pg_buffercache"],
+            ["pg_freespacemap"],
+            ["pg_visibility"],
+            ["pg_walinspect"],
+            ["plpgsql"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "96e617b036ce28af": {
+      "db": "empty",
+      "sql": "SELECT pid, backend_type FROM pg_stat_activity ORDER BY pid;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pid", "int4", 23],
+            ["backend_type", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "8361b25fc3bee2b4",
+          "rows": [
+            ["42", "standalone backend"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f8465006982ab360": {
+      "db": "empty",
+      "sql": "SELECT backend_type, count(*) AS processes\nFROM pg_stat_activity\nGROUP BY backend_type\nORDER BY backend_type;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["backend_type", "text", 25],
+            ["processes", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "f0b8328d795aa2ec",
+          "rows": [
+            ["background writer", "1"],
+            ["checkpointer", "1"],
+            ["client backend", "2"],
+            ["io worker", "3"],
+            ["logical replication launcher", "1"],
+            ["walwriter", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "1c0f99625167fea9": {
+      "db": "empty",
+      "sql": "SELECT name, setting\nFROM pg_settings\nWHERE name IN ('max_worker_processes', 'max_parallel_workers', 'io_method', 'fsync')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "728253075af5cb75",
+          "rows": [
+            ["fsync", "off"],
+            ["io_method", "sync"],
+            ["max_parallel_workers", "0"],
+            ["max_worker_processes", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "106ccd633a74c89f": {
+      "db": "empty",
+      "sql": "SET statement_timeout = '50ms';\nSELECT 'still here' AS answer FROM pg_sleep(0.3);",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["answer", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "3d0058d78e789cfb",
+          "rows": [
+            ["still here"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "040eac8f59e06693": {
+      "db": "empty",
+      "sql": "-- the same two lines, on a real server\nSET statement_timeout = '50ms';\nSELECT 'still here' AS answer FROM pg_sleep(0.3);",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "",
+          "command": "",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "57014",
+            "message": "canceling statement due to statement timeout"
+          },
+          "digest": "0431dddb473f26fd"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "57014",
+        "message": "canceling statement due to statement timeout",
+        "statement": 1
+      },
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "63d5baab08a57d20": {
+      "db": "empty",
+      "sql": "SELECT x\nFROM (VALUES ('b'), ('B'), ('a'), ('_z'), ('é'), ('Z'), ('apple'), ('Apple')) AS v (x)\nORDER BY x;",
+      "statements": [
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["x", "text", 25]
+          ],
+          "rowCount": 8,
+          "digest": "6388f4449a563795",
+          "rows": [
+            ["Apple"],
+            ["B"],
+            ["Z"],
+            ["_z"],
+            ["a"],
+            ["apple"],
+            ["b"],
+            ["é"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d4494ee30b357c23": {
+      "db": "empty",
+      "sql": "SELECT x\nFROM (VALUES ('b'), ('B'), ('a'), ('_z'), ('é'), ('Z'), ('apple'), ('Apple')) AS v (x)\nORDER BY x COLLATE \"unicode\";",
+      "statements": [
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["x", "text", 25]
+          ],
+          "rowCount": 8,
+          "digest": "f8561e3b1e24c341",
+          "rows": [
+            ["_z"],
+            ["a"],
+            ["apple"],
+            ["Apple"],
+            ["b"],
+            ["B"],
+            ["é"],
+            ["Z"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8b157260ab7e1158": {
+      "db": "empty",
+      "sql": "CREATE COLLATION german (provider = icu, locale = 'de-DE');",
+      "statements": [
+        {
+          "tag": "CREATE COLLATION",
+          "command": "CREATE COLLATION",
+          "columns": null,
+          "rowCount": null,
+          "notices": [
+            {
+              "severity": "WARNING",
+              "sqlstate": "22023",
+              "message": "ICU locale \"de-DE\" has unknown language \"de\"",
+              "hint": "To disable ICU locale validation, set the parameter \"icu_validation_level\" to \"disabled\"."
+            }
+          ],
+          "digest": "09876df7964159fc"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "baab8af6487ffde8": {
+      "db": "empty",
+      "sql": "CREATE DATABASE shop2;\nSELECT datname FROM pg_database ORDER BY datname;\nSELECT current_database();",
+      "statements": [
+        {
+          "tag": "CREATE DATABASE",
+          "command": "CREATE DATABASE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "14490d32f55d2b6c"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["datname", "name", 19]
+          ],
+          "rowCount": 4,
+          "digest": "fd27c762d5bbc1f0",
+          "rows": [
+            ["postgres"],
+            ["shop2"],
+            ["template0"],
+            ["template1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["current_database", "name", 19]
+          ],
+          "rowCount": 1,
+          "digest": "39a42a59cc03d376",
+          "rows": [
+            ["postgres"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

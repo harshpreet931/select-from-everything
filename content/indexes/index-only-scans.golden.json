@@ -1,0 +1,225 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "afcfa9d96930dac2": {
+      "db": "shop",
+      "sql": "CREATE TABLE o (LIKE orders);\nINSERT INTO o SELECT * FROM orders ORDER BY id;\nCREATE INDEX o_customer ON o (customer_id);\nANALYZE o;\nSELECT count(*) FILTER (WHERE all_visible) AS all_visible, count(*) AS pages\nFROM pg_visibility_map('o');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 10000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "1eceb28972b9ecc2"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4e5fc8411bd30366"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["all_visible", "int8", 20],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "7449a45ad020a67c",
+          "rows": [
+            ["0", "83"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "67bd097b8db8d6ff": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT customer_id, count(*) FROM o\nWHERE customer_id <= 100\nGROUP BY customer_id ORDER BY customer_id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "4b966e37cf5aa044",
+          "rows": [
+            ["Sort (actual rows=99.00 loops=1)"],
+            ["  Sort Key: customer_id"],
+            ["  Sort Method: quicksort  Memory: 20kB"],
+            ["  Buffers: shared hit=83 read=3"],
+            ["  ->  HashAggregate (actual rows=99.00 loops=1)"],
+            ["        Group Key: customer_id"],
+            ["        Batches: 1  Memory Usage: 57kB"],
+            ["        Buffers: shared hit=83 read=3"],
+            ["        ->  Bitmap Heap Scan on o (actual rows=1321.00 loops=1)"],
+            ["              Recheck Cond: (customer_id <= 100)"],
+            ["              Heap Blocks: exact=83"],
+            ["              Buffers: shared hit=83 read=3"],
+            ["              ->  Bitmap Index Scan on o_customer (actual rows=1321.00 loops=1)"],
+            ["                    Index Cond: (customer_id <= 100)"],
+            ["                    Index Searches: 1"],
+            ["                    Buffers: shared read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=11 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "46bb01f3e204fe41": {
+      "db": "shop",
+      "sql": "VACUUM o;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT customer_id, count(*) FROM o\nWHERE customer_id <= 100\nGROUP BY customer_id ORDER BY customer_id;",
+      "statements": [
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b40b2a8273442d58"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "59e743fed42d17c5",
+          "rows": [
+            ["GroupAggregate (actual rows=99.00 loops=1)"],
+            ["  Group Key: customer_id"],
+            ["  Buffers: shared hit=4"],
+            ["  ->  Index Only Scan using o_customer on o (actual rows=1321.00 loops=1)"],
+            ["        Index Cond: (customer_id <= 100)"],
+            ["        Heap Fetches: 0"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=4"],
+            ["Planning:"],
+            ["  Buffers: shared hit=7"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3b780eb053dd8582": {
+      "db": "shop",
+      "sql": "SELECT id, customer_id FROM o WHERE id IN (5, 4000, 8000) ORDER BY id;\nUPDATE o SET status = 'refunded' WHERE id IN (5, 4000, 8000);\nSELECT blkno FROM pg_visibility_map('o') WHERE NOT all_visible ORDER BY blkno;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT customer_id, count(*) FROM o\nWHERE customer_id <= 100\nGROUP BY customer_id ORDER BY customer_id;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["customer_id", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "14163e04ae41c556",
+          "rows": [
+            ["5", "673"],
+            ["4000", "1017"],
+            ["8000", "545"]
+          ]
+        },
+        {
+          "tag": "UPDATE 3",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "0bc04ce54866a860"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "93fbb2f4da9e0add",
+          "rows": [
+            ["0"],
+            ["33"],
+            ["66"],
+            ["82"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a9f8188e0d4e265b",
+          "rows": [
+            ["GroupAggregate (actual rows=99.00 loops=1)"],
+            ["  Group Key: customer_id"],
+            ["  Buffers: shared hit=50"],
+            ["  ->  Index Only Scan using o_customer on o (actual rows=1321.00 loops=1)"],
+            ["        Index Cond: (customer_id <= 100)"],
+            ["        Heap Fetches: 62"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=50"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a18804b993559d52": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_customer_inc ON orders (customer_id) INCLUDE (status);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT customer_id, status FROM orders WHERE customer_id = 42;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c66d0fcf9b12637f",
+          "rows": [
+            ["Index Only Scan using orders_customer_inc on orders (actual rows=7.00 loops=1)"],
+            ["  Index Cond: (customer_id = 42)"],
+            ["  Heap Fetches: 0"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared hit=1 read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=41 read=4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

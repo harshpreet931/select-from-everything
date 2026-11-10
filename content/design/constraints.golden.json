@@ -1,0 +1,328 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "31d6e04fa1ad3fd2": {
+      "db": "empty",
+      "sql": "CREATE TABLE stays (\n  guest     text NOT NULL,\n  check_in  date NOT NULL,\n  check_out date NOT NULL,\n  CONSTRAINT stays_order CHECK (check_out > check_in)\n);\nINSERT INTO stays VALUES ('ada', '2026-03-05', '2026-03-02');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23514",
+            "message": "new row for relation \"stays\" violates check constraint \"stays_order\"",
+            "detail": "Failing row contains (ada, 2026-03-05, 2026-03-02).",
+            "schema": "public",
+            "table": "stays",
+            "constraint": "stays_order"
+          },
+          "digest": "edbdcc0c60729014"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23514",
+        "message": "new row for relation \"stays\" violates check constraint \"stays_order\"",
+        "detail": "Failing row contains (ada, 2026-03-05, 2026-03-02).",
+        "schema": "public",
+        "table": "stays",
+        "constraint": "stays_order",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "188b30dc4f7a3905": {
+      "db": "empty",
+      "sql": "CREATE TABLE items (qty int CHECK (qty > 0));\nINSERT INTO items VALUES (NULL);\nSELECT qty IS NULL AS stored_a_null FROM items;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["stored_a_null", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "d2e00bfbbc5092c8",
+          "rows": [
+            ["t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "59d8b512ad530bda": {
+      "db": "empty",
+      "sql": "CREATE TABLE payments (id int PRIMARY KEY, amount numeric(10,2));\nINSERT INTO payments VALUES (1, 20.00), (2, -3.00), (3, 7.50);\n\nBEGIN;\nALTER TABLE payments ADD CONSTRAINT payments_positive CHECK (amount > 0) NOT VALID;\nSELECT 'add NOT VALID' AS step, mode FROM pg_locks WHERE relation = 'payments'::regclass;\nCOMMIT;\n\nUPDATE payments SET amount = 3.00 WHERE id = 2;\n\nBEGIN;\nALTER TABLE payments VALIDATE CONSTRAINT payments_positive;\nSELECT 'validate' AS step, mode FROM pg_locks WHERE relation = 'payments'::regclass;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "456642ddbdad5c7c"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c9df9cfa72a1225e"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["step", "text", 25],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "b7f3b20146dee56d",
+          "rows": [
+            ["add NOT VALID", "AccessExclusiveLock"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a9a261271328ed1"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "530188ba0931aadf"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4e469b7c6d235ccf"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8eb71a9f6b74f82d"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["step", "text", 25],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "ba9aadd4a2c30a19",
+          "rows": [
+            ["validate", "ShareUpdateExclusiveLock"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1eb7211e641aa6c5"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ff6aa397d05844cd": {
+      "db": "empty",
+      "sql": "CREATE TABLE signups (id int, email text);\nINSERT INTO signups VALUES (1, 'ada@example.com'), (2, NULL);\n\nALTER TABLE signups ADD CONSTRAINT signups_email_nn NOT NULL email NOT VALID;\nINSERT INTO signups VALUES (3, NULL);\nALTER TABLE signups VALIDATE CONSTRAINT signups_email_nn;\n\nSELECT conname, contype, convalidated FROM pg_constraint WHERE conrelid = 'signups'::regclass;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "473cf6d7179df0b7"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23502",
+            "message": "null value in column \"email\" of relation \"signups\" violates not-null constraint",
+            "detail": "Failing row contains (3, null).",
+            "schema": "public",
+            "table": "signups",
+            "column": "email"
+          },
+          "digest": "76a02eb3c1ccc692"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23502",
+            "message": "column \"email\" of relation \"signups\" contains null values",
+            "schema": "public",
+            "table": "signups",
+            "column": "email"
+          },
+          "digest": "514ce78b5ac3e981"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["conname", "name", 19],
+            ["contype", "char", 18],
+            ["convalidated", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "1df9d31fd5b8020f",
+          "rows": [
+            ["signups_email_nn", "n", "f"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23502",
+        "message": "null value in column \"email\" of relation \"signups\" violates not-null constraint",
+        "detail": "Failing row contains (3, null).",
+        "schema": "public",
+        "table": "signups",
+        "column": "email",
+        "statement": 3
+      },
+      "txn": "I"
+    },
+    "df428d019f1a4ebe": {
+      "db": "empty",
+      "sql": "CREATE TABLE readings (id int, celsius numeric CONSTRAINT plausible CHECK (celsius BETWEEN -90 AND 60) NOT ENFORCED);\nINSERT INTO readings VALUES (1, 400);\nSELECT conname, conenforced, convalidated FROM pg_constraint WHERE conrelid = 'readings'::regclass;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["conname", "name", 19],
+            ["conenforced", "bool", 16],
+            ["convalidated", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "9577482658ffc484",
+          "rows": [
+            ["plausible", "f", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9e12bab5fed4b9d1": {
+      "db": "empty",
+      "sql": "CREATE TABLE readings (id int, celsius numeric CONSTRAINT plausible CHECK (celsius BETWEEN -90 AND 60) NOT ENFORCED);\nALTER TABLE readings ALTER CONSTRAINT plausible ENFORCED;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42809",
+            "message": "cannot alter enforceability of constraint \"plausible\" of relation \"readings\""
+          },
+          "digest": "96163fd7f03cf2df"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42809",
+        "message": "cannot alter enforceability of constraint \"plausible\" of relation \"readings\"",
+        "statement": 1
+      },
+      "txn": "I"
+    }
+  }
+}

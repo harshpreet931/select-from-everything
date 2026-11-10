@@ -1,0 +1,291 @@
+import { planOf, prov, sqlOf } from "@/lib/db/captured";
+import cb1 from "./traces/casebook-1.pgtrace.json";
+import cb2 from "./traces/casebook-2.pgtrace.json";
+
+{/* every before/after figure reads traces/casebook-1 (cases 1 to 5) and casebook-2 (cases 6 to
+    10), captured on PGlite with the shop dataset (the same engine and data as the run blocks), one
+    @explain per plan: EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, FORMAT JSON). the cases
+    run one after another in each capture, so case 10 runs with case 9's index in place; the run
+    blocks build what they need. */}
+
+export const ex = [cb1, cb2].flatMap((t) => t.steps.map((s, i) => (s.explain ? [t, i] : null)).filter(Boolean));
+export const top = ([t, i]) => planOf(t, i).Plan;
+export const totals = (e) => {
+  const p = top(e);
+  return [String(p["Actual Rows"]), String(p["Shared Hit Blocks"] + p["Shared Read Blocks"]), String((p["Temp Read Blocks"] ?? 0) + (p["Temp Written Blocks"] ?? 0))];
+};
+export const COLS = [{ name: "rows", type: "int8" }, { name: "shared buffers", type: "int8" }, { name: "temp blocks", type: "int8" }];
+export const prev = ([t, i]) => (t.steps[i - 1] && !t.steps[i - 1].explain ? t.steps[i - 1] : null);
+export const run = (e, prefix) => ({ sql: (prefix ? sqlOf(prefix) + "\n\n" : "") + sqlOf(e[0].steps[e[1]]), note: e[0].steps[e[1]].note, columns: COLS, rows: [totals(e)], plan: planOf(e[0], e[1]) });
+export const pair = (k) => {
+  const b = ex[2 * k], a = ex[2 * k + 1];
+  const pb = prev(b), pa = prev(a);
+  return { before: run(b, pb && /setup/.test(pb.note) ? pb : null), after: run(a, pa && !/setup/.test(pa.note) ? pa : null) };
+};
+export const OPT = [{ key: "query", values: ["before", "after"] }];
+export const F = { before: "totals at the top plan node", after: "totals at the top plan node" };
+export const P = prov(cb1);
+export const nb = (k, w) => { const p = top(ex[2 * k + (w === "after" ? 1 : 0)]); return (p["Shared Hit Blocks"] + p["Shared Read Blocks"]).toLocaleString("en-US"); };
+export const n = (k, w, key) => { const v = top(ex[2 * k + (w === "after" ? 1 : 0)])[key]; return typeof v === "number" ? v.toLocaleString("en-US") : v; };
+
+<InShort>
+ten slow queries on the shop dataset, each with its real plan before, **the one change** that fixed it, and the plan after. every one of them is a pattern from an earlier chapter: a missing index, an expression the index doesn't store, stale or blind statistics, a loop that should be a join, a page that should be a seek, a NOT IN, a sort that spills, a foreign key with no index, and an OR no index can answer.
+
+the method is the same every time: **read the plan, find the node doing the work, change one thing, read the plan again.**
+</InShort>
+
+## the picture
+
+you know how "the query is slow" turns into adding random indexes until it isn't? the plan already tells you what's wrong, if you read it in the right order. [EXPLAIN ANALYZE and BUFFERS](/learn/execution/explain-analyze) is the whole toolkit: find the node with the most rows thrown away, the most buffers, the biggest gap between estimated and actual rows, or a `loops` count that's way too high.
+
+think of a mechanic with a stethoscope. the engine (the plan) tells you which cylinder knocks. you don't rebuild the engine, you fix the one part. in every case below, the fix is one line.
+
+<Figure caption={<>what to look at in a plan, in order. each one points at a case below.</>}>
+<Tree>{`
+EXPLAIN (ANALYZE, BUFFERS) #meta // run it for real; TIMING OFF if you only want counts
+    rows removed by filter, huge #hot // a missing or unusable index: cases 1, 2, 9
+    estimated rows far from actual #dead // statistics: cases 3, 4
+    loops = hundreds or thousands #hot // a per-row subquery or rescan: cases 5, 7
+    rows read far more than returned #hot // OFFSET, or an OR that blocks indexes: cases 6, 10
+    Sort Method: external merge Disk #dead // work_mem: case 8
+`}</Tree>
+</Figure>
+
+every figure below is a real capture on the same postgres that runs in this page (shop has exact statistics and no secondary indexes). flip **before** and **after**: the table on top is the top plan node's rows, buffers and temp blocks, and the tree under it is the whole plan.
+
+## 1. the missing index
+
+<Figure wide caption={<>before: a seq scan that reads all of <code>order_items</code> and removes {n(0, "before", "Rows Removed by Filter")} rows to keep 81. after one CREATE INDEX: a bitmap scan.</>}>
+<RunPick options={OPT} runs={pair(0)} trace={P} show={["est", "actual", "buffers"]} hot={["CREATE INDEX order_items_product_id ON order_items (product_id)"]} footer={F} />
+</Figure>
+
+shop's tables only have their primary keys, so filtering on `product_id` means reading every page. a huge "rows removed by filter" next to a small output is the signature. an index on the filtered column turns {nb(0, "before")} buffer reads into {nb(0, "after")} ([what an index actually is](/learn/indexes/what-an-index-is), [when postgres uses an index](/learn/indexes/index-or-scan)).
+
+<Deep title="run case 1 yourself">
+```sql run db=shop
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT order_id, qty FROM order_items WHERE product_id = 150;
+CREATE INDEX order_items_product_id ON order_items (product_id);
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT order_id, qty FROM order_items WHERE product_id = 150;
+```
+</Deep>
+
+## 2. a function on the column
+
+<Figure wide caption={<>before: a seq scan, though <code>email</code> has a unique index. after: an expression index on <C k="hot">lower(email)</C>, and the same WHERE uses it.</>}>
+<RunPick options={OPT} runs={pair(1)} trace={P} show={["est", "actual", "buffers"]} hot={["lower(email)"]} footer={F} />
+</Figure>
+
+the unique index stores `email`, not `lower(email)`, so it can't answer the question asked. the fix is to index the expression the query actually uses, spelled the same way ([partial and expression indexes](/learn/indexes/partial-and-expression), [why isn't my index used?](/learn/indexes/index-not-used)). the same goes for `created_at::date = …`, `coalesce(x, 0) = …` and anything else that wraps the column: rewrite the predicate as a range on the bare column, or index the expression.
+
+<Deep title="run case 2 yourself">
+```sql run db=shop
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, name FROM customers WHERE lower(email) = 'ada@example.com';
+CREATE INDEX customers_lower_email ON customers (lower(email));
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, name FROM customers WHERE lower(email) = 'ada@example.com';
+```
+</Deep>
+
+## 3. stale statistics
+
+the setup is a table loaded in two batches: the undelivered orders first, then ANALYZE, then 9,352 delivered ones that nobody analyzed. the browser engine has no autovacuum, so nothing fixes that behind your back; on a real server, a big load right before a query does the same thing until [autovacuum](/learn/mvcc/autovacuum) catches up.
+
+<Figure wide caption={<>before: statistics from the first batch say about half the rows are cancelled, so the planner expects {n(2, "before", "Plan Rows")} and picks a seq scan. after ANALYZE it expects 317, gets 317, and reads {nb(2, "after")} buffers instead of {nb(2, "before")}.</>}>
+<RunPick options={OPT} runs={pair(2)} trace={P} show={["est", "actual", "buffers"]} hot={["ANALYZE recent"]} footer={F} />
+</Figure>
+
+the giveaway is the estimate column: {n(2, "before", "Plan Rows")} expected, 317 actual. when estimates are off by 10x on a single table scan with a plain equality, suspect stale [pg_stats](/learn/optimizer/statistics) first. run ANALYZE after bulk loads, as part of the load ([when estimates go wrong](/learn/optimizer/misestimates)).
+
+<Deep title="run case 3 yourself">
+```sql run db=shop
+CREATE TABLE recent AS SELECT * FROM orders WHERE status <> 'delivered' ORDER BY id;
+CREATE INDEX recent_status ON recent (status);
+ANALYZE recent;
+INSERT INTO recent SELECT * FROM orders WHERE status = 'delivered' ORDER BY id;
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+SELECT id, customer_id FROM recent WHERE status = 'cancelled';
+ANALYZE recent;
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)
+SELECT id, customer_id FROM recent WHERE status = 'cancelled';
+```
+</Deep>
+
+## 4. correlated columns
+
+<Figure wide caption={<>before: estimated {n(3, "before", "Plan Rows")} rows on the scan, actual 159. after CREATE STATISTICS and ANALYZE: estimated {n(3, "after", "Plan Rows")}. the plan shape doesn't change on a table this small; the estimate is what every join above it would inherit.</>}>
+<RunPick options={OPT} runs={pair(3)} trace={P} show={["est", "actual"]} hot={["CREATE STATISTICS customers_city_country (dependencies) ON city, country FROM customers"]} footer={F} />
+</Figure>
+
+the planner assumes columns are independent and multiplies their selectivities: P(London) × P(GB). but every London customer is in GB, so the second condition removes nothing, and the product undercounts by about 8x. extended statistics teach it the dependency ([the independence assumption](/learn/optimizer/estimating-rows), [extended statistics](/learn/optimizer/extended-statistics)). here the fix only moves a number. in a query that joins this result to orders and order_items, an 8x underestimate is how you get a nested loop that should have been a hash join.
+
+<Deep title="run case 4 yourself">
+```sql run db=shop
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*) FROM customers WHERE city = 'London' AND country = 'GB';
+CREATE STATISTICS customers_city_country (dependencies) ON city, country FROM customers;
+ANALYZE customers;
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT count(*) FROM customers WHERE city = 'London' AND country = 'GB';
+```
+</Deep>
+
+## 5. N+1, inside one statement
+
+an ORM that loads Berlin's customers and then asks for each one's order count is the [N+1 problem](/learn/scale/orms-and-n-plus-one): one query for the list, N more for the details. a correlated subquery in the SELECT list is the same shape inside one statement:
+
+<Figure wide caption={<>before: the SubPlan runs <C k="hot">133 times</C>, once per Berlin customer, each time scanning orders: {nb(4, "before")} buffers. after: one hash join and one aggregate, {nb(4, "after")} buffers, same answer.</>}>
+<RunPick options={OPT} runs={pair(4)} trace={P} show={["est", "actual", "buffers"]} hot={["LEFT JOIN orders AS o ON o.customer_id = c.id", "GROUP BY c.id, c.name"]} footer={F} />
+</Figure>
+
+`loops=133` is the tell. postgres can't always flatten a subquery in the SELECT list into a join ([how subqueries get planned](/learn/optimizer/subquery-planning)), so write the join yourself: one pass over orders, grouped. in the application, the fix is the same idea: one query with a join, or one query with `WHERE customer_id = ANY($1)`, instead of a loop.
+
+<Deep title="run case 5 yourself">
+```sql run db=shop
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT c.name, (SELECT count(*) FROM orders AS o WHERE o.customer_id = c.id) AS orders
+FROM customers AS c WHERE c.city = 'Berlin';
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT c.name, count(o.id) AS orders
+FROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.id
+WHERE c.city = 'Berlin'
+GROUP BY c.id, c.name;
+```
+</Deep>
+
+## 6. OFFSET to keyset
+
+<Figure wide caption={<>before: <code>OFFSET 9000 LIMIT 20</code>. the index scan returns 9,020 rows and the Limit throws away 9,000. after: <C k="hot">WHERE id &gt; 9000</C> starts the index scan at the right place and stops after 20.</>}>
+<RunPick options={OPT} runs={pair(5)} trace={P} show={["est", "actual", "buffers"]} hot={["WHERE id > 9000"]} footer={F} />
+</Figure>
+
+OFFSET doesn't skip rows, it reads and discards them, so page 451 costs 451 pages' worth of work. keyset pagination remembers the last key of the previous page and seeks past it, so every page costs the same ({nb(5, "after")} buffers here, against {nb(5, "before")}). the price: no "jump to page 451", and the sort key must be unique (add the id as a tiebreaker) ([keyset pagination](/learn/indexes/keyset-pagination), [LIMIT and OFFSET](/learn/basics/limit-and-offset)).
+
+<Deep title="run case 6 yourself">
+```sql run db=shop
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, status FROM orders ORDER BY id OFFSET 9000 LIMIT 20;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, status FROM orders WHERE id > 9000 ORDER BY id LIMIT 20;
+```
+</Deep>
+
+## 7. NOT IN to NOT EXISTS
+
+<Figure wide caption={<>before, at <code>work_mem = 64kB</code>: NOT IN materializes the subquery and rescans it for each of 2,000 customers, {n(6, "before", "Temp Read Blocks")} temp blocks read. after: NOT EXISTS is a hash anti join. both find 38 customers.</>}>
+<RunPick options={OPT} runs={pair(6)} trace={P} show={["est", "actual", "buffers"]} hot={["NOT EXISTS", "NOT IN"]} footer={F} />
+</Figure>
+
+NOT IN has to return no rows at all if the subquery produces a NULL ([the NOT IN trap](/learn/joins/not-in-trap)), so postgres can't turn it into an anti join. it runs it as a SubPlan instead: hashed if the subquery fits in work_mem, a rescan per outer row if it doesn't. the 64kB here stands in for a subquery too big to hash. NOT EXISTS has no NULL problem, so it becomes a [hash anti join](/learn/joins/exists-semi-anti) at any size. it's the faster spelling *and* the correct one.
+
+<Deep title="run case 7 yourself">
+```sql run db=shop
+SET work_mem = '64kB';
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM customers WHERE id NOT IN (SELECT customer_id FROM orders);
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM customers AS c WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);
+```
+</Deep>
+
+## 8. a sort that spills
+
+<Figure wide caption={<>before, at 64kB: <C k="dead">external merge, Disk</C>, {n(7, "before", "Sort Space Used")} kB on disk. after <code>SET work_mem = '8MB'</code>: quicksort in {n(7, "after", "Sort Space Used")} kB of memory.</>}>
+<RunPick options={OPT} runs={pair(7)} trace={P} show={["est", "actual", "buffers"]} hot={["SET work_mem = '8MB'"]} footer={F} />
+</Figure>
+
+when a sort's input doesn't fit in work_mem, postgres writes sorted runs to temp files and merges them ([sorting and work_mem](/learn/execution/sorting)). `Sort Method: external merge  Disk` and temp blocks in BUFFERS say so. raise work_mem for that query or role (`SET LOCAL work_mem` inside a transaction), not globally: it's per sort and per hash node, per connection, so a global bump multiplies. or make the sort unnecessary with an index in the right order ([indexes for ORDER BY](/learn/indexes/indexes-and-order-by)).
+
+<Deep title="run case 8 yourself">
+```sql run db=shop
+SET work_mem = '64kB';
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT order_id, line_no, unit_price FROM order_items ORDER BY unit_price DESC, order_id, line_no;
+SET work_mem = '8MB';
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT order_id, line_no, unit_price FROM order_items ORDER BY unit_price DESC, order_id, line_no;
+```
+</Deep>
+
+## 9. a foreign key with no index
+
+deleting a customer is fast to write and slow to run: `orders.customer_id` references `customers`, so for every deleted customer the foreign key's trigger has to check no order still points at it. postgres indexes the referenced side (the primary key) automatically, never the referencing side ([foreign keys](/learn/design/foreign-keys)).
+
+<Predict question="DELETE FROM customers WHERE id = 7. customer 7 has no orders. what does postgres read in orders?" options={["nothing", "one index page", "every row of orders"]} answer={2}>
+```sql
+DELETE FROM customers WHERE id = 7;   -- Ming Li, who never ordered
+```
+<Explain>
+every row. the foreign key on orders.customer_id fires a check for the deleted customer: "is there any order with customer_id = 7?". with no index on orders.customer_id, that check is a seq scan of all 10,000 orders, to find nothing. delete 1,000 customers and it's 1,000 seq scans.
+</Explain>
+</Predict>
+
+the check is a query of its own, run once per deleted row. it's this one (the shape is in postgres's `ri_triggers.c`):
+
+<Figure wide caption={<>the foreign key's check for one deleted customer. before: a seq scan removes all {n(8, "before", "Rows Removed by Filter")} orders. after an index on <C k="hot">orders (customer_id)</C>: an index lookup that finds nothing in 2 page reads.</>}>
+<RunPick options={OPT} runs={pair(8)} trace={P} show={["est", "actual", "buffers"]} hot={["CREATE INDEX orders_customer_id ON orders (customer_id)"]} footer={F} />
+</Figure>
+
+EXPLAIN ANALYZE of the DELETE itself only shows the trigger as a line (`Trigger for constraint orders_customer_id_fkey: calls=1`), not its plan, which is why this one hides so well. index your foreign keys unless you're sure the parent is never deleted or updated.
+
+<Deep title="run case 9 yourself">
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+DELETE FROM customers WHERE id = 7;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT 1 FROM ONLY orders AS x WHERE customer_id = 7 FOR KEY SHARE OF x;
+CREATE INDEX orders_customer_id ON orders (customer_id);
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT 1 FROM ONLY orders AS x WHERE customer_id = 7 FOR KEY SHARE OF x;
+```
+</Deep>
+
+## 10. an OR across two tables
+
+<Figure wide caption={<>before: both tables read in full, joined, and {n(9, "before", "Rows Removed by Join Filter")} joined rows filtered out by the OR. after: a <C k="hot">UNION</C> of two queries, each answered by an index ({nb(9, "after")} buffers, against {nb(9, "before")}).</>}>
+<RunPick options={OPT} runs={pair(9)} trace={P} show={["est", "actual", "buffers"]} hot={["UNION"]} footer={F} />
+</Figure>
+
+an OR inside one table can use two indexes at once (a BitmapOr, see [bitmap scans](/learn/execution/scans)). an OR whose halves are about different tables can't be pushed down to either one, so it's evaluated after the join, on every joined row. split it into a [UNION](/learn/joins/set-operations) of two queries that each have an indexable condition. UNION (not UNION ALL) removes the duplicate if a row matches both halves.
+
+<Deep title="run case 10 yourself">
+```sql run db=shop
+CREATE INDEX orders_customer_id ON orders (customer_id);
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT o.id FROM orders AS o JOIN customers AS c ON c.id = o.customer_id
+WHERE c.email = 'ada@example.com' OR o.id = 5000;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT o.id FROM orders AS o JOIN customers AS c ON c.id = o.customer_id WHERE c.email = 'ada@example.com'
+UNION
+SELECT o.id FROM orders AS o WHERE o.id = 5000;
+```
+</Deep>
+
+## the pattern
+
+<Quiz question="a plan shows a Nested Loop with loops=40,000 on its inner Seq Scan, and the outer node estimated 3 rows. what do you check first?" options={["work_mem", "the outer node's statistics", "add an index on the outer table"]} answer={1}>
+<Explain>
+the estimate. the planner picked a nested loop because it expected 3 outer rows, which would mean 3 inner scans. it got 40,000. that's an estimate problem (stale statistics like case 3, or correlated columns like case 4), and fixing it usually flips the join to a hash join on its own. an index on the inner side's join column would make each loop cheap too, but find out why the estimate was wrong first.
+</Explain>
+</Quiz>
+
+all ten fixes were one line, and none of them was a hint or a setting change for the whole server. finding the slow query in the first place is [finding slow queries](/learn/optimizer/finding-slow-queries) (pg_stat_statements, auto_explain); forcing a plan when you truly have to is [steering the planner](/learn/optimizer/steering-the-planner).
+
+<Gotcha title="EXPLAIN ANALYZE runs the statement">
+the DELETE in case 9 really deletes (the run block's DELETE removes Ming Li for the rest of that block). wrap data-changing statements in `BEGIN; EXPLAIN ANALYZE …; ROLLBACK;` when you investigate them on a real database.
+</Gotcha>
+
+<Interview q="the database is slow. one query is the problem. walk me through fixing it.">
+get the real plan: EXPLAIN (ANALYZE, BUFFERS), on production-like data. read it for the node doing the work: huge rows removed by a filter (missing or unusable index: add one, or index the expression), estimates far from actuals (ANALYZE, extended statistics for correlated columns), high loops on an inner side (a per-row subquery or a bad nested loop: rewrite as a join, fix the estimate), rows read far beyond rows returned (OFFSET: keyset; an OR across tables: UNION), a sort or hash spilling to disk (work_mem for that query, or an index in sort order). change one thing, re-run the plan, compare. bonus point: check foreign keys for missing indexes when deletes or updates of a parent are slow, because the trigger's scan doesn't show up as a plan node.
+</Interview>
+
+<Keylines>
+- read the plan for: rows removed, estimate vs actual, loops, rows read vs returned, Disk.
+- an index helps only if the query asks for what it stores: same column, same expression.
+- bad estimates come from stale or blind statistics. ANALYZE, then CREATE STATISTICS.
+- loops in the hundreds mean a per-row subquery or rescan. write the join.
+- OFFSET reads what it skips. NOT IN can't anti-join. an OR across tables can't use an index.
+- index foreign key columns, or deleting a parent row scans the child table.
+</Keylines>

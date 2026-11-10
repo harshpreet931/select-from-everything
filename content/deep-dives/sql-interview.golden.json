@@ -1,0 +1,360 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "a9cb36a8f05fc007": {
+      "db": "org",
+      "sql": "SELECT max(salary) AS second_highest\nFROM employees\nWHERE salary < (SELECT max(salary) FROM employees);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["second_highest", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "eb5d8ed85106d78f",
+          "rows": [
+            ["224000.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d534b27d85e0e8b8": {
+      "db": "org",
+      "sql": "SELECT name, salary,\n       row_number() OVER w AS row_number,\n       rank()       OVER w AS rank,\n       dense_rank() OVER w AS dense_rank\nFROM employees\nWINDOW w AS (ORDER BY salary DESC)\nORDER BY salary DESC, name\nLIMIT 6;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["salary", "numeric", 1700],
+            ["row_number", "int8", 20],
+            ["rank", "int8", 20],
+            ["dense_rank", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "4d75a6bb0ff38618",
+          "rows": [
+            ["Fatima Lopez", "301000.00", "1", "1", "1"],
+            ["Chen Smith", "224000.00", "3", "2", "2"],
+            ["Mei Dubois", "224000.00", "2", "2", "2"],
+            ["Olivia Lopez", "220000.00", "4", "4", "3"],
+            ["Chen Jensen", "164000.00", "5", "5", "4"],
+            ["Noah Silva", "164000.00", "6", "5", "4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "55b5b63ed5b004a3": {
+      "db": "org",
+      "sql": "SELECT DISTINCT salary\nFROM (SELECT salary, dense_rank() OVER (ORDER BY salary DESC) AS r FROM employees) AS ranked\nWHERE r = 2;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["salary", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "411f871924afd31a",
+          "rows": [
+            ["224000.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "adf239433d13ef3f": {
+      "db": "shop",
+      "sql": "SELECT email, count(*) AS n\nFROM customers\nGROUP BY email\nHAVING count(*) > 1\nORDER BY n DESC, email;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["email", "text", 25],
+            ["n", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "8bdb73a9ba6a5187",
+          "rows": [
+            [null, "46"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c218bdbc03e03ad8": {
+      "db": "shop",
+      "sql": "SELECT id, name, email\nFROM (SELECT id, name, email, count(*) OVER (PARTITION BY lower(email)) AS n\n      FROM customers WHERE email IS NOT NULL) AS c\nWHERE n > 1\nORDER BY lower(email), id;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["email", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "77665af0a6f5654b",
+          "rows": [
+            ["4", "Zoë Martin", "Zoe.Martin@Example.com"],
+            ["5", "Zoe Martin", "zoe.martin@example.com"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c6d88fec728b8e1c": {
+      "db": "shop",
+      "sql": "SELECT id, (ordered_at AT TIME ZONE 'UTC')::date AS day,\n       count(*) OVER (ORDER BY (ordered_at AT TIME ZONE 'UTC')::date) AS running\nFROM orders\nORDER BY ordered_at, id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["day", "date", 1082],
+            ["running", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "c9dc1a692187a7b0",
+          "rows": [
+            ["1", "2025-07-01", "27"],
+            ["2", "2025-07-01", "27"],
+            ["3", "2025-07-01", "27"],
+            ["4", "2025-07-01", "27"],
+            ["5", "2025-07-01", "27"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a3156477340925c7": {
+      "db": "shop",
+      "sql": "SELECT id, (ordered_at AT TIME ZONE 'UTC')::date AS day,\n       count(*) OVER (ORDER BY (ordered_at AT TIME ZONE 'UTC')::date, id\n                      ROWS UNBOUNDED PRECEDING) AS running\nFROM orders\nORDER BY ordered_at, id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["day", "date", 1082],
+            ["running", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "28bfe6136f64a6d6",
+          "rows": [
+            ["1", "2025-07-01", "1"],
+            ["2", "2025-07-01", "2"],
+            ["3", "2025-07-01", "3"],
+            ["4", "2025-07-01", "4"],
+            ["5", "2025-07-01", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c3361d6373a8378a": {
+      "db": "events",
+      "sql": "WITH days AS (\n  SELECT DISTINCT (occurred_at AT TIME ZONE 'UTC')::date AS day\n  FROM events WHERE user_id = 17 AND occurred_at >= '2026-04-21'\n)\nSELECT day,\n       row_number() OVER (ORDER BY day) AS rn,\n       day - row_number() OVER (ORDER BY day)::int AS island\nFROM days\nORDER BY day\nLIMIT 18;",
+      "statements": [
+        {
+          "tag": "SELECT 18",
+          "command": "SELECT",
+          "columns": [
+            ["day", "date", 1082],
+            ["rn", "int8", 20],
+            ["island", "date", 1082]
+          ],
+          "rowCount": 18,
+          "digest": "998c35caece4f031",
+          "rows": [
+            ["2026-04-21", "1", "2026-04-20"],
+            ["2026-04-22", "2", "2026-04-20"],
+            ["2026-04-23", "3", "2026-04-20"],
+            ["2026-04-24", "4", "2026-04-20"],
+            ["2026-04-25", "5", "2026-04-20"],
+            ["2026-04-26", "6", "2026-04-20"],
+            ["2026-04-27", "7", "2026-04-20"],
+            ["2026-04-28", "8", "2026-04-20"],
+            ["2026-04-29", "9", "2026-04-20"],
+            ["2026-04-30", "10", "2026-04-20"],
+            ["2026-05-01", "11", "2026-04-20"],
+            ["2026-05-02", "12", "2026-04-20"],
+            ["2026-05-03", "13", "2026-04-20"],
+            ["2026-05-04", "14", "2026-04-20"],
+            ["2026-05-06", "15", "2026-04-21"],
+            ["2026-05-07", "16", "2026-04-21"],
+            ["2026-05-08", "17", "2026-04-21"],
+            ["2026-05-09", "18", "2026-04-21"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "dab2671266865541": {
+      "db": "events",
+      "sql": "WITH days AS (\n  SELECT DISTINCT user_id, (occurred_at AT TIME ZONE 'UTC')::date AS day FROM events\n), islands AS (\n  SELECT user_id, day - (row_number() OVER (PARTITION BY user_id ORDER BY day))::int AS island\n  FROM days\n)\nSELECT user_id, count(*) AS streak_days\nFROM islands\nGROUP BY user_id, island\nORDER BY streak_days DESC, user_id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["user_id", "int4", 23],
+            ["streak_days", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "100fb6d966db3ef2",
+          "rows": [
+            ["1", "47"],
+            ["2", "47"],
+            ["3", "47"],
+            ["5", "47"],
+            ["1", "44"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "810fae4f10cfffa7": {
+      "db": "org",
+      "sql": "SELECT dept, name, salary, r\nFROM (SELECT d.name AS dept, e.name, e.salary,\n             dense_rank() OVER (PARTITION BY d.id ORDER BY e.salary DESC) AS r\n      FROM employees AS e JOIN departments AS d ON d.id = e.dept_id) AS ranked\nWHERE r <= 2\nORDER BY dept, r, name;",
+      "statements": [
+        {
+          "tag": "SELECT 16",
+          "command": "SELECT",
+          "columns": [
+            ["dept", "text", 25],
+            ["name", "text", 25],
+            ["salary", "numeric", 1700],
+            ["r", "int8", 20]
+          ],
+          "rowCount": 16,
+          "digest": "af1631149d5a5eb1",
+          "rows": [
+            ["design", "Noah Silva", "164000.00", "1"],
+            ["design", "Liam Cohen", "123000.00", "2"],
+            ["engineering", "Fatima Lopez", "301000.00", "1"],
+            ["engineering", "Chen Smith", "224000.00", "2"],
+            ["engineering", "Mei Dubois", "224000.00", "2"],
+            ["finance", "Leila Larsen", "162000.00", "1"],
+            ["finance", "Kenji Cohen", "123000.00", "2"],
+            ["people", "Chen Jensen", "164000.00", "1"],
+            ["people", "Noah Novak", "124000.00", "2"],
+            ["product", "Olivia Singh", "161000.00", "1"],
+            ["product", "Ivan Smith", "123000.00", "2"],
+            ["sales", "Valentina Haddad", "164000.00", "1"],
+            ["sales", "Kenji Larsen", "161000.00", "2"],
+            ["support", "Valentina Okafor", "160000.00", "1"],
+            ["support", "Amelia Romano", "124000.00", "2"],
+            ["support", "Chen Novak", "124000.00", "2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c0338cbecbc0a983": {
+      "db": "shop",
+      "sql": "SELECT status,\n       count(*) FILTER (WHERE ordered_at <  '2025-10-01') AS q3_2025,\n       count(*) FILTER (WHERE ordered_at >= '2025-10-01' AND ordered_at < '2026-01-01') AS q4_2025,\n       count(*) FILTER (WHERE ordered_at >= '2026-01-01' AND ordered_at < '2026-04-01') AS q1_2026,\n       count(*) FILTER (WHERE ordered_at >= '2026-04-01') AS q2_2026\nFROM orders\nGROUP BY status\nORDER BY status;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["status", "text", 25],
+            ["q3_2025", "int8", 20],
+            ["q4_2025", "int8", 20],
+            ["q1_2026", "int8", 20],
+            ["q2_2026", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "8cde4e738b9f5e0f",
+          "rows": [
+            ["cancelled", "99", "84", "66", "68"],
+            ["delivered", "2423", "2441", "2398", "2090"],
+            ["paid", "0", "0", "0", "62"],
+            ["placed", "0", "0", "0", "51"],
+            ["refunded", "24", "23", "29", "22"],
+            ["shipped", "0", "0", "0", "120"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4f339e9cefb8e997": {
+      "db": "org",
+      "sql": "SELECT d.name AS dept,\n       count(*) AS people,\n       round(avg(e.salary)) AS mean,\n       percentile_cont(0.5) WITHIN GROUP (ORDER BY e.salary) AS median,\n       percentile_disc(0.5) WITHIN GROUP (ORDER BY e.salary) AS median_disc\nFROM employees AS e JOIN departments AS d ON d.id = e.dept_id\nGROUP BY d.name\nORDER BY d.name;",
+      "statements": [
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["dept", "text", 25],
+            ["people", "int8", 20],
+            ["mean", "numeric", 1700],
+            ["median", "float8", 701],
+            ["median_disc", "numeric", 1700]
+          ],
+          "rowCount": 7,
+          "digest": "735adee9aa558794",
+          "rows": [
+            ["design", "40", "83650", "73000", "73000.00"],
+            ["engineering", "84", "91190", "73000", "73000.00"],
+            ["finance", "13", "107615", "99000", "99000.00"],
+            ["people", "13", "107615", "97000", "97000.00"],
+            ["product", "40", "83525", "73000", "73000.00"],
+            ["sales", "80", "83700", "73000", "73000.00"],
+            ["support", "29", "87517", "73000", "73000.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4b1f7445fbb833a5": {
+      "db": "org",
+      "sql": "SELECT a.name AS first, b.name AS second, a.salary, a.dept_id\nFROM employees AS a\nJOIN employees AS b\n  ON b.dept_id = a.dept_id AND b.salary = a.salary AND b.id > a.id\nWHERE a.dept_id = 5\nORDER BY a.salary DESC, a.id, b.id\nLIMIT 6;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["first", "text", 25],
+            ["second", "text", 25],
+            ["salary", "numeric", 1700],
+            ["dept_id", "int4", 23]
+          ],
+          "rowCount": 6,
+          "digest": "1628c9514ebadf3b",
+          "rows": [
+            ["Chen Novak", "Amelia Romano", "124000.00", "5"],
+            ["Diego Wong", "Clara Nguyen", "97000.00", "5"],
+            ["Olivia Jensen", "Jonas Santos", "96000.00", "5"],
+            ["Olivia Hansen", "Tariq Novak", "95000.00", "5"],
+            ["Olivia Hansen", "Yuna Larsen", "95000.00", "5"],
+            ["Tariq Novak", "Yuna Larsen", "95000.00", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

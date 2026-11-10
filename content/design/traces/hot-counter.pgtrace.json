@@ -1,0 +1,119 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/hot-counter.scenario.sql",
+ "title": "two sessions bump the same counter row: the second waits for the first to commit",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "posts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"title","type":"text"},{"name":"comment_count","type":"int4"}]
+  },
+  "posts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"posts"}
+ },
+ "base": {"xid":759,"lsn":23228168},
+ "setup": "CREATE TABLE posts (id int PRIMARY KEY, title text NOT NULL, comment_count int NOT NULL DEFAULT 0);\nINSERT INTO posts (id, title) VALUES (1, 'why pages are 8 KB');\nVACUUM posts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE posts SET comment_count = comment_count + 1 WHERE id = 1",
+   "note": "T1 adds a comment and bumps post 1's counter. its transaction is still open, so it holds the row lock.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"posts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"posts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "BEGIN;\nUPDATE posts SET comment_count = comment_count + 1 WHERE id = 1",
+   "note": "T2 adds a comment to the same post. its UPDATE needs the same row, and waits for T1's transaction.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"posts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"posts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"posts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"posts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"tuple","target":"posts (0,1)","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits. T2 wakes, re-reads the row T1 wrote, and adds its own 1 on top: no lost update, but no parallelism either.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [{"session":"T2","step":1,"result":{"command":"UPDATE","rows":1,"columns":[],"data":[]}}],
+   "locks": [
+    {"session":"T2","type":"relation","target":"posts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"posts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 commits.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": []
+  },
+  {
+   "i": 4,
+   "session": "obs",
+   "sql": "SELECT id, comment_count FROM posts",
+   "note": "both increments landed.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"id","type":"int4"},{"name":"comment_count","type":"int4"}],
+    "data": [["1","2"]]
+   },
+   "locks": []
+  }
+ ]
+}

@@ -1,0 +1,182 @@
+import { TieLadder } from "@/components/figures/analytics/TieLadder";
+import { PlanRow } from "@/components/figures/analytics/PlanRow";
+import { textPlans } from "@/components/figures/analytics/frames";
+import { resultOf, runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/top-n-per-group.pgtrace.json";
+
+{/* the podium, the result switch and the plans read traces/top-n-per-group.scenario.sql,
+    captured on PGlite: units sold per product (product_sales, built in its setup), then the
+    same question three ways, then EXPLAIN (COSTS OFF) of each. */}
+
+export const podium = resultOf(trace, 0);
+export const M = ["row_number", "LATERAL", "DISTINCT ON"];
+export const tops = runsOf(trace, M, 1);
+export const plans = textPlans(trace, M, 4);
+
+<InShort>
+"the best n of every group" is one of the most asked questions in SQL, and postgres has three answers. **row_number** in a subquery numbers every group and keeps the small numbers. **LATERAL** runs a little `ORDER BY ... LIMIT n` query once per group. **DISTINCT ON** keeps the first row of each group, so it only does n = 1.
+
+same answer (mostly). different plans, and different winners as the data grows.
+</InShort>
+
+## the picture
+
+you know how `ORDER BY units DESC LIMIT 3` gives you the three best sellers in the shop, and what you wanted was the three best sellers in *each category*? LIMIT cuts the whole result once. you need a cut per group.
+
+think of a school sports day with ten events. you don't want the three fastest kids in the school, you want a podium per event. somebody has to line each event up separately and hand out three medals there.
+
+<Figure wide caption={<>the answer we're after: the three best-selling products in every category, by units sold. eleven podiums, because three products have no category, and NULL makes a group of its own.</>}>
+<TieLadder columns={podium.columns} rows={podium.rows} name="name" value="category" fns={["n"]} tied="" trace={prov(trace)} />
+</Figure>
+
+units sold per product is an aggregate over 24,942 order items. compute it once into a small table (and ANALYZE it, so the planner knows what's in it), so every query below is only about the top-n part:
+
+```sql run db=shop session=sales
+CREATE TABLE product_sales AS
+SELECT p.id, p.name, p.category, sum(oi.qty)::int AS units
+FROM products AS p
+JOIN order_items AS oi ON oi.product_id = p.id
+GROUP BY p.id;
+ANALYZE product_sales;
+
+SELECT category, name, units
+FROM product_sales
+ORDER BY units DESC, id
+LIMIT 3;
+```
+
+kitchen, kitchen, books. that's the shop's podium, not ten podiums.
+
+## three ways
+
+**row_number.** number the rows inside each category, best first, and keep numbers 1 to 3. the numbering happens in a subquery because a window function can't go in WHERE ([where windows run](/learn/analytics/window-functions)):
+
+```sql run session=sales
+SELECT category, name, units, n
+FROM (
+  SELECT *, row_number() OVER (PARTITION BY category ORDER BY units DESC, id) AS n
+  FROM product_sales
+) AS ranked
+WHERE n <= 3
+ORDER BY category, n
+LIMIT 6;
+```
+
+**LATERAL.** list the categories, and for each one run the query you'd write for a single category. LATERAL is what lets the inner query see `c.category` ([LATERAL joins](/learn/joins/lateral-joins)):
+
+```sql run session=sales
+SELECT c.category, s.name, s.units
+FROM (SELECT DISTINCT category FROM product_sales) AS c
+CROSS JOIN LATERAL (
+  SELECT id, name, units FROM product_sales AS s
+  WHERE s.category = c.category
+  ORDER BY units DESC, id
+  LIMIT 3
+) AS s
+ORDER BY c.category, s.units DESC, s.id
+LIMIT 6;
+```
+
+**DISTINCT ON.** postgres only. sort by the group, then by "best", and keep the first row of each group ([DISTINCT ON](/learn/basics/distinct-rows)). one row per group, full stop:
+
+```sql run session=sales
+SELECT DISTINCT ON (category) category, name, units
+FROM product_sales
+ORDER BY category, units DESC, id;
+```
+
+every one of them ends its ORDER BY with `id`. if two products tie on units, "the best one" isn't one product until you say how to break the tie ([ranking](/learn/analytics/ranking) has the coin toss you get otherwise).
+
+## same question, three answers
+
+ask all three for the top 1, so DISTINCT ON can play too:
+
+<Figure wide caption={<>switch the method. row_number and DISTINCT ON return eleven rows, with the uncategorised wooden train last. LATERAL returns ten: its <code>s.category = c.category</code> is never true when the category is NULL.</>}>
+<RunPick options={[{ key: "method", values: M }]} runs={tops} hot={["row_number()", "CROSS JOIN LATERAL", "s.category = c.category", "DISTINCT ON (category)"]} trace={prov(trace)} />
+</Figure>
+
+<Predict options={["11 rows", "10 rows", "an error"]} answer={1}>
+```sql
+SELECT c.category, s.name
+FROM (SELECT DISTINCT category FROM product_sales) AS c
+CROSS JOIN LATERAL (
+  SELECT name FROM product_sales AS s
+  WHERE s.category = c.category
+  ORDER BY units DESC, id LIMIT 1
+) AS s;
+-- 11 distinct categories, NULL included
+```
+<Explain>
+10. the NULL category is one of the 11 values DISTINCT finds (DISTINCT treats NULLs as equal), but inside the subquery `s.category = NULL` is unknown for every row, so the subquery returns nothing, and CROSS JOIN drops the row. PARTITION BY and DISTINCT ON group NULLs together, `=` never matches them. the fix is `s.category IS NOT DISTINCT FROM c.category`.
+</Explain>
+</Predict>
+
+```sql run session=sales
+SELECT c.category, s.name, s.units
+FROM (SELECT DISTINCT category FROM product_sales) AS c
+CROSS JOIN LATERAL (
+  SELECT name, units FROM product_sales AS s
+  WHERE s.category IS NOT DISTINCT FROM c.category
+  ORDER BY units DESC, id
+  LIMIT 1
+) AS s
+ORDER BY c.category NULLS FIRST
+LIMIT 2;
+```
+
+the wooden train is back. ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) is why `=` couldn't find it.)
+
+## the plans
+
+the answers match. the work doesn't. here's how postgres runs each one, read bottom-up:
+
+<Figure wide caption={<>EXPLAIN (COSTS OFF) of the three top-1 queries. row_number and DISTINCT ON both make one sorted pass over the table. LATERAL scans the table once to find the categories, and then once more <em>per category</em>, inside the nested loop.</>}>
+<PlanRow plans={plans} order={M} rows={{ row_number: "11 rows", LATERAL: "10 rows", "DISTINCT ON": "11 rows" }} trace={prov(trace)} />
+</Figure>
+
+- **row_number**: Sort → WindowAgg → filter. the WindowAgg carries a `Run Condition`: row_number only goes up within a category, so once it passes n postgres stops computing it for the rest of that category (one of the window speedups in [postgres 15](https://www.postgresql.org/docs/release/15.0/)). the rows still go by; every row is read and sorted.
+- **DISTINCT ON**: Sort → Unique. the least machinery, and only for n = 1.
+- **LATERAL**: a nested loop. outside, the 11 categories. inside, for each one, a scan, a sort, a limit. with no index that's 11 full scans of the table, which is fine for 199 rows and silly for 20 million.
+
+and that's where the order flips. give LATERAL an index that matches its inner query, and each category becomes a short walk down the index that stops after n entries:
+
+```sql run session=sales
+CREATE INDEX ON product_sales (category, units DESC, id);
+
+EXPLAIN (COSTS OFF)
+SELECT c.category, s.name, s.units
+FROM (SELECT DISTINCT category FROM product_sales) AS c
+CROSS JOIN LATERAL (
+  SELECT name, units FROM product_sales AS s
+  WHERE s.category = c.category
+  ORDER BY units DESC, id
+  LIMIT 3
+) AS s
+ORDER BY c.category;
+```
+
+`Limit` over an `Index Scan`: no sort, no full scan per category. on a big table with few groups and a small n, that's the fastest of the three by far. row_number has to read everything regardless (an index can save its sort, not its scan). the operators themselves are [nested loops](/learn/execution/nested-loop-join), [sorting](/learn/execution/sorting) and [indexes for ORDER BY and LIMIT](/learn/indexes/indexes-and-order-by).
+
+| | row_number | LATERAL | DISTINCT ON |
+| --- | --- | --- | --- |
+| n | any | any | 1 |
+| reads | every row | n per group, with the right index | every row |
+| NULL group | kept | dropped with `=` | kept |
+| ties at the cut | rank() instead | `FETCH FIRST n ROWS WITH TIES` | no |
+| standard SQL | yes | yes | postgres only |
+
+<Gotcha title="ties at the cut">
+row_number keeps exactly n rows per group, so a tie for third place is settled by your tiebreaker. if a tie should keep both, use `rank() <= 3` instead, or in the LATERAL version `FETCH FIRST 3 ROWS WITH TIES` (and drop the id from the ORDER BY, or nothing ever ties).
+</Gotcha>
+
+<Interview q="how would you get the top 3 products per category?">
+the portable answer: `row_number() OVER (PARTITION BY category ORDER BY units DESC, id)` in a subquery, and keep n ≤ 3 outside. it's one pass, but it reads every row. the alternative is LATERAL: select the categories, and join each to `ORDER BY units DESC LIMIT 3`; with an index on (category, units DESC) that's a few index reads per category, which wins when the table is big and n is small. bonus points: DISTINCT ON for n = 1 in postgres, rank instead of row_number when ties should all be kept, and IS NOT DISTINCT FROM in the LATERAL version if the group key can be NULL.
+</Interview>
+
+<Keylines>
+- LIMIT cuts the whole result. "top n per group" needs a cut per group.
+- row_number in a subquery: any n, one sorted pass over everything.
+- LATERAL ... ORDER BY ... LIMIT n: one small query per group, fast with a matching index.
+- DISTINCT ON: postgres only, n = 1, the smallest plan.
+- end every ORDER BY with a key, and watch NULL group keys with `=`.
+</Keylines>

@@ -1,0 +1,242 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { pickRun } from "@/components/figures/writes/frames";
+import { prov } from "@/lib/db/captured";
+import crash from "./traces/unlogged-crash.pgtrace.json";
+
+{/* timings are measured (see the deep at the end): a throwaway postgres 18.6 from Postgres.app on
+    an m4 pro, each variant a psql -f run, median of 7 (5 for the 200,000-row loads). the psql
+    transcript was recorded from a real psql 18.6 through a pty. the crash is a native pgtrace
+    capture, traces/unlogged-crash.scenario.sql. */}
+
+export const transcript = `demo=# COPY teas (id, name, origin) FROM STDIN (FORMAT csv);
+Enter data to be copied followed by a newline.
+End with a backslash and a period on a line by itself, or an EOF signal.
+>> 1,assam,india
+>> 2,sencha,japan
+>> 3,rooibos,south africa
+>> \\.
+COPY 3
+demo=# \\copy teas (id, name, origin) FROM 'teas.csv' (FORMAT csv, HEADER)
+COPY 2
+demo=# SELECT * FROM teas ORDER BY id;
+ id |    name     |    origin    | grams
+----+-------------+--------------+-------
+  1 | assam       | india        |   100
+  2 | sencha      | japan        |   100
+  3 | rooibos     | south africa |   100
+  4 | darjeeling  | india        |   100
+  5 | house blend |              |   100
+(5 rows)`;
+export const crashed = {
+  "before the crash": pickRun(crash, [1]),
+  "after crash and restart": pickRun(crash, [5]),
+};
+
+<InShort>
+**COPY** moves rows in bulk between a table and a file or a stream: one statement, the rows streamed through it, no per-row round trip, parse or plan. loading 10,000 rows with COPY took 16 ms here, against 443 ms as 10,000 separate INSERTs.
+
+for a big load, COPY into a bare table and add the indexes and foreign keys afterwards. an **UNLOGGED** table skips the WAL entirely, and is emptied after a crash.
+</InShort>
+
+## the picture
+
+you know how an import script that inserts one row at a time crawls, even though each INSERT is "fast"? each one is fast. there are just 10,000 of them, and every one pays the same fixed costs before it writes a single byte.
+
+think of moving house in a car. each trip is quick, but you drive every box across town on its own, and wait at every red light. a multi-row INSERT is a car stuffed full. COPY is a truck with a conveyor belt: one trip, and the boxes keep coming off the back.
+
+<Figure caption={<>the same 10,000 rows (an int, a short text, an int and a numeric) loaded into an empty table four ways: 10,000 single-row INSERTs in autocommit, the same inside one transaction (txn), one INSERT with 10,000 rows in its VALUES, and COPY. every bar includes about 8 ms of starting psql.</>}>
+<Bars
+  unit="ms"
+  data={[
+    { label: "INSERTs, autocommit", value: 443, tone: "dead" },
+    { label: "INSERTs, one txn", value: 156 },
+    { label: "one big INSERT", value: 28 },
+    { label: "COPY", value: 16, tone: "live" },
+  ]}
+/>
+<Provenance measured="on this mac (m4 pro), postgres 18.6 from Postgres.app over a unix socket, psql -f, median of 7 runs. see the deep at the end" />
+</Figure>
+
+the first bar is the one that hurts. in autocommit every INSERT is its own transaction, and every COMMIT waits for its WAL to reach disk ([what COMMIT waits for](/learn/wal/commit-path)). one transaction around all of them takes that off and leaves the round trips, the parsing and the planning, 10,000 times each. one multi-row INSERT parses once. COPY doesn't parse rows as SQL at all.
+
+these runs were over a unix socket on one machine, where a round trip costs microseconds. across a network, the first two bars get far longer and the last two hardly move.
+
+## COPY TO
+
+COPY runs both ways. `TO` writes a table, or any query, out as text, CSV or binary. this one runs here, and its output is the CSV itself:
+
+```sql run db=shop
+COPY (SELECT id, name, city FROM customers WHERE id <= 5 ORDER BY id)
+TO STDOUT (FORMAT csv, HEADER);
+```
+
+`COPY 5`, and the rows. in CSV a NULL is an empty field, and text with commas or quotes gets quoted. `TO STDOUT` sends it to the client: it's how `pg_dump` dumps your data.
+
+## COPY FROM
+
+COPY FROM reads rows in. where it reads them from is the question:
+
+- **a file on the database server**: `COPY teas FROM '/srv/import/teas.csv'`. the server process opens the file, so it has to be on the server's disk, readable by the postgres user, and you need superuser or the `pg_read_server_files` role.
+- **STDIN**, from the client: `COPY teas FROM STDIN`. the client streams the data over the connection. that's what psql's `\copy` does with a file on *your* machine, and what drivers' copy APIs do (psycopg's `cursor.copy()`, pgjdbc's `CopyManager`, node-postgres with `pg-copy-streams`).
+
+<Figure wide caption={<>a real psql 18.6 session. COPY FROM STDIN switches psql into data mode until a line with <code>\.</code>. then <code>\copy</code> reads a file from the client's own disk and streams it the same way. the empty origin for house blend came out as NULL.</>}>
+<SqlPanel code={transcript} lang="psql" nolines file="psql" />
+<div className="text-right text-[10px] leading-4 text-faint">recorded from psql 18.6, connected to a throwaway postgres 18.6 server</div>
+</Figure>
+
+none of the COPY FROM blocks on this page has a run button: the browser engine has no client to stream rows from and no server disk to read a file off. (PGlite can read a Blob handed to it from javascript as `/dev/blob`, but this page's runner doesn't wire that up.) so they're `native`: checked on a real postgres 18.6 server. here the server writes a file into its own data directory, then loads it back:
+
+```sql native db=shop
+DO $$ BEGIN
+  EXECUTE format('COPY (SELECT * FROM order_items ORDER BY order_id, line_no) TO %L (FORMAT csv)',
+                 current_setting('data_directory') || '/order_items.csv');
+END $$;
+
+CREATE TABLE items (LIKE order_items INCLUDING ALL);
+COPY items FROM 'order_items.csv' (FORMAT csv);
+SELECT count(*) FROM items;
+```
+
+(COPY TO a file wants an absolute path, hence the DO. COPY FROM takes a relative one, read from the data directory.)
+
+## why it's faster
+
+part of it is round trips, parsing and planning, which a multi-row INSERT saves too. the rest is in how the rows get written. an INSERT writes rows one at a time, one WAL record each. COPY gathers rows into batches and writes a whole batch with one record. pg_walinspect, on the same 10,000 rows loaded both ways:
+
+```sql native ext=pg_walinspect
+CREATE TABLE src AS SELECT g AS id, 'row ' || g AS note FROM generate_series(1, 10000) AS g;
+DO $$ BEGIN
+  EXECUTE format('COPY src TO %L (FORMAT csv)', current_setting('data_directory') || '/src.csv');
+END $$;
+CREATE TABLE by_insert (id int, note text);
+CREATE TABLE by_copy (id int, note text);
+CREATE TEMP TABLE marks (name text PRIMARY KEY, lsn pg_lsn);  -- temp tables write no WAL
+
+INSERT INTO marks VALUES ('start', pg_current_wal_insert_lsn());
+INSERT INTO by_insert SELECT * FROM src;
+INSERT INTO marks VALUES ('insert done', pg_current_wal_insert_lsn());
+COPY by_copy FROM 'src.csv' (FORMAT csv);
+INSERT INTO marks VALUES ('copy done', pg_current_wal_insert_lsn());
+
+SELECT 'INSERT ... SELECT' AS load, count(*) AS wal_records, sum(record_length) AS wal_bytes
+FROM pg_get_wal_records_info((SELECT lsn FROM marks WHERE name = 'start'),
+                             (SELECT lsn FROM marks WHERE name = 'insert done'))
+WHERE resource_manager LIKE 'Heap%'
+UNION ALL
+SELECT 'COPY', count(*), sum(record_length)
+FROM pg_get_wal_records_info((SELECT lsn FROM marks WHERE name = 'insert done'),
+                             (SELECT lsn FROM marks WHERE name = 'copy done'))
+WHERE resource_manager LIKE 'Heap%'
+ORDER BY wal_records DESC;
+```
+
+10,001 heap records against 64 for the same rows. COPY's records are `Heap2 MULTI_INSERT`, each one covering a batch of rows on one page, so the per-record header is paid once per batch instead of once per row. fewer records, fewer bytes, less work for every replica replaying them. ([WAL records and LSNs](/learn/wal/wal-records) reads records like these one by one.)
+
+## when a row is bad
+
+<Predict options={["9,999 rows", "none", "the first 9,998"]} answer={1}>
+```sql
+-- a CSV of 10,000 readings. line 9,999 says 'warm'
+-- where the celsius number should be.
+COPY readings FROM '/srv/import/readings.csv' (FORMAT csv);
+-- how many rows does readings have afterwards?
+```
+<Explain>
+none. COPY is one statement, and a statement is all or nothing: the bad line raises an error, and the 9,998 rows already written before it are rolled back with it. that's usually what you want (no half-loaded files), and it's why the options below exist for when it isn't.
+</Explain>
+</Predict>
+
+by default one row that won't convert stops the whole COPY, and none of the others are loaded. since postgres 17 <Since v={17} />, `ON_ERROR ignore` skips the rows whose values can't be converted to the column's type, and since 18 <Since v={18} /> `REJECT_LIMIT` says how many it may skip before giving up:
+
+```sql native
+CREATE TABLE readings (id int, celsius numeric);
+DO $$ BEGIN
+  EXECUTE format('COPY (VALUES (''1'', ''21.5''), (''2'', ''warm''), (''three'', ''19.0''), (''4'', ''18.2'')) TO %L (FORMAT csv)',
+                 current_setting('data_directory') || '/readings.csv');
+END $$;
+
+COPY readings FROM 'readings.csv' (FORMAT csv, ON_ERROR ignore, LOG_VERBOSITY verbose);
+SELECT * FROM readings ORDER BY id;
+```
+
+two rows in, two skipped, each with a NOTICE saying which line and why. it only covers conversion errors. a row that converts fine but breaks a constraint (a duplicate key, a CHECK) still stops the whole COPY. for those, load into a bare staging table first, then INSERT ... SELECT the good rows.
+
+## what to drop before a big load
+
+every index on the table is updated row by row during a load, each new key landing at a random spot in its b-tree. every foreign key is checked row by row too, by a trigger that looks up the parent. building an index from scratch afterwards sorts all the keys once and writes the tree bottom up, and adding a foreign key afterwards checks every row in one join.
+
+<Figure caption={<>200,000 rows loaded with COPY into a table that already has its primary key and two more indexes (idx) and a foreign key (FK), or only some of them, against the same COPY into a bare table with all four added afterwards. the last bar is the bare COPY on its own, for scale.</>}>
+<Bars
+  unit="ms"
+  data={[
+    { label: "idx + FK first", value: 878, tone: "dead" },
+    { label: "3 idx first", value: 591 },
+    { label: "FK first", value: 408 },
+    { label: "bare, add after", value: 223, tone: "live" },
+    { label: "bare COPY", value: 92 },
+  ]}
+/>
+<Provenance measured="on this mac (m4 pro), postgres 18.6, psql with \copy from a local csv, median of 5 runs. see the deep at the end" />
+</Figure>
+
+about 4x, on a small table with three indexes. the recipe, which the manual spells out in [populating a database](https://www.postgresql.org/docs/18/populate.html):
+
+1. load inside one transaction, or with COPY (which is one statement).
+2. drop the indexes and foreign keys on the target, or load into a fresh table that doesn't have them yet.
+3. COPY.
+4. create the indexes (a bigger `maintenance_work_mem` makes the sorts faster), then add the foreign keys.
+5. `ANALYZE` the table, so the planner knows what's in it ([pg_stats and ANALYZE](/learn/optimizer/statistics)).
+
+on a live table, dropping indexes means every query that needed them is slow until they're back. that's why big loads usually go into a new or staging table that nobody reads yet. and triggers fire for every COPY row like they do for every INSERT, so a [row trigger](/learn/writes/triggers) on the target can cost more than the load itself.
+
+## UNLOGGED tables
+
+the WAL is how postgres survives a crash: every change is logged before it's applied ([the write-ahead rule](/learn/wal/write-ahead-rule)). for data you can rebuild anyway, a staging table, a cache, an intermediate result, you can turn that off:
+
+```sql run db=shop
+CREATE TABLE logged (id int, note text);
+CREATE UNLOGGED TABLE unlogged (id int, note text);
+CREATE TEMP TABLE mark (lsn pg_lsn);
+
+INSERT INTO mark SELECT pg_current_wal_insert_lsn();
+INSERT INTO logged SELECT g, 'row ' || g FROM generate_series(1, 100000) AS g;
+SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), lsn) AS wal_bytes FROM mark;
+
+UPDATE mark SET lsn = pg_current_wal_insert_lsn();
+INSERT INTO unlogged SELECT g, 'row ' || g FROM generate_series(1, 100000) AS g;
+SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), lsn) AS wal_bytes FROM mark;
+```
+
+7,221,264 bytes of WAL for the logged table, 80 for the unlogged one. the price is written in the name: with no log, there's nothing to recover from, so postgres doesn't try.
+
+<Figure caption={<>a logged and an unlogged table, 10,000 committed rows each, a CHECKPOINT that writes both to disk, then the server is killed and restarted. switch between before and after.</>}>
+<RunPick
+  options={[{ key: "moment", values: ["before the crash", "after crash and restart"] }]}
+  runs={crashed}
+  file="counts.sql"
+  trace={prov(crash)}
+/>
+</Figure>
+
+after a crash, every unlogged table is reset to empty, even rows that were committed and checkpointed long before. unlogged tables also aren't sent to replicas. `ALTER TABLE ... SET LOGGED` turns one into a normal table, by writing all of it to the WAL at once. ([crash recovery](/learn/wal/crash-recovery) is what the logged table went through.)
+
+<Gotcha title="COPY FROM a file is a server-side read">
+`COPY t FROM '/home/me/data.csv'` is read by the *server*, from the *server's* disk. on a managed database or a remote host, that path either doesn't exist or isn't yours, and the error says the file can't be opened. you almost always want the client-side version: psql's `\copy`, or your driver's COPY ... FROM STDIN. same speed, your file.
+</Gotcha>
+
+<Deep title="how these were measured">
+the timings come from small node scripts that start a throwaway postgres 18.6 cluster (Postgres.app's binaries, the same `native-pg` setup the book's native checks use: fsync on, `wal_sync_method = open_datasync`, autovacuum off), then run each variant as a file through `psql -X -q -f` over a unix socket, timing the whole psql process. the table is recreated before every run.
+
+- 10,000 rows: `(id int PRIMARY KEY, sku text, qty int, price numeric(10,2))`. 7 runs each; medians 443, 156, 28 and 16 ms. a bare `SELECT 1` through psql took 8 ms.
+- 200,000 rows: `(id, order_id, sku, qty, price)` with a primary key on id, indexes on sku and qty, and a foreign key to a 1,000-row parent, loaded with `\copy` from a csv. 5 runs each; the bare COPY plus `ALTER TABLE ADD PRIMARY KEY`, two `CREATE INDEX` and `ADD FOREIGN KEY` took 223 ms, of which the COPY was 92.
+
+macOS's `open_datasync` doesn't force the drive's cache to flush, so each commit here is cheaper than on a server that does. the autocommit bar is, if anything, flattering. your numbers will differ, and the order of the bars won't.
+</Deep>
+
+<Keylines>
+- COPY streams rows in one statement: no per-row round trip, parse, plan or commit.
+- COPY FROM a file reads the server's disk. \copy and driver copy APIs stream from yours.
+- COPY writes rows in batches: 64 WAL records for 10,000 rows, against 10,001 for INSERT.
+- for big loads, load into a bare table, then build indexes and add foreign keys.
+- UNLOGGED skips the WAL, and is emptied after every crash.
+</Keylines>

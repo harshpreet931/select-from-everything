@@ -1,0 +1,408 @@
+{
+ "v": 1,
+ "scenario": "content/indexes/traces/index-types.scenario.sql",
+ "title": "one operator per index type, on small tables, with seq scans switched off",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "customers_email_hash": {"kind":"index","am":"hash","columns":[{"name":"email","type":"int4"}],"on":"customers"},
+  "products_tags_gin": {"kind":"index","am":"gin","columns":[{"name":"tags","type":"text"}],"on":"products"},
+  "products_attrs_gin": {"kind":"index","am":"gin","columns":[{"name":"attrs","type":"text"}],"on":"products"},
+  "bookings": {"kind":"table","am":"heap","columns":[{"name":"room","type":"int4"},{"name":"during","type":"tstzrange"}]},
+  "bookings_during": {"kind":"index","am":"gist","columns":[{"name":"during","type":"tstzrange"}],"on":"bookings"},
+  "products_name_spgist": {"kind":"index","am":"spgist","columns":[{"name":"name","type":"text"}],"on":"products"},
+  "orders_at_brin": {"kind":"index","am":"brin","columns":[{"name":"ordered_at","type":"timestamptz"}],"on":"orders"}
+ },
+ "base": {"xid":806,"lsn":34133368},
+ "setup": "CREATE INDEX customers_email_hash ON customers USING hash (email);\nCREATE INDEX products_tags_gin ON products USING gin (tags);\nCREATE INDEX products_attrs_gin ON products USING gin (attrs);\nCREATE TABLE bookings (room int NOT NULL, during tstzrange NOT NULL);\nINSERT INTO bookings SELECT g % 20, tstzrange('2026-06-01'::timestamptz + (g * interval '3 hours'), '2026-06-01'::timestamptz + (g * interval '3 hours') + interval '2 hours') FROM generate_series(1, 2000) AS g ORDER BY g;\nCREATE INDEX bookings_during ON bookings USING gist (during);\nCREATE INDEX products_name_spgist ON products USING spgist (name);\nANALYZE bookings;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SET enable_seqscan = off",
+   "note": "seq scans off, so every plan shows the index that can serve the operator.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id FROM customers WHERE email = 'ada@example.com'",
+   "note": "hash: equality and nothing else.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "customers_email_hash",
+     "Relation Name": "customers",
+     "Alias": "customers",
+     "Startup Cost": 0,
+     "Total Cost": 8.02,
+     "Plan Rows": 1,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Index Cond": "(email = 'ada@example.com'::text)"
+    }
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id FROM customers WHERE email > 'zz'",
+   "note": "the hash index can't do a range: postgres falls back to the unique b-tree on email.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "customers_email_key",
+     "Relation Name": "customers",
+     "Alias": "customers",
+     "Startup Cost": 0.28,
+     "Total Cost": 8.29,
+     "Plan Rows": 1,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Index Cond": "(email > 'zz'::text)"
+    }
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT id FROM products WHERE tags @> ARRAY['steel']",
+   "note": "GIN on an array: which rows contain these elements.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "products",
+     "Alias": "products",
+     "Startup Cost": 8.54,
+     "Total Cost": 12.77,
+     "Plan Rows": 2,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Recheck Cond": "(tags @> '{steel}'::text[])",
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "products_tags_gin",
+       "Startup Cost": 0,
+       "Total Cost": 8.54,
+       "Plan Rows": 2,
+       "Plan Width": 0,
+       "Disabled": false,
+       "Index Cond": "(tags @> '{steel}'::text[])"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT id FROM products WHERE attrs @> '{\"color\": \"red\"}'",
+   "note": "GIN on jsonb: containment.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "products",
+     "Alias": "products",
+     "Startup Cost": 13.06,
+     "Total Cost": 18.28,
+     "Plan Rows": 18,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Recheck Cond": "(attrs @> '{\"color\": \"red\"}'::jsonb)",
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "products_attrs_gin",
+       "Startup Cost": 0,
+       "Total Cost": 13.05,
+       "Plan Rows": 18,
+       "Plan Width": 0,
+       "Disabled": false,
+       "Index Cond": "(attrs @> '{\"color\": \"red\"}'::jsonb)"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT room FROM bookings WHERE during && tstzrange('2026-06-10 10:00+00', '2026-06-10 12:00+00')",
+   "note": "GiST on a range: which bookings overlap this one.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "bookings_during",
+     "Relation Name": "bookings",
+     "Alias": "bookings",
+     "Startup Cost": 0.14,
+     "Total Cost": 8.16,
+     "Plan Rows": 1,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Index Cond": "(during && '[\"2026-06-10 10:00:00+00\",\"2026-06-10 12:00:00+00\")'::tstzrange)"
+    }
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT id FROM products WHERE name ^@ 'steel'",
+   "note": "SP-GiST on text: starts-with.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "products",
+     "Alias": "products",
+     "Startup Cost": 4.21,
+     "Total Cost": 9.32,
+     "Plan Rows": 9,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Recheck Cond": "(name ^@ 'steel'::text)",
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "products_name_spgist",
+       "Startup Cost": 0,
+       "Total Cost": 4.21,
+       "Plan Rows": 9,
+       "Plan Width": 0,
+       "Disabled": false,
+       "Index Cond": "(name ^@ 'steel'::text)"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "RESET enable_seqscan;\nCREATE INDEX orders_at_btree ON orders (ordered_at);\nCREATE INDEX orders_at_brin ON orders USING brin (ordered_at) WITH (pages_per_range = 4);\nCREATE INDEX orders_at_hash ON orders USING hash (ordered_at);\nSELECT c.relname, pg_relation_size(c.oid) AS bytes FROM pg_class AS c\nWHERE c.relname IN ('orders', 'orders_at_btree', 'orders_at_brin', 'orders_at_hash')\nORDER BY bytes DESC",
+   "note": "back to normal, and orders.ordered_at (stored in time order) indexed three ways. the BRIN index summarizes every 4 pages (the default, 128, is more than the whole table).",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"relname","type":"name"},{"name":"bytes","type":"int8"}],
+    "data": [["orders","679936"],["orders_at_hash","540672"],["orders_at_btree","245760"],["orders_at_brin","24576"]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "DROP INDEX orders_at_btree;\nDROP INDEX orders_at_hash",
+   "note": "drop the other two, so the month query has only the BRIN index to use.",
+   "status": "ok",
+   "result": {"command":"DROP INDEX","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM orders WHERE ordered_at >= '2026-03-01' AND ordered_at < '2026-04-01'",
+   "note": "a month of orders through the BRIN index: it can only say which block ranges might match, so every row in them is rechecked.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Plain",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 111.64,
+     "Total Cost": 111.65,
+     "Plan Rows": 1,
+     "Plan Width": 8,
+     "Actual Rows": 1,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 13,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "orders",
+       "Alias": "orders",
+       "Startup Cost": 12.22,
+       "Total Cost": 109.5,
+       "Plan Rows": 858,
+       "Plan Width": 0,
+       "Actual Rows": 859,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Recheck Cond": "((ordered_at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (ordered_at < '2026-04-01 00:00:00+00'::timestamp with time zone))",
+       "Rows Removed by Index Recheck": 101,
+       "Exact Heap Blocks": 0,
+       "Lossy Heap Blocks": 8,
+       "Shared Hit Blocks": 13,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "orders_at_brin",
+         "Startup Cost": 0,
+         "Total Cost": 12,
+         "Plan Rows": 952,
+         "Plan Width": 0,
+         "Actual Rows": 80,
+         "Actual Loops": 1,
+         "Disabled": false,
+         "Index Cond": "((ordered_at >= '2026-03-01 00:00:00+00'::timestamp with time zone) AND (ordered_at < '2026-04-01 00:00:00+00'::timestamp with time zone))",
+         "Index Searches": 1,
+         "Shared Hit Blocks": 5,
+         "Shared Read Blocks": 0,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 24,
+     "Shared Read Blocks": 1,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  }
+ ],
+ "db": "shop"
+}

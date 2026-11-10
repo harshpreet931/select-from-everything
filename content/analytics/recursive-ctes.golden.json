@@ -1,0 +1,291 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5d18cdcde5c9a2e9": {
+      "db": "org",
+      "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, title, 0 AS depth        -- the anchor: where to start\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, e.title, t.depth + 1 -- the recursive part: one step further\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n)\nSELECT id, name, title, depth\nFROM team\nORDER BY depth, id;",
+      "statements": [
+        {
+          "tag": "SELECT 13",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["title", "text", 25],
+            ["depth", "int4", 23]
+          ],
+          "rowCount": 13,
+          "digest": "27d9ecf2e218167f",
+          "rows": [
+            ["14", "Ama Rossi", "manager", "0"],
+            ["41", "Olivia Nguyen", "lead", "1"],
+            ["42", "Ananya Smith", "lead", "1"],
+            ["43", "Lucas Novak", "lead", "1"],
+            ["122", "Diego Wong", "associate", "2"],
+            ["123", "Jonas Petrov", "associate", "2"],
+            ["124", "Emma Dubois", "associate", "2"],
+            ["125", "Mei Nguyen", "associate", "2"],
+            ["126", "Clara Garcia", "associate", "2"],
+            ["127", "Valentina Haddad", "associate", "2"],
+            ["128", "Ama Haddad", "associate", "2"],
+            ["129", "Ivan Hansen", "associate", "2"],
+            ["130", "Ivan Ahmed", "associate", "2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3c800f30935eeb04": {
+      "db": "org",
+      "sql": "WITH RECURSIVE chain AS (\n  SELECT id, name, title, manager_id FROM employees WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, e.title, e.manager_id\n  FROM employees AS e\n  JOIN chain AS c ON e.id = c.manager_id\n)\nSELECT id, name, title\nFROM chain\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["title", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "0c38c94092835c46",
+          "rows": [
+            ["1", "Fatima Lopez", "ceo"],
+            ["2", "Olivia Lopez", "vp"],
+            ["5", "Rahul Singh", "director"],
+            ["14", "Ama Rossi", "manager"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "23c9e9827fd1824f": {
+      "db": "school",
+      "sql": "WITH RECURSIVE needs AS (\n  SELECT requires_code AS code FROM prerequisites WHERE course_code = 'CS401'\n  UNION ALL\n  SELECT p.requires_code FROM prerequisites AS p JOIN needs AS n ON p.course_code = n.code\n)\nSELECT code, count(*) AS reached FROM needs GROUP BY code ORDER BY code;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25],
+            ["reached", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "839acf05d97ad880",
+          "rows": [
+            ["CS101", "1"],
+            ["CS201", "1"],
+            ["CS301", "1"],
+            ["MATH101", "2"],
+            ["MATH201", "1"],
+            ["MATH301", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "10faf026c0b4d55f": {
+      "db": "school",
+      "sql": "WITH RECURSIVE needs AS (\n  SELECT requires_code AS code FROM prerequisites WHERE course_code = 'CS401'\n  UNION\n  SELECT p.requires_code FROM prerequisites AS p JOIN needs AS n ON p.course_code = n.code\n)\nSELECT code FROM needs ORDER BY code;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25]
+          ],
+          "rowCount": 6,
+          "digest": "447e128d35116e78",
+          "rows": [
+            ["CS101"],
+            ["CS201"],
+            ["CS301"],
+            ["MATH101"],
+            ["MATH201"],
+            ["MATH301"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7ba400f16f4b1380": {
+      "db": "org",
+      "sql": "CREATE TEMP TABLE chart AS\nSELECT id, name, manager_id FROM employees WHERE id IN (1, 2, 5, 14);\nUPDATE chart SET manager_id = 14 WHERE id = 1;\n\nSELECT id, name, manager_id FROM chart ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "f34246a33c6107cf"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["manager_id", "int4", 23]
+          ],
+          "rowCount": 4,
+          "digest": "eaf5eeb9870bdaa8",
+          "rows": [
+            ["1", "Fatima Lopez", "14"],
+            ["2", "Olivia Lopez", "1"],
+            ["5", "Rahul Singh", "2"],
+            ["14", "Ama Rossi", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "01af1e7d37705234": {
+      "db": "org",
+      "sql": "WITH RECURSIVE up AS (\n  SELECT id, name, manager_id, 0 AS steps FROM chart WHERE id = 14\n  UNION ALL\n  SELECT c.id, c.name, c.manager_id, u.steps + 1\n  FROM chart AS c JOIN up AS u ON c.id = u.manager_id\n  WHERE u.steps < 9\n)\nSELECT id, name, steps FROM up ORDER BY steps;",
+      "statements": [
+        {
+          "tag": "SELECT 10",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["steps", "int4", 23]
+          ],
+          "rowCount": 10,
+          "digest": "d21efafebd518f54",
+          "rows": [
+            ["14", "Ama Rossi", "0"],
+            ["5", "Rahul Singh", "1"],
+            ["2", "Olivia Lopez", "2"],
+            ["1", "Fatima Lopez", "3"],
+            ["14", "Ama Rossi", "4"],
+            ["5", "Rahul Singh", "5"],
+            ["2", "Olivia Lopez", "6"],
+            ["1", "Fatima Lopez", "7"],
+            ["14", "Ama Rossi", "8"],
+            ["5", "Rahul Singh", "9"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d511764cbd530c1f": {
+      "db": "org",
+      "sql": "WITH RECURSIVE up AS (\n  SELECT id, name, manager_id FROM chart WHERE id = 14\n  UNION ALL\n  SELECT c.id, c.name, c.manager_id\n  FROM chart AS c JOIN up AS u ON c.id = u.manager_id\n) CYCLE id SET looped USING path\nSELECT id, name, looped, path FROM up ORDER BY path;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["looped", "bool", 16],
+            ["path", "_record", 2287]
+          ],
+          "rowCount": 5,
+          "digest": "f6c72808abd0382d",
+          "rows": [
+            ["14", "Ama Rossi", "f", "{(14)}"],
+            ["5", "Rahul Singh", "f", "{(14),(5)}"],
+            ["2", "Olivia Lopez", "f", "{(14),(5),(2)}"],
+            ["1", "Fatima Lopez", "f", "{(14),(5),(2),(1)}"],
+            ["14", "Ama Rossi", "t", "{(14),(5),(2),(1),(14)}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b742b3afd758ecc0": {
+      "db": "org",
+      "sql": "WITH RECURSIVE team AS (\n  SELECT id, salary FROM employees WHERE id = 14\n  UNION ALL\n  SELECT e.id, sum(e.salary) FROM employees AS e JOIN team AS t ON e.manager_id = t.id GROUP BY e.id\n)\nSELECT * FROM team;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P19",
+            "message": "aggregate functions are not allowed in a recursive query's recursive term",
+            "position": 102
+          },
+          "digest": "ae19fcf3b07dbd3b"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P19",
+        "message": "aggregate functions are not allowed in a recursive query's recursive term",
+        "position": 102,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "da9f01c6cb34d30a": {
+      "db": "org",
+      "sql": "WITH RECURSIVE team AS (\n  SELECT id, salary FROM employees WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.salary FROM employees AS e JOIN team AS t ON e.manager_id = t.id\n)\nSELECT count(*) AS people, sum(salary) AS payroll FROM team;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["people", "int8", 20],
+            ["payroll", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "d90b5da0fa59ccdb",
+          "rows": [
+            ["13", "1063000.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e2126563dd835556": {
+      "db": "org",
+      "sql": "EXPLAIN (COSTS OFF)\nWITH RECURSIVE team AS (\n  SELECT id, 0 AS depth FROM employees WHERE id = 14\n  UNION ALL\n  SELECT e.id, t.depth + 1 FROM employees AS e JOIN team AS t ON e.manager_id = t.id\n)\nSELECT * FROM team;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "62285419631a9cfe",
+          "rows": [
+            ["CTE Scan on team"],
+            ["  CTE team"],
+            ["    ->  Recursive Union"],
+            ["          ->  Index Only Scan using employees_pkey on employees"],
+            ["                Index Cond: (id = 14)"],
+            ["          ->  Hash Join"],
+            ["                Hash Cond: (e.manager_id = t.id)"],
+            ["                ->  Seq Scan on employees e"],
+            ["                ->  Hash"],
+            ["                      ->  WorkTable Scan on team t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

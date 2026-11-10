@@ -1,0 +1,423 @@
+{
+ "v": 1,
+ "scenario": "content/indexes/traces/skip-scan.scenario.sql",
+ "title": "b = 5 on an index on (a, b): with 4 values of a, and with 3,000",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "few": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"a","type":"int4"},{"name":"b","type":"int4"},{"name":"pad","type":"text"}]
+  },
+  "few_a_b": {"kind":"index","am":"btree","columns":[{"name":"a","type":"int4"},{"name":"b","type":"int4"}],"on":"few"},
+  "many": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"a","type":"int4"},{"name":"b","type":"int4"},{"name":"pad","type":"text"}]
+  },
+  "many_a_b": {"kind":"index","am":"btree","columns":[{"name":"a","type":"int4"},{"name":"b","type":"int4"}],"on":"many"},
+  "orders_status_customer": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"status","type":"text"},{"name":"customer_id","type":"int4"}],
+   "on": "orders"
+  }
+ },
+ "base": {"xid":807,"lsn":41457544},
+ "setup": "CREATE TABLE few (a int NOT NULL, b int NOT NULL, pad text NOT NULL);\nINSERT INTO few SELECT i % 4, i / 4, repeat('x', 40) FROM generate_series(0, 29999) AS i ORDER BY i;\nCREATE INDEX few_a_b ON few (a, b);\nCREATE TABLE many (a int NOT NULL, b int NOT NULL, pad text NOT NULL);\nINSERT INTO many SELECT i % 3000, i / 3000, repeat('x', 40) FROM generate_series(0, 29999) AS i ORDER BY i;\nCREATE INDEX many_a_b ON many (a, b);\nVACUUM ANALYZE few, many;\nCREATE INDEX orders_status_customer ON orders (status, customer_id);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT * FROM few WHERE b = 5",
+   "note": "4 values of a: postgres hops. one search for each value of a, plus one.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "few",
+     "Alias": "few",
+     "Startup Cost": 21.48,
+     "Total Cost": 36.16,
+     "Plan Rows": 4,
+     "Plan Width": 49,
+     "Actual Rows": 4,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Recheck Cond": "(b = 5)",
+     "Rows Removed by Index Recheck": 0,
+     "Exact Heap Blocks": 1,
+     "Lossy Heap Blocks": 0,
+     "Shared Hit Blocks": 8,
+     "Shared Read Blocks": 6,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "few_a_b",
+       "Startup Cost": 0,
+       "Total Cost": 21.48,
+       "Plan Rows": 4,
+       "Plan Width": 0,
+       "Actual Rows": 4,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Index Cond": "(b = 5)",
+       "Index Searches": 5,
+       "Shared Hit Blocks": 7,
+       "Shared Read Blocks": 6,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 12,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT * FROM many WHERE b = 5",
+   "note": "3,000 values of a: hopping would mean thousands of searches. postgres reads the table.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "many",
+     "Alias": "many",
+     "Startup Cost": 0,
+     "Total Cost": 685,
+     "Plan Rows": 3000,
+     "Plan Width": 49,
+     "Actual Rows": 3000,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Filter": "(b = 5)",
+     "Rows Removed by Filter": 27000,
+     "Shared Hit Blocks": 310,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 12,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SET enable_seqscan = off;\nSET enable_bitmapscan = off",
+   "note": "take the seq scan and bitmap scan away, to see the index scan postgres turned down.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT * FROM many WHERE b = 5",
+   "note": "with many values of a, the index scan doesn't hop. it reads the whole index from the first entry to the last.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "many_a_b",
+     "Relation Name": "many",
+     "Alias": "many",
+     "Startup Cost": 0.29,
+     "Total Cost": 1824.46,
+     "Plan Rows": 3000,
+     "Plan Width": 49,
+     "Actual Rows": 3000,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Index Cond": "(b = 5)",
+     "Rows Removed by Index Recheck": 0,
+     "Index Searches": 1,
+     "Shared Hit Blocks": 32,
+     "Shared Read Blocks": 83,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 0,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT * FROM few WHERE b = 5",
+   "note": "the same forced scan on few: it hops.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "few_a_b",
+     "Relation Name": "few",
+     "Alias": "few",
+     "Startup Cost": 0.29,
+     "Total Cost": 37.09,
+     "Plan Rows": 4,
+     "Plan Width": 49,
+     "Actual Rows": 4,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Index Cond": "(b = 5)",
+     "Rows Removed by Index Recheck": 0,
+     "Index Searches": 5,
+     "Shared Hit Blocks": 11,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 0,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "RESET enable_seqscan;\nRESET enable_bitmapscan",
+   "note": "back to normal.",
+   "status": "ok",
+   "result": {"command":"RESET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT id, status FROM orders WHERE customer_id = 42",
+   "note": "a real one: an index on (status, customer_id) and a lookup by customer alone. six statuses, four searches: the scan only goes back to the root when the next value it needs is not on the leaf page it is already reading.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "orders_status_customer",
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 0.29,
+     "Total Cost": 38.34,
+     "Plan Rows": 5,
+     "Plan Width": 13,
+     "Actual Rows": 7,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Index Cond": "(customer_id = 42)",
+     "Rows Removed by Index Recheck": 0,
+     "Index Searches": 4,
+     "Shared Hit Blocks": 12,
+     "Shared Read Blocks": 6,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 13,
+     "Shared Read Blocks": 2,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT 'few.a' AS col, count(DISTINCT a) AS n FROM few\nUNION ALL SELECT 'many.a', count(DISTINCT a) FROM many\nUNION ALL SELECT 'orders.status', count(DISTINCT status) FROM orders\nORDER BY col",
+   "note": "how many distinct values each leading column has.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"col","type":"text"},{"name":"n","type":"int8"}],
+    "data": [["few.a","4"],["many.a","3000"],["orders.status","6"]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT c.relname, pg_relation_size(c.oid) / 8192 AS pages\nFROM pg_class AS c WHERE c.relname IN ('few', 'many', 'few_a_b', 'many_a_b')\nORDER BY c.relname",
+   "note": "table and index sizes, in pages.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"relname","type":"name"},{"name":"pages","type":"int8"}],
+    "data": [["few","310"],["few_a_b","84"],["many","310"],["many_a_b","84"]]
+   }
+  }
+ ],
+ "db": "shop"
+}

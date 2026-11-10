@@ -1,0 +1,114 @@
+{
+ "v": 1,
+ "scenario": "content/index-internals/traces/churn-held.scenario.sql",
+ "title": "the same update churn, while another session holds an old snapshot",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "ch": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"a","type":"int4"},{"name":"b","type":"int4"}]
+  },
+  "ch_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"ch"},
+  "ch_a": {"kind":"index","am":"btree","columns":[{"name":"a","type":"int4"}],"on":"ch"},
+  "ch_b": {"kind":"index","am":"btree","columns":[{"name":"b","type":"int4"}],"on":"ch"}
+ },
+ "base": {"xid":761,"lsn":25897432},
+ "setup": "CREATE TABLE ch (id int PRIMARY KEY, a int, b int);\nCREATE INDEX ch_a ON ch (a);\nCREATE INDEX ch_b ON ch (b);\nINSERT INTO ch SELECT g, g, 0 FROM generate_series(1, 10000) AS g;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT count(*) FROM ch",
+   "note": "T2 opens a repeatable read transaction and reads once, which takes its snapshot. it stays open.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["10000"]]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nSELECT pg_relation_size('ch_pkey') / 8192 AS pkey, pg_relation_size('ch_a') / 8192 AS a, pg_relation_size('ch_b') / 8192 AS b",
+   "note": "pass 1: every row updated once, a tenth at a time. sizes in pages.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"pkey","type":"int8"},{"name":"a","type":"int8"},{"name":"b","type":"int8"}],
+    "data": [["57","57","18"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nSELECT pg_relation_size('ch_pkey') / 8192 AS pkey, pg_relation_size('ch_a') / 8192 AS a, pg_relation_size('ch_b') / 8192 AS b",
+   "note": "pass 2: every row updated once, a tenth at a time. sizes in pages.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"pkey","type":"int8"},{"name":"a","type":"int8"},{"name":"b","type":"int8"}],
+    "data": [["84","84","26"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nSELECT pg_relation_size('ch_pkey') / 8192 AS pkey, pg_relation_size('ch_a') / 8192 AS a, pg_relation_size('ch_b') / 8192 AS b",
+   "note": "pass 3: every row updated once, a tenth at a time. sizes in pages.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"pkey","type":"int8"},{"name":"a","type":"int8"},{"name":"b","type":"int8"}],
+    "data": [["84","84","34"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "UPDATE ch SET b = b + 1 WHERE id % 10 = 0;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 1;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 2;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 3;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 4;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 5;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 6;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 7;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 8;\nUPDATE ch SET b = b + 1 WHERE id % 10 = 9;\nSELECT pg_relation_size('ch_pkey') / 8192 AS pkey, pg_relation_size('ch_a') / 8192 AS a, pg_relation_size('ch_b') / 8192 AS b",
+   "note": "pass 4: every row updated once, a tenth at a time. sizes in pages.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"pkey","type":"int8"},{"name":"a","type":"int8"},{"name":"b","type":"int8"}],
+    "data": [["111","111","42"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 ends. the versions it was holding become removable.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]}
+  }
+ ]
+}

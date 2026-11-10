@@ -1,0 +1,145 @@
+import { BrinRanges } from "@/components/figures/index-internals/BrinRanges";
+import gold from "./brin.golden.json";
+
+{/* all numbers and both range strips come from this chapter's golden (PGlite): the
+    brin_page_items rows for the sorted and the shuffled table. */}
+
+export const stmts = (needle) => Object.values(gold.blocks).find((b) => b.sql.includes(needle)).statements;
+export const asRows = (st) => st.rows.map((r) => { const m = /\{(.*) \.\. (.*)\}/.exec(r[2]); return { blk: Number(r[1]), lo: m[1], hi: m[2] }; });
+export const sorted = asRows(stmts("brin_metapage_info")[1]);
+export const shuffledRows = asRows(stmts("CREATE TABLE shuffled").find((x) => x.columns?.[2]?.[0] === "value"));
+
+<InShort>
+a **BRIN** index (block range index) stores one tiny summary per **block range**, 128 table pages by default: for a plain column, just the **min and max** in those pages. a search reads the whole index (a few pages), keeps the ranges whose min..max could match, and reads every page in them. it's absurdly small, and it only works when the column's values follow the table's **physical order**, like the timestamps of an append-only log.
+</InShort>
+
+## the picture
+
+you know how [a b-tree](/learn/index-internals/b-plus-trees) has one entry per row? BRIN has one entry per hundred-odd *pages*. it doesn't point at rows at all. it just says "somewhere in pages 512 to 639, the values go from February 25th to March 11th".
+
+think of a shelf of notebooks, one per fortnight, with the dates written on each spine. to find March 1st you don't need an index of every entry: you read the spines and open one notebook. that only works because the notebooks were filled in order. if someone had shuffled every page across all the notebooks, every spine would say "January to May", and you'd have to open them all.
+
+here are both, from a real table of 200,000 readings, one a minute, inserted in time order, and a copy of the same rows in a shuffled order:
+
+<Figure caption={<>the block ranges of two BRIN indexes on <code>at</code>, one bar per 128-page range from its min to its max. a query for one day (the <C k="hot">hot</C> band) only has to read the ranges it overlaps: one on the sorted table, every one on the shuffled copy.</>}>
+<BrinRanges rows={sorted} query={["2026-03-01", "2026-03-02"]} label="readings, inserted in time order" ppr={128} />
+<BrinRanges rows={shuffledRows} query={["2026-03-01", "2026-03-02"]} label="shuffled, the same rows in hash order" ppr={128} />
+<div className="text-right text-[10px] text-faint">real output, postgres 18.6 (PGlite 0.5.12) · the run blocks below</div>
+</Figure>
+
+## the whole index is three pages
+
+```sql run ext=pageinspect session=br
+SET TimeZone = 'UTC';
+CREATE TABLE readings (id int, at timestamptz, temp int);
+INSERT INTO readings
+SELECT g, timestamptz '2026-01-01 00:00+00' + g * interval '1 minute', abs(hashint4(g)) % 40
+FROM generate_series(1, 200000) AS g;
+CREATE INDEX readings_brin ON readings USING brin (at);
+CREATE INDEX readings_btree ON readings (at);
+ANALYZE readings;
+SELECT pg_relation_size('readings') / 8192 AS table_pages,
+       pg_relation_size('readings_brin') / 8192 AS brin_pages,
+       pg_relation_size('readings_btree') / 8192 AS btree_pages;
+```
+
+<Figure caption={<>the table and its two indexes on <code>at</code>, in 8 KB pages, from the run block above. log scale: otherwise the BRIN bar is invisible.</>}>
+<Bars data={[
+  { label: "the table", value: 1274, tone: "ref" },
+  { label: "b-tree on at", value: 551, tone: "hot" },
+  { label: "BRIN on at", value: 3, tone: "live" },
+]} unit="pages" log />
+</Figure>
+
+1,274 table pages, a 551-page b-tree, and a 3-page BRIN. the b-tree has an entry per row; BRIN has an entry per 128 pages, so 10 entries. page 0 is the metapage, page 1 the **range map** (`revmap`, one pointer per range to its summary), page 2 the summaries themselves:
+
+```sql run session=br
+SELECT pagesperrange, lastrevmappage FROM brin_metapage_info(get_raw_page('readings_brin', 0));
+SELECT itemoffset, blknum, value
+FROM brin_page_items(get_raw_page('readings_brin', 2), 'readings_brin')
+ORDER BY blknum;
+```
+
+ten ranges starting at block 0, 128, 256 … each with the earliest and latest `at` in its pages. because the rows went in in time order, the ranges are back to back: each one starts a minute after the last one ended.
+
+## a lossy bitmap
+
+```sql run session=br
+DROP INDEX readings_btree;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM readings WHERE at >= '2026-03-01' AND at < '2026-03-02';
+```
+
+that's every BRIN scan. the **Bitmap Index Scan** reads the index (5 buffers) and marks whole ranges. its 1,280 "rows" isn't a count: BRIN can't count rows, so it reports ten for every page it marked, 128 × 10. the bitmap is **lossy**: it knows pages, not rows. so the Bitmap Heap Scan reads all 128 pages of the one matching range (`Heap Blocks: lossy=128`) and rechecks every row in them: 1,440 rows for March 1st (one per minute), 18,656 rows removed by the recheck. 133 page reads to find a day in a 1,274-page table, with a 3-page index. ([lossy bitmaps](/learn/execution/scans) in general.)
+
+<Predict question="same query, same BRIN index, but on a copy of the table with the rows in random order. what happens?" options={["the same 128 pages", "every page of the table", "an error: the index is invalid"]} answer={1}>
+```sql
+SELECT count(*) FROM shuffled WHERE at >= '2026-03-01' AND at < '2026-03-02';
+```
+<Explain>
+every page. each 128-page range now holds rows from all over the five months, so every range's min..max covers March 1st, and all ten match. the index is valid and correct; it just can't rule anything out. the planner knows, from the column's correlation, and picks a seq scan instead.
+</Explain>
+</Predict>
+
+## physically sorted, or useless
+
+```sql run session=br
+CREATE TABLE shuffled AS SELECT * FROM readings ORDER BY hashint4(id);
+CREATE INDEX shuffled_brin ON shuffled USING brin (at);
+ALTER TABLE shuffled ALTER COLUMN at SET STATISTICS 10000;
+ALTER TABLE readings ALTER COLUMN at SET STATISTICS 10000;
+ANALYZE shuffled, readings;
+SELECT tablename, round(correlation::numeric, 2) AS correlation
+FROM pg_stats WHERE attname = 'at' AND tablename IN ('readings', 'shuffled')
+ORDER BY tablename;
+SELECT itemoffset, blknum, value
+FROM brin_page_items(get_raw_page('shuffled_brin', 2), 'shuffled_brin')
+ORDER BY blknum;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM shuffled WHERE at >= '2026-03-01' AND at < '2026-03-02';
+SET enable_seqscan = off;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM shuffled WHERE at >= '2026-03-01' AND at < '2026-03-02';
+RESET enable_seqscan;
+```
+
+`correlation` in [pg_stats](/learn/optimizer/statistics) measures how well a column's order matches the table's physical order: 1.00 for the readings, 0.00 for the shuffled copy. the shuffled index's ranges all run from January 1st to May 19th. the planner reads that correlation and chooses a seq scan; forced to use the index, it marks all 1,280 pages lossy and rechecks 198,560 rows to find the same 1,440.
+
+that's the whole rule: BRIN is for columns whose values grow with the table. timestamps on an append-only table, a serial id, a date the rows arrived in. it goes bad slowly as updates and deletes move rows around (an UPDATE writes the new version wherever there's room, maybe in an old range, and that range's max jumps forward), and that's the honest trade for its size.
+
+## pages_per_range
+
+the 128 is a setting. smaller ranges are more precise, at the cost of a bigger index:
+
+```sql run session=br
+CREATE INDEX readings_brin16 ON readings USING brin (at) WITH (pages_per_range = 16);
+DROP INDEX readings_brin;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM readings WHERE at >= '2026-03-01' AND at < '2026-03-02';
+SELECT pg_relation_size('readings_brin16') / 8192 AS brin16_pages;
+```
+
+<Figure caption={<>pages the one-day query reads, by BRIN range size, from the run blocks above. both indexes are 3 pages: at this table size the summaries fit either way.</>}>
+<Bars data={[
+  { label: "pages_per_range 128", value: 128, tone: "hot" },
+  { label: "pages_per_range 16", value: 32, tone: "live" },
+]} unit="heap pages" />
+</Figure>
+
+with 16-page ranges the day spans two ranges, 32 pages, and the recheck throws away 3,584 rows instead of 18,656. the index is still 3 pages here. on a table of a billion rows it would be eight times bigger than the 128-page one and still tiny next to a b-tree.
+
+<Gotcha title="new pages aren't summarized yet">
+a range is summarized when the index is built, by VACUUM (or autovacuum), or by `brin_summarize_new_values()`. pages added since then belong to no summary, and every BRIN scan reads them all, just in case. on a fast-growing log table that's the newest, hottest part of the data. `CREATE INDEX … WITH (autosummarize = on)` asks autovacuum to summarize each range as soon as it fills.
+</Gotcha>
+
+<Deep title="more than min and max">
+the summary is up to the operator class. `minmax` is the default. `minmax_multi` <Since v={14} /> keeps several small min/max intervals per range, so a range with a few outliers doesn't become "everything". `bloom` <Since v={14} /> keeps a bloom filter of the values, for equality on data that isn't sorted but is clustered (the same few values per range): the filter says "definitely not in this range" or "maybe" ([bloom filters](/learn/index-internals/lsm-trees) have the math). `inclusion` stores the bounding box for ranges, `inet` and geometry. and since postgres 16, an UPDATE that only changes BRIN-indexed columns can still be [HOT](/learn/mvcc/hot-updates).
+</Deep>
+
+<Keylines>
+- BRIN keeps one summary per block range: by default the min and max of 128 pages.
+- a search keeps the ranges that could match, and reads every page in them: a lossy bitmap, then a recheck.
+- it's tiny: 3 pages against a 551-page b-tree on the same 200,000 rows.
+- it only helps when values follow physical order. correlation 1.00: one range of ten; 0.00: all of them.
+- smaller pages_per_range is more precise; unsummarized new pages are always read.
+</Keylines>

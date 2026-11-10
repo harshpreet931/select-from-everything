@@ -1,0 +1,86 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "103927528d340fe3": {
+      "db": "events",
+      "sql": "SELECT current_setting('max_worker_processes') AS max_worker_processes,\n       current_setting('max_parallel_workers') AS max_parallel_workers;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["max_worker_processes", "text", 25],
+            ["max_parallel_workers", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "c08744943a97c372",
+          "rows": [
+            ["0", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f9ddb703f8c14ce1": {
+      "db": "events",
+      "sql": "SET max_parallel_workers_per_gather = 4;\nSET min_parallel_table_scan_size = 0;\nSET parallel_setup_cost = 0;\nSET parallel_tuple_cost = 0;\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM events;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1e914ba1b0835f7f"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8c303177f03a58ae"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2ef94b6eaa3e69e6",
+          "rows": [
+            ["Finalize Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared read=335"],
+            ["  ->  Gather (actual rows=1.00 loops=1)"],
+            ["        Workers Planned: 4"],
+            ["        Workers Launched: 0"],
+            ["        Buffers: shared read=335"],
+            ["        ->  Partial Aggregate (actual rows=1.00 loops=1)"],
+            ["              Buffers: shared read=335"],
+            ["              ->  Parallel Seq Scan on events (actual rows=25000.00 loops=1)"],
+            ["                    Buffers: shared read=335"],
+            ["Planning:"],
+            ["  Buffers: shared hit=28 read=5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

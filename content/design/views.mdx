@@ -1,0 +1,121 @@
+import { chainRun, goldenAt } from "@/components/figures/design/runs";
+import { prov } from "@/lib/db/captured";
+import views from "./traces/views.pgtrace.json";
+import golden from "./views.golden.json";
+
+{/* the three RunPicks read traces/views.scenario.sql (PGlite, one session). the plan reads this
+    chapter's own golden, so it's the plan the run button prints. */}
+
+export const escapes = {
+  "plain view": chainRun(views, [1, 2]),
+  "WITH CHECK OPTION, insert": chainRun(views, [3]),
+  "WITH CHECK OPTION, update": chainRun(views, [4]),
+};
+export const rights = {
+  "false (the default)": chainRun(views, [6]),
+  "true": chainRun(views, [7]),
+};
+export const stale = {
+  "the materialized view": chainRun(views, [9, 10]),
+  "the live query": chainRun(views, [11]),
+  "REFRESH CONCURRENTLY, no index": chainRun(views, [12]),
+  "REFRESH CONCURRENTLY, unique index": chainRun(views, [13, 14]),
+};
+export const plan = JSON.parse(goldenAt(golden, "FORMAT JSON", 1).rows[0][0]);
+export const source = prov(views);
+
+<InShort>
+a **view** is a named query. it stores no rows: when you select from it, postgres pastes its definition into your query (the **rewriter**), and the planner optimizes the whole thing as if you'd typed it. simple views are **updatable**, and **WITH CHECK OPTION** stops writes that would fall outside the view.
+
+a view runs with its **owner's** rights unless it's `security_invoker` (postgres 15). a **materialized view** does store rows: a snapshot of the query, stale until you **REFRESH** it, and `REFRESH ... CONCURRENTLY` needs a unique index.
+</InShort>
+
+## the picture
+
+you know the query everyone copies from the wiki, with the four joins and the "WHERE NOT deleted"? a view gives it a name, so there's one copy, and changing the definition changes it for everyone.
+
+think of a saved search in your email (a view): it holds no emails, it re-runs every time you click it, so it's always current. a materialized view is a printout of the search results: instant to read, and wrong the moment a new email arrives, until you print it again.
+
+```sql run db=shop session=v title="order_summary.sql"
+CREATE VIEW order_summary AS
+SELECT o.id, o.status, o.ordered_at, c.name AS customer, c.city
+FROM orders AS o
+LEFT JOIN customers AS c ON c.id = o.customer_id;
+
+SELECT id, status, customer FROM order_summary WHERE id = 5;
+```
+
+<Figure wide caption={<>the plan for <code>SELECT id, status FROM order_summary WHERE id = 5</code>. the view is gone: its definition was pasted in, the WHERE moved down to an index scan on orders, and the LEFT JOIN to customers was <C k="live">removed</C> entirely, because no customer column is used and customers.id is unique.</>}>
+<PlanTree plan={plan} show={["est"]} />
+</Figure>
+
+```sql run session=v
+SELECT id, status FROM order_summary WHERE id = 5;
+
+EXPLAIN (FORMAT JSON) SELECT id, status FROM order_summary WHERE id = 5;
+```
+
+that's the whole performance story of plain views: there isn't one. a view costs what its expanded query costs, no more (the planner can push filters into it and drop unused joins) and no less (nothing is cached). the rewriting step is in [the life of a query](/learn/execution/query-lifecycle); the stored definition is a rule in pg_rewrite, and `pg_get_viewdef('order_summary')` prints it back.
+
+two things a view pins down: its column list is fixed when it's created (`SELECT *` in a view expands to the columns that existed then), and you can't drop or retype a column a view depends on without dropping the view first.
+
+## writing through a view
+
+a view over one table, with no aggregates, DISTINCT, GROUP BY, set operations or window functions, is **automatically updatable**: INSERT, UPDATE and DELETE on it become writes on the base table. that's how a view can be an API: the app sees `cheap`, and the table can change underneath.
+
+the surprise is that the view's WHERE doesn't limit what you write:
+
+<Figure wide caption={<>a view of products under 10.00. insert a 30.00 product through the plain view: it goes into products, and the view <C k="dead">can&apos;t see</C> the row it just inserted. WITH CHECK OPTION refuses any insert or update whose result the view wouldn&apos;t show, with SQLSTATE 44000.</>}>
+<RunPick options={[{ key: "view", values: ["plain view", "WITH CHECK OPTION, insert", "WITH CHECK OPTION, update"] }]} runs={escapes} file="cheap.sql" trace={source} />
+</Figure>
+
+`WITH CHECK OPTION` is `CASCADED` by default: the row must also satisfy the conditions of any view this one is built on. `LOCAL` checks only this view's own WHERE. for views that aren't automatically updatable (a join, an aggregate), an `INSTEAD OF` trigger can define what a write means.
+
+<Predict options={["the row is inserted", "an error", "nothing happens"]} answer={0}>
+```sql
+CREATE VIEW cheap AS
+  SELECT id, name, price FROM products WHERE price < 10;
+INSERT INTO cheap VALUES (4, 'tea chest', 30.00);
+```
+<Explain>
+the row is inserted, into products. the view's WHERE filters what you read through it, not what you write. without WITH CHECK OPTION, a view used to restrict an app ("it can only touch cheap products") can create, or update rows into, things it can't see.
+</Explain>
+</Predict>
+
+## whose rights does a view use?
+
+by default, a view accesses its tables with the rights of the **view's owner**. that's a feature: grant a role SELECT on a view that shows some columns, and it can read those columns without any right on the table. `security_invoker = true` <Since v={15} /> flips it: the tables are checked against the user running the query.
+
+<Figure wide caption={<>a clerk role with SELECT on two views of products, and no right on products itself. the default view reads products as its owner, so it works. the security_invoker view checks the clerk, and <C k="dead">fails</C>. real, with SET ROLE in this page&apos;s engine.</>}>
+<RunPick options={[{ key: "security_invoker", values: ["false (the default)", "true"] }]} runs={rights} file="price_list.sql" trace={source} />
+</Figure>
+
+the default is also a trap with [row-level security](/learn/design/schemas-roles-and-rls): RLS policies on the base table are checked against the view owner, often the table's owner, who bypasses them. a security_invoker view applies the caller's policies, which is usually what you meant.
+
+## materialized views
+
+`CREATE MATERIALIZED VIEW` runs the query once and stores the rows in a real table. reading it is reading that table, indexes and all. nothing keeps it current:
+
+<Figure wide caption={<>revenue per product, as a materialized view, after three teapots were ordered. the materialized view is <C k="dead">stale</C>: no teapot. the live query sees it. REFRESH ... CONCURRENTLY fails without a unique index, and works with one.</>}>
+<RunPick options={[{ key: "read", values: ["the materialized view", "the live query", "REFRESH CONCURRENTLY, no index", "REFRESH CONCURRENTLY, unique index"] }]} runs={stale} file="revenue.sql" trace={source} />
+</Figure>
+
+plain `REFRESH MATERIALIZED VIEW` recomputes the whole thing and swaps it in under an ACCESS EXCLUSIVE lock: readers wait until it's done. `CONCURRENTLY` computes the new result on the side, diffs it against the old one, and applies the difference with ordinary inserts, updates and deletes, so readers keep reading. to match old rows to new ones it needs a unique index on plain columns (no WHERE clause) covering all rows. it's slower than a plain refresh, and two refreshes of one view can't run at once.
+
+when to reach for one: a dashboard or report over a big aggregate that can be minutes old, refreshed by a scheduler (pg_cron, or the app). when not to: anything that has to be right at commit, where a [trigger-kept summary](/learn/design/denormalization) is the tool. postgres has no incremental refresh built in; every refresh reruns the whole query.
+
+<Gotcha title="a view on a view on a view">
+views compose, and the planner flattens them, so stacking is free until it isn't: a view that joins five tables, used by a view that only needs one of them, still joins all five unless the planner can prove the joins don't change the result (LEFT JOIN to a unique key, as in the figure). when a simple query against a view is slow, EXPLAIN it and read what the view actually expands to.
+</Gotcha>
+
+<Interview q="what's the difference between a view and a materialized view?">
+a view is a stored query: no data, rewritten into each query that uses it and planned as a whole, so it's always current and costs what the expanded query costs. a materialized view stores the query's result as a table, so reads are fast and can use indexes, but it's only as fresh as the last REFRESH, and a plain refresh blocks readers. REFRESH ... CONCURRENTLY doesn't block readers but needs a unique index and does more work. bonus point: views run with the owner's privileges unless created with security_invoker (15+), which matters for row-level security.
+</Interview>
+
+<Keylines>
+- a view is a named query, pasted into yours by the rewriter; it stores nothing and costs what it expands to.
+- simple views are updatable, and their WHERE doesn't limit writes without WITH CHECK OPTION.
+- views run with the owner's rights; security_invoker (15+) uses the caller's.
+- a materialized view is a stored snapshot, stale until REFRESH.
+- REFRESH ... CONCURRENTLY keeps readers going, and needs a unique index.
+</Keylines>

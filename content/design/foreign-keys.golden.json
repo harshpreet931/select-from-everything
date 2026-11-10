@@ -1,0 +1,345 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "09b34e5b0973e120": {
+      "db": "empty",
+      "sql": "CREATE TABLE customers (id int PRIMARY KEY, name text NOT NULL);\nCREATE TABLE orders (\n  id          int PRIMARY KEY,\n  customer_id int NOT NULL REFERENCES customers (id),\n  total       numeric(8,2) NOT NULL\n);\nINSERT INTO customers VALUES (42, 'Ada Lovelace');\nINSERT INTO orders VALUES (1, 42, 22.00);",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6ac434e16f20dfb3": {
+      "db": "empty",
+      "sql": "INSERT INTO orders VALUES (2, 99, 5.00);\nDELETE FROM customers WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23503",
+            "message": "insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"",
+            "detail": "Key (customer_id)=(99) is not present in table \"customers\".",
+            "schema": "public",
+            "table": "orders",
+            "constraint": "orders_customer_id_fkey"
+          },
+          "digest": "c44d65ece804d8c0"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23503",
+            "message": "update or delete on table \"customers\" violates foreign key constraint \"orders_customer_id_fkey\" on table \"orders\"",
+            "detail": "Key (id)=(42) is still referenced from table \"orders\".",
+            "schema": "public",
+            "table": "orders",
+            "constraint": "orders_customer_id_fkey"
+          },
+          "digest": "4cd1acc4095d619a"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23503",
+        "message": "insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"",
+        "detail": "Key (customer_id)=(99) is not present in table \"customers\".",
+        "schema": "public",
+        "table": "orders",
+        "constraint": "orders_customer_id_fkey",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "4488a4f6e97d0c17": {
+      "db": "empty",
+      "sql": "CREATE TABLE parents (id int PRIMARY KEY);\nCREATE TABLE kids_no_action (parent_id int REFERENCES parents DEFERRABLE INITIALLY DEFERRED);\nCREATE TABLE kids_restrict  (parent_id int REFERENCES parents ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED);\nINSERT INTO parents VALUES (1), (2);\nINSERT INTO kids_no_action VALUES (1);\nINSERT INTO kids_restrict VALUES (2);\n\nBEGIN;\nDELETE FROM parents WHERE id = 1;   -- NO ACTION, deferred: allowed for now\nINSERT INTO parents VALUES (1);     -- and fixed before COMMIT\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "01f7a9f15b1055bd"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e50818625cce39de"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "867d7ae10678d896"
+        },
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ad74a3fda10d3f8a"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e06b575e091ea8a5"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "711afb71f53f35b8"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8c4b7de13483916c": {
+      "db": "empty",
+      "sql": "BEGIN;\nDELETE FROM parents WHERE id = 2;   -- RESTRICT ignores the deferral",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23001",
+            "message": "update or delete on table \"parents\" violates RESTRICT setting of foreign key constraint \"kids_restrict_parent_id_fkey\" on table \"kids_restrict\"",
+            "detail": "Key (id)=(2) is referenced from table \"kids_restrict\".",
+            "schema": "public",
+            "table": "kids_restrict",
+            "constraint": "kids_restrict_parent_id_fkey"
+          },
+          "digest": "5562273fc7e6dc9f"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23001",
+        "message": "update or delete on table \"parents\" violates RESTRICT setting of foreign key constraint \"kids_restrict_parent_id_fkey\" on table \"kids_restrict\"",
+        "detail": "Key (id)=(2) is referenced from table \"kids_restrict\".",
+        "schema": "public",
+        "table": "kids_restrict",
+        "constraint": "kids_restrict_parent_id_fkey",
+        "statement": 1
+      },
+      "txn": "E"
+    },
+    "4e8eac24e2bc44bd": {
+      "db": "empty",
+      "sql": "CREATE TABLE people (id int PRIMARY KEY, buddy_id int NOT NULL REFERENCES people DEFERRABLE INITIALLY DEFERRED);\nBEGIN;\nINSERT INTO people VALUES (1, 2);\nINSERT INTO people VALUES (2, 1);\nCOMMIT;\nSELECT id, buddy_id FROM people ORDER BY id;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5693d3fc01d98245"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "753270741c360f16"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["buddy_id", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "91e3764fa8969254",
+          "rows": [
+            ["1", "2"],
+            ["2", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "eadfcc31f9dc3be2": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nDELETE FROM customers WHERE id IN (7, 475, 518, 549, 557, 622, 629, 730, 756, 772);",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "9f2ed4c411fecabd",
+          "rows": [
+            ["Delete on customers (actual rows=0.00 loops=1)"],
+            ["  ->  Index Scan using customers_pkey on customers (actual rows=10.00 loops=1)"],
+            ["        Index Cond: (id = ANY ('{7,475,518,549,557,622,629,730,756,772}'::integer[]))"],
+            ["        Index Searches: 3"],
+            ["Trigger for constraint orders_customer_id_fkey: calls=10"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "dcfec66c5d57117b": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT 1 FROM ONLY orders AS x WHERE customer_id = 772 FOR KEY SHARE OF x;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ff817fd2e04f2f5f",
+          "rows": [
+            ["LockRows (actual rows=0.00 loops=1)"],
+            ["  ->  Seq Scan on orders x (actual rows=0.00 loops=1)"],
+            ["        Filter: (customer_id = 772)"],
+            ["        Rows Removed by Filter: 10000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "27c6d037e43283e9": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_customer_id_idx ON orders (customer_id);\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT 1 FROM ONLY orders AS x WHERE customer_id = 772 FOR KEY SHARE OF x;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e1bbc82702eef2ef",
+          "rows": [
+            ["LockRows (actual rows=0.00 loops=1)"],
+            ["  ->  Bitmap Heap Scan on orders x (actual rows=0.00 loops=1)"],
+            ["        Recheck Cond: (customer_id = 772)"],
+            ["        ->  Bitmap Index Scan on orders_customer_id_idx (actual rows=0.00 loops=1)"],
+            ["              Index Cond: (customer_id = 772)"],
+            ["              Index Searches: 1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

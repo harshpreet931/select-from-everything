@@ -1,0 +1,1328 @@
+{
+ "v": 1,
+ "scenario": "content/mvcc/traces/hot-chain.scenario.sql",
+ "title": "two HOT updates and one that isn't, on a nearly full page, then a read that prunes and a VACUUM",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"qty","type":"int4"},
+    {"name":"note","type":"text"}
+   ]
+  },
+  "items_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"items"},
+  "items_sku": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"items"}
+ },
+ "base": {"xid":761,"lsn":23228816},
+ "setup": "CREATE TABLE items (\n  id   int PRIMARY KEY,\n  sku  text NOT NULL,\n  qty  int NOT NULL,\n  note text\n);\nCREATE INDEX items_sku ON items (sku);\nINSERT INTO items VALUES (1, 'A-1', 10, NULL), (2, 'A-2', 10, NULL);\nINSERT INTO items SELECT g, 'F-' || g, 0, repeat('x', 1144) FROM generate_series(3, 8) AS g ORDER BY g;\nVACUUM items;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "",
+   "note": "the page as loaded: two small rows and six big ones. 952 bytes free.",
+   "status": "ok",
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "items": [
+     {
+      "rel": "items",
+      "block": 0,
+      "size": 8192,
+      "lower": 56,
+      "upper": 1008,
+      "special": 8192,
+      "lsn": 23082952,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2307,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","sku":"A-1","qty":"10","note":null}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2307,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","sku":"A-2","qty":"10","note":null}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 6928,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","sku":"F-3","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 5744,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","sku":"F-4","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 5,
+        "lpFlags": "normal",
+        "off": 4560,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,5],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"5","sku":"F-5","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 6,
+        "lpFlags": "normal",
+        "off": 3376,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,6],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"6","sku":"F-6","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 7,
+        "lpFlags": "normal",
+        "off": 2192,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,7],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"7","sku":"F-7","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 8,
+        "lpFlags": "normal",
+        "off": 1008,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,8],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"8","sku":"F-8","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "items_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false},
+        {"off":4,"key":"4","tid":[0,4],"dead":false},
+        {"off":5,"key":"5","tid":[0,5],"dead":false},
+        {"off":6,"key":"6","tid":[0,6],"dead":false},
+        {"off":7,"key":"7","tid":[0,7],"dead":false},
+        {"off":8,"key":"8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    },
+    "items_sku": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"A-1","tid":[0,1],"dead":false},
+        {"off":2,"key":"A-2","tid":[0,2],"dead":false},
+        {"off":3,"key":"F-3","tid":[0,3],"dead":false},
+        {"off":4,"key":"F-4","tid":[0,4],"dead":false},
+        {"off":5,"key":"F-5","tid":[0,5],"dead":false},
+        {"off":6,"key":"F-6","tid":[0,6],"dead":false},
+        {"off":7,"key":"F-7","tid":[0,7],"dead":false},
+        {"off":8,"key":"F-8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "xact": {"759":"committed","760":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "UPDATE items SET qty = qty - 1 WHERE id = 1",
+   "note": "change qty, a column no index covers. the new version fits on the same page, so the update is HOT: no index hears about it.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "items": [
+     {
+      "rel": "items",
+      "block": 0,
+      "size": 8192,
+      "lower": 60,
+      "upper": 968,
+      "special": 8192,
+      "lsn": 23228896,
+      "pruneXid": 761,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 761,
+        "ctid": [0,9],
+        "infomask": 259,
+        "infomask2": 16388,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","sku":"A-1","qty":"10","note":null}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2307,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","sku":"A-2","qty":"10","note":null}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 6928,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","sku":"F-3","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 5744,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","sku":"F-4","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 5,
+        "lpFlags": "normal",
+        "off": 4560,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,5],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"5","sku":"F-5","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 6,
+        "lpFlags": "normal",
+        "off": 3376,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,6],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"6","sku":"F-6","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 7,
+        "lpFlags": "normal",
+        "off": 2192,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,7],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"7","sku":"F-7","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 8,
+        "lpFlags": "normal",
+        "off": 1008,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,8],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"8","sku":"F-8","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 9,
+        "lpFlags": "normal",
+        "off": 968,
+        "len": 36,
+        "xmin": 761,
+        "xmax": 0,
+        "ctid": [0,9],
+        "infomask": 10243,
+        "infomask2": 32772,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","sku":"A-1","qty":"9","note":null}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "items_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false},
+        {"off":4,"key":"4","tid":[0,4],"dead":false},
+        {"off":5,"key":"5","tid":[0,5],"dead":false},
+        {"off":6,"key":"6","tid":[0,6],"dead":false},
+        {"off":7,"key":"7","tid":[0,7],"dead":false},
+        {"off":8,"key":"8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    },
+    "items_sku": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"A-1","tid":[0,1],"dead":false},
+        {"off":2,"key":"A-2","tid":[0,2],"dead":false},
+        {"off":3,"key":"F-3","tid":[0,3],"dead":false},
+        {"off":4,"key":"F-4","tid":[0,4],"dead":false},
+        {"off":5,"key":"F-5","tid":[0,5],"dead":false},
+        {"off":6,"key":"F-6","tid":[0,6],"dead":false},
+        {"off":7,"key":"F-7","tid":[0,7],"dead":false},
+        {"off":8,"key":"F-8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "xact": {"759":"committed","760":"committed","761":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE items SET qty = qty - 1 WHERE id = 1",
+   "note": "again. now the chain is three versions long, and both indexes still have exactly one entry for row 1.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "items": [
+     {
+      "rel": "items",
+      "block": 0,
+      "size": 8192,
+      "lower": 64,
+      "upper": 928,
+      "special": 8192,
+      "lsn": 23229008,
+      "pruneXid": 761,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 761,
+        "ctid": [0,9],
+        "infomask": 1283,
+        "infomask2": 16388,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","sku":"A-1","qty":"10","note":null}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2307,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","sku":"A-2","qty":"10","note":null}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 6928,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","sku":"F-3","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 5744,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","sku":"F-4","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 5,
+        "lpFlags": "normal",
+        "off": 4560,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,5],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"5","sku":"F-5","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 6,
+        "lpFlags": "normal",
+        "off": 3376,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,6],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"6","sku":"F-6","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 7,
+        "lpFlags": "normal",
+        "off": 2192,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,7],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"7","sku":"F-7","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 8,
+        "lpFlags": "normal",
+        "off": 1008,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,8],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"8","sku":"F-8","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 9,
+        "lpFlags": "normal",
+        "off": 968,
+        "len": 36,
+        "xmin": 761,
+        "xmax": 762,
+        "ctid": [0,10],
+        "infomask": 8451,
+        "infomask2": 49156,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": [
+         "HEAP_HASNULL",
+         "HEAP_HASVARWIDTH",
+         "HEAP_XMIN_COMMITTED",
+         "HEAP_UPDATED",
+         "HEAP_HOT_UPDATED",
+         "HEAP_ONLY_TUPLE"
+        ],
+        "data": {"id":"1","sku":"A-1","qty":"9","note":null}
+       },
+       {
+        "lp": 10,
+        "lpFlags": "normal",
+        "off": 928,
+        "len": 36,
+        "xmin": 762,
+        "xmax": 0,
+        "ctid": [0,10],
+        "infomask": 10243,
+        "infomask2": 32772,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","sku":"A-1","qty":"8","note":null}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "items_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false},
+        {"off":4,"key":"4","tid":[0,4],"dead":false},
+        {"off":5,"key":"5","tid":[0,5],"dead":false},
+        {"off":6,"key":"6","tid":[0,6],"dead":false},
+        {"off":7,"key":"7","tid":[0,7],"dead":false},
+        {"off":8,"key":"8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    },
+    "items_sku": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"A-1","tid":[0,1],"dead":false},
+        {"off":2,"key":"A-2","tid":[0,2],"dead":false},
+        {"off":3,"key":"F-3","tid":[0,3],"dead":false},
+        {"off":4,"key":"F-4","tid":[0,4],"dead":false},
+        {"off":5,"key":"F-5","tid":[0,5],"dead":false},
+        {"off":6,"key":"F-6","tid":[0,6],"dead":false},
+        {"off":7,"key":"F-7","tid":[0,7],"dead":false},
+        {"off":8,"key":"F-8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "xact": {"759":"committed","760":"committed","761":"committed","762":"committed"}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "UPDATE items SET sku = 'B-2' WHERE id = 2",
+   "note": "change sku, which items_sku covers. same page, plenty of room, and still not HOT: both indexes get a new entry for row 2.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "items": [
+     {
+      "rel": "items",
+      "block": 0,
+      "size": 8192,
+      "lower": 68,
+      "upper": 888,
+      "special": 8192,
+      "lsn": 23229120,
+      "pruneXid": 761,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 761,
+        "ctid": [0,9],
+        "infomask": 1283,
+        "infomask2": 16388,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","sku":"A-1","qty":"10","note":null}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 36,
+        "xmin": 759,
+        "xmax": 763,
+        "ctid": [0,11],
+        "infomask": 259,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED"],
+        "data": {"id":"2","sku":"A-2","qty":"10","note":null}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 6928,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","sku":"F-3","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 5744,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","sku":"F-4","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 5,
+        "lpFlags": "normal",
+        "off": 4560,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,5],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"5","sku":"F-5","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 6,
+        "lpFlags": "normal",
+        "off": 3376,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,6],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"6","sku":"F-6","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 7,
+        "lpFlags": "normal",
+        "off": 2192,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,7],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"7","sku":"F-7","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 8,
+        "lpFlags": "normal",
+        "off": 1008,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,8],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"8","sku":"F-8","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 9,
+        "lpFlags": "normal",
+        "off": 968,
+        "len": 36,
+        "xmin": 761,
+        "xmax": 762,
+        "ctid": [0,10],
+        "infomask": 9475,
+        "infomask2": 49156,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": [
+         "HEAP_HASNULL",
+         "HEAP_HASVARWIDTH",
+         "HEAP_XMIN_COMMITTED",
+         "HEAP_XMAX_COMMITTED",
+         "HEAP_UPDATED",
+         "HEAP_HOT_UPDATED",
+         "HEAP_ONLY_TUPLE"
+        ],
+        "data": {"id":"1","sku":"A-1","qty":"9","note":null}
+       },
+       {
+        "lp": 10,
+        "lpFlags": "normal",
+        "off": 928,
+        "len": 36,
+        "xmin": 762,
+        "xmax": 0,
+        "ctid": [0,10],
+        "infomask": 10499,
+        "infomask2": 32772,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": [
+         "HEAP_HASNULL",
+         "HEAP_HASVARWIDTH",
+         "HEAP_XMIN_COMMITTED",
+         "HEAP_XMAX_INVALID",
+         "HEAP_UPDATED",
+         "HEAP_ONLY_TUPLE"
+        ],
+        "data": {"id":"1","sku":"A-1","qty":"8","note":null}
+       },
+       {
+        "lp": 11,
+        "lpFlags": "normal",
+        "off": 888,
+        "len": 36,
+        "xmin": 763,
+        "xmax": 0,
+        "ctid": [0,11],
+        "infomask": 10243,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED"],
+        "data": {"id":"2","sku":"B-2","qty":"10","note":null}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "items_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"2","tid":[0,11],"dead":false},
+        {"off":4,"key":"3","tid":[0,3],"dead":false},
+        {"off":5,"key":"4","tid":[0,4],"dead":false},
+        {"off":6,"key":"5","tid":[0,5],"dead":false},
+        {"off":7,"key":"6","tid":[0,6],"dead":false},
+        {"off":8,"key":"7","tid":[0,7],"dead":false},
+        {"off":9,"key":"8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    },
+    "items_sku": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"A-1","tid":[0,1],"dead":false},
+        {"off":2,"key":"A-2","tid":[0,2],"dead":false},
+        {"off":3,"key":"B-2","tid":[0,11],"dead":false},
+        {"off":4,"key":"F-3","tid":[0,3],"dead":false},
+        {"off":5,"key":"F-4","tid":[0,4],"dead":false},
+        {"off":6,"key":"F-5","tid":[0,5],"dead":false},
+        {"off":7,"key":"F-6","tid":[0,6],"dead":false},
+        {"off":8,"key":"F-7","tid":[0,7],"dead":false},
+        {"off":9,"key":"F-8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "xact": {"759":"committed","760":"committed","761":"committed","762":"committed","763":"committed"}
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "SELECT qty FROM items WHERE id = 1",
+   "note": "a plain read of row 1. the page is nearly full and the old versions are dead to everyone, so the read prunes it on the way through.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"qty","type":"int4"}],"data":[["8"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "items": [
+     {
+      "rel": "items",
+      "block": 0,
+      "size": 8192,
+      "lower": 68,
+      "upper": 1008,
+      "special": 8192,
+      "lsn": 23229360,
+      "tuples": [
+       {"lp":1,"lpFlags":"redirect","redirect":10},
+       {"lp":2,"lpFlags":"dead"},
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 7008,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","sku":"F-3","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 5824,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","sku":"F-4","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 5,
+        "lpFlags": "normal",
+        "off": 4640,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,5],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"5","sku":"F-5","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 6,
+        "lpFlags": "normal",
+        "off": 3456,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,6],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"6","sku":"F-6","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 7,
+        "lpFlags": "normal",
+        "off": 2272,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,7],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"7","sku":"F-7","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 8,
+        "lpFlags": "normal",
+        "off": 1088,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,8],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"8","sku":"F-8","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {"lp":9,"lpFlags":"unused"},
+       {
+        "lp": 10,
+        "lpFlags": "normal",
+        "off": 1048,
+        "len": 36,
+        "xmin": 762,
+        "xmax": 0,
+        "ctid": [0,10],
+        "infomask": 10499,
+        "infomask2": 32772,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": [
+         "HEAP_HASNULL",
+         "HEAP_HASVARWIDTH",
+         "HEAP_XMIN_COMMITTED",
+         "HEAP_XMAX_INVALID",
+         "HEAP_UPDATED",
+         "HEAP_ONLY_TUPLE"
+        ],
+        "data": {"id":"1","sku":"A-1","qty":"8","note":null}
+       },
+       {
+        "lp": 11,
+        "lpFlags": "normal",
+        "off": 1008,
+        "len": 36,
+        "xmin": 763,
+        "xmax": 0,
+        "ctid": [0,11],
+        "infomask": 10499,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED"],
+        "data": {"id":"2","sku":"B-2","qty":"10","note":null}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "items_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"2","tid":[0,11],"dead":false},
+        {"off":4,"key":"3","tid":[0,3],"dead":false},
+        {"off":5,"key":"4","tid":[0,4],"dead":false},
+        {"off":6,"key":"5","tid":[0,5],"dead":false},
+        {"off":7,"key":"6","tid":[0,6],"dead":false},
+        {"off":8,"key":"7","tid":[0,7],"dead":false},
+        {"off":9,"key":"8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    },
+    "items_sku": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"A-1","tid":[0,1],"dead":false},
+        {"off":2,"key":"A-2","tid":[0,2],"dead":false},
+        {"off":3,"key":"B-2","tid":[0,11],"dead":false},
+        {"off":4,"key":"F-3","tid":[0,3],"dead":false},
+        {"off":5,"key":"F-4","tid":[0,4],"dead":false},
+        {"off":6,"key":"F-5","tid":[0,5],"dead":false},
+        {"off":7,"key":"F-6","tid":[0,6],"dead":false},
+        {"off":8,"key":"F-7","tid":[0,7],"dead":false},
+        {"off":9,"key":"F-8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "xact": {"760":"committed","762":"committed","763":"committed"}
+  },
+  {
+   "i": 5,
+   "session": "obs",
+   "sql": "VACUUM items",
+   "note": "VACUUM. it removes the index entries that point at row 2's old version, so that line pointer can be freed too.",
+   "status": "ok",
+   "result": {"command":"VACUUM","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "heap": {
+    "items": [
+     {
+      "rel": "items",
+      "block": 0,
+      "size": 8192,
+      "lower": 68,
+      "upper": 1008,
+      "special": 8192,
+      "lsn": 23229528,
+      "tuples": [
+       {"lp":1,"lpFlags":"redirect","redirect":10},
+       {"lp":2,"lpFlags":"unused"},
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 7008,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","sku":"F-3","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 5824,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"4","sku":"F-4","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 5,
+        "lpFlags": "normal",
+        "off": 4640,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,5],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"5","sku":"F-5","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 6,
+        "lpFlags": "normal",
+        "off": 3456,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,6],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"6","sku":"F-6","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 7,
+        "lpFlags": "normal",
+        "off": 2272,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,7],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"7","sku":"F-7","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {
+        "lp": 8,
+        "lpFlags": "normal",
+        "off": 1088,
+        "len": 1184,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,8],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"8","sku":"F-8","qty":"0","note":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…"}
+       },
+       {"lp":9,"lpFlags":"unused"},
+       {
+        "lp": 10,
+        "lpFlags": "normal",
+        "off": 1048,
+        "len": 36,
+        "xmin": 762,
+        "xmax": 0,
+        "ctid": [0,10],
+        "infomask": 10499,
+        "infomask2": 32772,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": [
+         "HEAP_HASNULL",
+         "HEAP_HASVARWIDTH",
+         "HEAP_XMIN_COMMITTED",
+         "HEAP_XMAX_INVALID",
+         "HEAP_UPDATED",
+         "HEAP_ONLY_TUPLE"
+        ],
+        "data": {"id":"1","sku":"A-1","qty":"8","note":null}
+       },
+       {
+        "lp": 11,
+        "lpFlags": "normal",
+        "off": 1008,
+        "len": 36,
+        "xmin": 763,
+        "xmax": 0,
+        "ctid": [0,11],
+        "infomask": 10499,
+        "infomask2": 4,
+        "hoff": 24,
+        "nullBits": "11100000",
+        "flags": ["HEAP_HASNULL","HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED"],
+        "data": {"id":"2","sku":"B-2","qty":"10","note":null}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "items_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,11],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false},
+        {"off":4,"key":"4","tid":[0,4],"dead":false},
+        {"off":5,"key":"5","tid":[0,5],"dead":false},
+        {"off":6,"key":"6","tid":[0,6],"dead":false},
+        {"off":7,"key":"7","tid":[0,7],"dead":false},
+        {"off":8,"key":"8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    },
+    "items_sku": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"A-1","tid":[0,1],"dead":false},
+        {"off":2,"key":"B-2","tid":[0,11],"dead":false},
+        {"off":3,"key":"F-3","tid":[0,3],"dead":false},
+        {"off":4,"key":"F-4","tid":[0,4],"dead":false},
+        {"off":5,"key":"F-5","tid":[0,5],"dead":false},
+        {"off":6,"key":"F-6","tid":[0,6],"dead":false},
+        {"off":7,"key":"F-7","tid":[0,7],"dead":false},
+        {"off":8,"key":"F-8","tid":[0,8],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "xact": {"760":"committed","762":"committed","763":"committed"}
+  }
+ ]
+}

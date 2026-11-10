@@ -1,0 +1,189 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "cefc630111ef1315": {
+      "db": "events",
+      "sql": "CREATE INDEX events_kind ON events (kind);\nANALYZE events;\nPREPARE by_kind(text) AS\n  SELECT max(occurred_at) FROM events WHERE kind = $1;\nEXPLAIN EXECUTE by_kind('signup');\nEXPLAIN EXECUTE by_kind('view');\nSELECT name, generic_plans, custom_plans FROM pg_prepared_statements;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "PREPARE",
+          "command": "PREPARE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "35f522a4bcb54c08"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "9887b73d8cdbe0f6",
+          "rows": [
+            ["Aggregate  (cost=366.73..366.74 rows=1 width=8)"],
+            ["  ->  Bitmap Heap Scan on events  (cost=8.16..365.48 rows=500 width=8)"],
+            ["        Recheck Cond: (kind = 'signup'::text)"],
+            ["        ->  Bitmap Index Scan on events_kind  (cost=0.00..8.04 rows=500 width=0)"],
+            ["              Index Cond: (kind = 'signup'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "bf42359078311e01",
+          "rows": [
+            ["Aggregate  (cost=685.28..685.29 rows=1 width=8)"],
+            ["  ->  Seq Scan on events  (cost=0.00..647.50 rows=15112 width=8)"],
+            ["        Filter: (kind = 'view'::text)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["generic_plans", "int8", 20],
+            ["custom_plans", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "29a3e3e4b33ece36",
+          "rows": [
+            ["by_kind", "0", "2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8603731818cb3b98": {
+      "db": "events",
+      "sql": "EXECUTE by_kind('view');\nEXECUTE by_kind('view');\nEXECUTE by_kind('view');\nEXPLAIN EXECUTE by_kind('signup');\nSELECT name, generic_plans, custom_plans FROM pg_prepared_statements;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["max", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "f9f47853505064db",
+          "rows": [
+            ["2026-05-31 23:55:12+00"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["max", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "c6d22617744e5fde",
+          "rows": [
+            ["2026-05-31 23:55:12+00"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["max", "timestamptz", 1184]
+          ],
+          "rowCount": 1,
+          "digest": "f6636417a7c6890d",
+          "rows": [
+            ["2026-05-31 23:55:12+00"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "80fdb902bdd64be3",
+          "rows": [
+            ["Aggregate  (cost=469.04..469.05 rows=1 width=8)"],
+            ["  ->  Bitmap Heap Scan on events  (cost=59.04..456.54 rows=5000 width=8)"],
+            ["        Recheck Cond: (kind = $1)"],
+            ["        ->  Bitmap Index Scan on events_kind  (cost=0.00..57.79 rows=5000 width=0)"],
+            ["              Index Cond: (kind = $1)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["generic_plans", "int8", 20],
+            ["custom_plans", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "1b6ffea3a4bf743d",
+          "rows": [
+            ["by_kind", "1", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "54b49bafcca2b3fa": {
+      "db": "events",
+      "sql": "SET plan_cache_mode = force_custom_plan;\nEXPLAIN EXECUTE by_kind('view');\nRESET plan_cache_mode;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "aa46d24781744c76",
+          "rows": [
+            ["Aggregate  (cost=685.28..685.29 rows=1 width=8)"],
+            ["  ->  Seq Scan on events  (cost=0.00..647.50 rows=15112 width=8)"],
+            ["        Filter: (kind = 'view'::text)"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f8b479a4f4b9c024"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

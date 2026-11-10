@@ -1,0 +1,10 @@
+{
+  "name": "lab",
+  "title": "lab",
+  "blurb": "a bench for looking inside: pageinspect, pg_buffercache, pg_visibility, pg_walinspect, amcheck and pg_freespacemap installed, two small tables, never vacuumed.",
+  "files": ["schema.sql", "data.sql"],
+  "analyze": false,
+  "extensions": ["pageinspect", "pg_buffercache", "pg_visibility", "pg_walinspect", "amcheck", "pg_freespacemap"],
+  "setups": ["bloat"],
+  "maxRowsPerTable": 30000
+}

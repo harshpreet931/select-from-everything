@@ -1,0 +1,225 @@
+import { SqliteFile } from "@/components/figures/deep-dives/SqliteFile";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* every sqlite output on this page was recorded with the sqlite3 that ships with macOS
+    (3.54.0, an apple build, "aapl" in its version string) on macOS 27.0, an m4 pro, against a
+    2,000-row file built with the script shown in the first block. the postgres blocks are run blocks. */}
+
+export const REC = "sqlite3 3.54.0 (the apple build) on macOS 27.0, m4 pro";
+export const pages = "1 0d 2;2 05 18;3 02 6;4 0d 116;5 0d 110;6 0d 110;7 0a 274;8 0a 280;9 0d 110;10 0d 110;11 0d 110;12 0a 251;13 0d 110;14 0d 110;15 0d 110;16 0a 325;17 0d 107;18 0d 107;19 0d 107;20 0a 328;21 0d 107;22 0a 310;23 0d 107;24 0d 107;25 0d 107;26 0a 226;27 0d 107;28 0d 107;29 0d 41"
+  .split(";").map((s) => s.split(" ")).map(([p, type, cells]) => ({ p: Number(p), type, cells: Number(cells) }));
+
+<InShort>
+sqlite is a database in **one file**, run by a library inside your program: no server, no network, no users. every table is a **b-tree keyed by rowid**, every index is another b-tree in the same file, and one writer at a time changes it, through a **rollback journal** or a **WAL**. its columns have a **type affinity**, not a type, unless you ask for STRICT.
+
+it's on your phone hundreds of times over, because "a file" is the easiest database there is to ship.
+</InShort>
+
+## the picture
+
+you know how a postgres "database" is a server process, a data directory with hundreds of files, a port, roles and a config file? a sqlite database is `shop.db`. you can email it. that's not a toy version of the same thing, it's a different deal: the database is a file format, and the engine is a library that reads and writes it.
+
+think of a notebook vs a library. postgres is the library: a building, staff, a front desk (the server) that everybody queues at. sqlite is a notebook in your bag: you open it, write, close it. only one person writes in it at a time, and anyone can carry it around.
+
+sqlite.org's ["most widely deployed"](https://www.sqlite.org/mostdeployed.html) page says every android and iOS device ships it, and estimates (its word) over a trillion sqlite databases in use, from billions of phones each holding hundreds of files. your browser history, your messages, your photo library's index: files like this one.
+
+here's the file this chapter takes apart, 2,000 customers and an index on city:
+
+```text
+CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, city TEXT, joined TEXT);
+CREATE INDEX customers_city ON customers (city);
+WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 2000)
+INSERT INTO customers
+SELECT n, 'customer ' || n,
+       CASE n % 4 WHEN 0 THEN 'London' WHEN 1 THEN 'Lisbon' WHEN 2 THEN 'Pune' ELSE 'Oslo' END,
+       '2026-01-01'
+FROM g;
+```
+
+## one file, made of pages
+
+like postgres, sqlite reads and writes in fixed-size [pages](/learn/storage/why-pages). unlike postgres, every page of every table and index is in the same file, numbered from 1:
+
+<Figure caption={<>the first 100 bytes of <code>shop.db</code>, recorded with xxd. the format is sqlite.org's <a href="https://www.sqlite.org/fileformat2.html">database file format</a> document; offsets are in hex on the left.</>}>
+```text
+00000000: 5351 4c69 7465 2066 6f72 6d61 7420 3300  SQLite format 3.
+00000010: 1000 0101 0c40 2020 0000 0003 0000 001d  .....@  ........
+00000020: 0000 0000 0000 0000 0000 0002 0000 0004  ................
+00000030: 0000 0000 0000 0000 0000 0001 0000 0000  ................
+00000040: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+00000050: 0000 0000 0000 0000 0000 0000 0000 0003  ................
+00000060: 002e 99b0                                ....
+```
+<Defs>
+<dt>0x00, 16 bytes</dt><dd>the magic string "SQLite format 3" and a zero byte</dd>
+<dt>0x10, <code>1000</code></dt><dd>page size: 4,096 bytes</dd>
+<dt>0x12, <code>01 01</code></dt><dd>write and read format: 1 means rollback journal (2 would mean WAL)</dd>
+<dt>0x14, <code>0c</code></dt><dd>12 bytes reserved at the end of every page. the format doc says this is usually 0; this apple build sets it</dd>
+<dt>0x18, <code>0000 0003</code></dt><dd>file change counter: bumped by every write transaction in rollback mode</dd>
+<dt>0x1c, <code>0000 001d</code></dt><dd>the file is 29 pages long</dd>
+<dt>0x38, <code>0000 0001</code></dt><dd>text encoding 1: UTF-8</dd>
+<dt>0x60, <code>002e 99b0</code></dt><dd>3054000: the library version that last wrote the file, 3.54.0</dd>
+</Defs>
+<Provenance recorded={REC} />
+</Figure>
+
+the shell agrees:
+
+```text
+$ sqlite3 shop.db 'PRAGMA page_size; PRAGMA page_count; PRAGMA journal_mode;'
+4096
+29
+delete
+$ sqlite3 shop.db .dbinfo
+database page size:  4096
+write format:        1
+read format:         1
+reserved bytes:      12
+file change counter: 3
+database page count: 29
+freelist page count: 0
+schema format:       4
+text encoding:       1 (utf8)
+software version:    3054000
+number of tables:    1
+number of indexes:   1
+```
+
+(.dbinfo prints a few more lines; these are the ones the header dump explains.) 29 pages × 4,096 bytes is 118,784 bytes, which is exactly what `ls -l` says. compare postgres, where `customers` alone is its own file, with more files for each index and each fork ([the files behind a table](/learn/storage/files-and-forks)):
+
+```sql run db=shop
+SELECT pg_relation_filepath('customers') AS heap,
+       pg_relation_filepath('customers_pkey') AS pkey,
+       current_setting('block_size') AS page_bytes;
+```
+
+## a b-tree for everything
+
+the first byte of every b-tree page says what kind of page it is. reading that byte, and the cell count two bytes later, from all 29 pages:
+
+<Figure caption={<>every page of <code>shop.db</code>, by its b-tree page type byte, with its cell count. hover a page for its type. the table's tree is page 2 over 19 leaves; the index's tree is page 3 over 7 leaves.</>}>
+<SqliteFile pages={pages} recorded={`${REC} · xxd of each page's header`} owners={{ 1: "sqlite_schema", 2: "customers", 3: "customers_city" }} />
+</Figure>
+
+page 2 is `0x05`, an interior table page with 18 cells (18 keys, plus a right-most pointer: 19 children). its 19 children are the `0x0d` leaf pages, and their cells add up to 2,000: one per row. page 3 is `0x02`, an interior index page over seven `0x0a` index leaves. and page 1 is itself a leaf table page with 2 cells: `sqlite_schema`, the catalog, which says where each tree starts:
+
+```text
+$ sqlite3 shop.db "SELECT type, name, tbl_name, rootpage FROM sqlite_schema ORDER BY rootpage;"
+table|customers|customers|2
+index|customers_city|customers|3
+```
+
+two kinds of tree, and the difference is the whole design. a **table b-tree** is keyed by the 64-bit **rowid** and keeps the row itself in its leaves, so a sqlite table is a [clustered index](/learn/deep-dives/postgres-vs-innodb) on rowid. an **index b-tree** holds keys and no data: each index entry is the indexed columns plus the rowid. declare a column `INTEGER PRIMARY KEY` and it *becomes* the rowid, so `id = 42` is one descent of the table tree:
+
+```text
+$ sqlite3 shop.db "EXPLAIN QUERY PLAN SELECT name FROM customers WHERE id = 42;"
+QUERY PLAN
+`--SEARCH customers USING INTEGER PRIMARY KEY (rowid=?)
+$ sqlite3 shop.db "EXPLAIN QUERY PLAN SELECT name FROM customers WHERE city = 'Pune';"
+QUERY PLAN
+`--SEARCH customers USING INDEX customers_city (city=?)
+$ sqlite3 shop.db "EXPLAIN QUERY PLAN SELECT count(*) FROM customers WHERE city = 'Pune';"
+QUERY PLAN
+`--SEARCH customers USING COVERING INDEX customers_city (city=?)
+$ sqlite3 shop.db "EXPLAIN QUERY PLAN SELECT name FROM customers WHERE joined = '2026-01-01';"
+QUERY PLAN
+`--SCAN customers
+```
+
+<Provenance recorded={REC} />
+
+the city lookup is the InnoDB pattern: the index gives a rowid, and a second descent of the table tree fetches the row. the count needs nothing but the index, so it's covering, like a postgres [index-only scan](/learn/indexes/index-only-scans) minus the visibility map (sqlite has no MVCC versions in the file to worry about). postgres, for contrast, has no tree for the table at all, a heap plus [b+tree](/learn/index-internals/b-plus-trees) indexes holding ctids.
+
+## one writer: the rollback journal and the WAL
+
+no MVCC, no row locks. sqlite's concurrency is about the file: many readers, **one writer at a time**. how it keeps a crash from leaving a half-written file depends on the journal mode.
+
+<Figure caption={<>what one INSERT does to the files in each mode, recorded with <code>ls -l</code> from inside the sqlite3 shell while the transaction ran. the byte counts match the file format doc to the byte.</>}>
+<Tabs>
+<Tab label="rollback journal (the default)">
+```text
+sqlite> BEGIN;
+sqlite> INSERT INTO customers VALUES (2001, 'Ada Lovelace', 'London', '2026-11-04');
+sqlite> .shell ls -l shop.db shop.db-journal
+-rw-r--r--  1 harshpreet.singh  wheel  118784 Nov  4 17:41 shop.db
+-rw-r--r--  1 harshpreet.singh  wheel    8720 Nov  4 17:41 shop.db-journal
+sqlite> COMMIT;
+sqlite> .shell ls shop.db*
+shop.db
+```
+the journal holds the *old* contents of the pages about to change: a header padded to a 512-byte sector, then per page a 4-byte page number, 4,096 bytes, and a 4-byte checksum. 512 + 2 × 4,104 = 8,720: two pages, the table leaf and the index leaf. the new pages are written into `shop.db` in place, and deleting the journal is the commit. crash before that, and the next open copies the old pages back. that's undo, not redo: the opposite of postgres's [write-ahead rule](/learn/wal/write-ahead-rule).
+</Tab>
+<Tab label="WAL mode">
+```text
+sqlite> PRAGMA journal_mode = WAL;
+wal
+sqlite> INSERT INTO customers VALUES (2001, 'Ada Lovelace', 'London', '2026-11-04');
+sqlite> .shell ls -l shop.db shop.db-wal shop.db-shm
+-rw-r--r--  1 harshpreet.singh  wheel  118784 Nov  4 17:41 shop.db
+-rw-r--r--  1 harshpreet.singh  wheel   32768 Nov  4 17:41 shop.db-shm
+-rw-r--r--  1 harshpreet.singh  wheel    8272 Nov  4 17:41 shop.db-wal
+sqlite> PRAGMA wal_checkpoint(TRUNCATE);
+0|0|0
+sqlite> .shell ls -l shop.db shop.db-wal
+-rw-r--r--  1 harshpreet.singh  wheel  118784 Nov  4 17:41 shop.db
+-rw-r--r--  1 harshpreet.singh  wheel       0 Nov  4 17:41 shop.db-wal
+```
+now the *new* pages go to `shop.db-wal`: a 32-byte header, then frames of a 24-byte header plus one page. 32 + 2 × 4,120 = 8,272. the database file isn't touched until a checkpoint copies the frames back. that's redo, like postgres, except sqlite logs whole pages every time. the WAL mode also flips header bytes 0x12 and 0x13 to 2.
+</Tab>
+</Tabs>
+<Provenance recorded={REC} />
+</Figure>
+
+the modes differ most for readers. in rollback mode a writer changes the database file itself, so it needs everyone else out while it commits. in WAL mode, by sqlite.org's [write-ahead logging](https://www.sqlite.org/wal.html) page, readers keep reading the old pages from the database file while the writer appends to the WAL, so readers don't block the writer and the writer doesn't block readers. there's still only one writer. a second one gets `SQLITE_BUSY` and has to wait or retry. for a phone app, that's plenty. for a web app with a hundred concurrent writers, it's the reason people move to postgres.
+
+<Predict question="WAL mode is on. a reader is in the middle of a long SELECT. a second connection starts writing. what happens?" options={["the writer waits", "the reader is blocked", "both run"]} answer={2}>
+```text
+connection A: BEGIN; SELECT ... (long)
+connection B: INSERT INTO customers VALUES (...);   -- ?
+```
+<Explain>
+both run. in WAL mode the reader keeps its view of the database file plus the WAL frames that existed when it started, and the writer appends new frames after them. what WAL mode doesn't allow is two writers: a second INSERT from a third connection would get SQLITE_BUSY until B commits. in the default rollback mode, B would have to wait for A to finish before it could commit.
+</Explain>
+</Predict>
+
+## type affinity
+
+the last surprise is types. in sqlite a column's declared type is a hint, an **affinity**: the [datatypes](https://www.sqlite.org/datatype3.html) page derives it from the type name (anything with INT is INTEGER affinity, CHAR/CLOB/TEXT is TEXT, BLOB or no type is BLOB, REAL/FLOA/DOUB is REAL, the rest NUMERIC). a value is converted if it can be, and stored as it is if not:
+
+```text
+sqlite> CREATE TABLE t (i INTEGER, r REAL, x TEXT, b BLOB, n);
+sqlite> INSERT INTO t VALUES ('42', '42', 42, 42, '42');
+sqlite> INSERT INTO t VALUES ('4x', 3, 3.5, 'hi', 7);
+sqlite> SELECT typeof(i), typeof(r), typeof(x), typeof(b), typeof(n) FROM t ORDER BY rowid;
+integer|real|text|integer|text
+text|real|text|text|integer
+sqlite> CREATE TABLE s (i INTEGER) STRICT;
+sqlite> INSERT INTO s VALUES ('4x');
+Error near line 6: cannot store TEXT value in INTEGER column s.i
+```
+
+<Provenance recorded={REC} />
+
+look at row 2: `'4x'` went into an INTEGER column and stayed text. sqlite didn't complain. a STRICT table does. postgres is strict always: a quoted literal is [an unknown-type literal](/learn/types/types-and-casts) that gets cast to the column type, so `'42'` works and `'4x'` is an error:
+
+```sql run errors=continue expect=error
+CREATE TABLE t (i int);
+INSERT INTO t VALUES ('42');
+INSERT INTO t VALUES ('4x');
+```
+
+<Gotcha title="a sqlite file isn't safe to copy while it's being written">
+it's one file, so it's tempting to back it up with `cp`. in WAL mode the committed data can be partly in `-wal`, and a copy taken mid-write can be torn. use the shell's `.backup` command or `VACUUM INTO`, which read a consistent snapshot through the library. same lesson as postgres's [base backups](/learn/wal/backups-and-pitr): copy through the engine, not around it.
+</Gotcha>
+
+<Interview q="when would you pick sqlite over postgres?">
+when the database belongs to one program on one machine: a mobile or desktop app, an embedded device, a local cache, a test fixture, a file format of its own (an app's documents as sqlite files). you get zero administration, one file to ship, and fast reads with no network round trip. pick postgres when many clients write at once (sqlite has one writer per file), when you need roles and row-level security, a network server, replication, or the type system and extensions. bonus point: the reasons are structural. sqlite's single writer comes from locking the file, and its lack of MVCC versions means a reader in rollback mode needs the writer out of the way.
+</Interview>
+
+<Keylines>
+- one file, numbered pages, a 100-byte header on page 1, a catalog (`sqlite_schema`) naming each tree's root page.
+- tables are b-trees keyed by rowid with the rows in the leaves; indexes are b-trees of key + rowid.
+- one writer at a time. rollback journal: old pages saved, new ones written in place. WAL: new pages appended, copied back at checkpoint.
+- in WAL mode readers and the writer don't block each other; two writers still do.
+- a declared type is an affinity. STRICT tables, or postgres, actually enforce it.
+</Keylines>

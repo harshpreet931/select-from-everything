@@ -1,0 +1,147 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { FinalBalances } from "@/components/figures/transactions/FinalBalances";
+import plain from "./traces/lost-update.pgtrace.json";
+import rr from "./traces/lost-update-repeatable-read.pgtrace.json";
+import forUpdate from "./traces/lost-update-for-update.pgtrace.json";
+import atomic from "./traces/lost-update-atomic.pgtrace.json";
+import version from "./traces/lost-update-version.pgtrace.json";
+
+{/* the five runs are captured on a real postgres 18.6 server with two sessions
+    (traces/lost-update*.scenario.sql). alice's balance in the lanes is what a brand new
+    transaction would see after each step, read off the heap page. */}
+
+<InShort>
+a **lost update** is read, modify, write, twice at once: both transactions read 100.00, both compute a new balance in the app, and the second write replaces the first. at postgres's default level nothing stops it and nobody gets an error. there are four fixes: let the **UPDATE do the arithmetic**, lock the row as you read it with **FOR UPDATE**, check a **version** column, or run at **REPEATABLE READ** and retry.
+</InShort>
+
+## the picture
+
+you know the classic bug: a like counter, two clicks at the same moment, and the count goes up by one. the code looks fine. it reads the count, adds one, saves it. it is fine, as long as nobody else does the same thing in between.
+
+think of two people with a copy of the same spreadsheet (the row), each adding their own line to a total (the deposit) and saving the file back (the UPDATE). whoever saves second wins, and the first person's line is gone, even though the save itself worked perfectly.
+
+here it is on a real server: alice has 100.00, T1 deposits 10.00 and T2 deposits 20.00, at the same time. the right answer is 130.00. switch between the five ways to write it.
+
+<Figure wide caption={<>pick a variant and step through it. the column on the right is alice's committed balance after each step. only <C k="dead">read, then write</C> loses money silently; the other four end at <C k="live">130.00</C>, or tell the second transaction to try again.</>}>
+<TxLanes
+  option="the code"
+  cell={{ label: "alice", key: ["id", "1"], col: "balance" }}
+  runs={[
+    { label: "read, then write", trace: plain, verdict: { ok: false, what: "lost update", text: "both deposits ran and both committed. alice has 120.00: T1's 10.00 is gone, and nobody got an error." } },
+    { label: "repeatable read", trace: rr, verdict: { ok: true, what: "lost update", text: "T2 got 40001 instead of overwriting. alice has 110.00 until T2's retry reads it and writes 130.00." } },
+    { label: "FOR UPDATE", trace: forUpdate, verdict: { ok: true, what: "lost update", text: "T2's read waited for T1's commit and came back with 110.00, so T2 wrote 130.00." } },
+    { label: "balance + 20", trace: atomic, verdict: { ok: true, what: "lost update", text: "T2 waited, then added its 20.00 to the 110.00 T1 left. 130.00, and the app never locked anything." } },
+    { label: "version check", trace: version, verdict: { ok: true, what: "lost update", text: "T2's UPDATE matched no row (version 0 was gone), so the app knows its read is stale. 110.00 until it re-reads and tries again." } },
+  ]}
+/>
+</Figure>
+
+## why waiting isn't enough
+
+look at step 6 of the first run. T2 does wait: T1 holds alice's row lock, and postgres never lets two transactions write one row at the same time. the wait isn't the problem. the problem is what T2 writes when it wakes up. `SET balance = 120.00` is a constant the app worked out from a read that is now stale. postgres has no way to know where that number came from, so it writes it.
+
+<Figure caption={<>the shape of every lost update. the middle step happens in your process, where postgres can't see it. hover a step.</>}>
+<Flow stages={[
+  { label: "SELECT balance", sub: "reads 100.00", note: "a plain read. no lock, no promise about the next statement." },
+  { label: "100.00 + 20.00", sub: "in the app", note: "the decision. postgres never sees this step, only its answer." },
+  { label: "SET balance = 120.00", sub: "a constant", note: "written after any wait, whatever the row holds by then." },
+]} />
+</Figure>
+
+that's also why wrapping the read and the write in BEGIN and COMMIT doesn't help. a plain SELECT at READ COMMITTED takes no lock and promises nothing about the next statement. it reads, that's all.
+
+<Predict question="T2 runs UPDATE accounts SET balance = balance + 20 WHERE id = 1, waits for T1, and T1 commits 110.00. what does alice end up with?" options={["120.00", "130.00", "an error: 40001"]} answer={1}>
+```sql
+/* T1 */ BEGIN;
+/* T1 */ UPDATE accounts SET balance = balance + 10 WHERE id = 1;
+/* T2 */ UPDATE accounts SET balance = balance + 20 WHERE id = 1;  -- waits
+/* T1 */ COMMIT;
+/* T2 */ -- wakes up. alice = ?
+```
+<Explain>
+130.00. at READ COMMITTED, an UPDATE that waited for a row re-reads the row's newest version when it wakes up, checks its WHERE again, and computes the SET from that version: 110.00 + 20.00. the arithmetic happens inside the database, after the wait, so there's nothing stale to write. ([READ COMMITTED, up close](/learn/transactions/read-committed) has the re-check in detail.) at REPEATABLE READ the same statement would get 40001 instead.
+</Explain>
+</Predict>
+
+## fix 1: let the UPDATE do the arithmetic
+
+if the new value is a function of the old one, say so in the UPDATE and skip the read. one statement, so there's nothing in between to go stale:
+
+```sql run db=bank
+UPDATE accounts SET balance = balance + 10.00 WHERE id = 1
+RETURNING owner, balance;
+```
+
+it stretches further than you'd think. a withdrawal that mustn't overdraw is a WHERE:
+
+```sql run db=bank
+UPDATE accounts SET balance = balance - 50.00
+WHERE id = 1 AND balance >= 50.00
+RETURNING owner, balance;
+UPDATE accounts SET balance = balance - 50.00
+WHERE id = 3 AND balance >= 50.00
+RETURNING owner, balance;
+```
+
+alice had the money, carol (0.00) didn't: `UPDATE 0`, no rows back, and the app knows the withdrawal didn't happen. under concurrency the WHERE is checked again on the row's newest version after any wait, so two withdrawals can't both pass on the same 50.00. this is the fix to reach for first.
+
+## fix 2: lock it when you read it
+
+sometimes the new value needs logic the database can't run: an API call, a pricing rule in your code. then read with `FOR UPDATE`. the row is locked from the read until COMMIT, so a second `FOR UPDATE` on it waits, and when it wakes up it gets the newest version, not the one from before. in the figure, T2's read returns 110.00. the cost is that T2 holds nothing and does nothing while it waits, so keep the transaction short. [SELECT ... FOR UPDATE and SKIP LOCKED](/learn/transactions/row-locking-clauses) has the other strengths and NOWAIT.
+
+## fix 3: check a version
+
+web apps often can't hold a transaction open while a person looks at a form. so don't: read the row and a version number, let the user think, then write only if the version is still the one you read. bank's accounts already have a `version` column:
+
+```sql run db=bank
+SELECT balance, version FROM accounts WHERE id = 1;
+UPDATE accounts SET balance = 110.00, version = version + 1
+WHERE id = 1 AND version = 0;
+UPDATE accounts SET balance = 120.00, version = version + 1
+WHERE id = 1 AND version = 0;
+SELECT balance, version FROM accounts WHERE id = 1;
+```
+
+the first save is `UPDATE 1` and bumps the version. the second one, still holding version 0, matches nothing: `UPDATE 0`. that zero is the whole signal. the app re-reads (110.00, version 1), redoes its work, and saves again. this is **optimistic locking**: nobody waits, conflicts are found at write time. most ORMs have it built in (a `@Version` field in JPA, `lock_version` in Rails).
+
+## fix 4: REPEATABLE READ, and retry
+
+run the read-modify-write at REPEATABLE READ and postgres refuses the second write itself. T2 waits for T1's lock, sees that the row changed after its snapshot, and fails with `40001: could not serialize access due to concurrent update`. no app-side check, but every writer needs a [retry loop](/learn/transactions/retry-loops): the whole transaction, from BEGIN, with a fresh snapshot. SERIALIZABLE does the same for this case.
+
+## the scoreboard
+
+<Figure caption={<>the balance each captured run ended with. the two neutral bars aren't wrong: one transaction was told, by a 40001 or an <code>UPDATE 0</code>, and its retry would make 130.00.</>}>
+<FinalBalances
+  expect="130.00"
+  runs={[
+    { label: "read, then write", trace: plain, note: "no error anywhere. 10.00 vanished." },
+    { label: "repeatable read", trace: rr, note: "T2 got 40001 and rolled back." },
+    { label: "FOR UPDATE", trace: forUpdate, note: "T2's read waited, then saw 110.00." },
+    { label: "balance + 20", trace: atomic, note: "T2 waited, then computed from 110.00." },
+    { label: "version check", trace: version, note: "T2 got UPDATE 0 and knows to re-read." },
+  ]}
+/>
+</Figure>
+
+| fix | who waits | who has to retry | reach for it when |
+| --- | --- | --- | --- |
+| `SET balance = balance + x` | the second writer, briefly | nobody | the new value is arithmetic on the old one |
+| `SELECT ... FOR UPDATE` | the second reader, until the first commits | nobody | the new value needs app logic, inside one short transaction |
+| version column | nobody | the app, on `UPDATE 0` | a person sits between the read and the write |
+| REPEATABLE READ | the second writer, then it fails | the app, on `40001` | many rows are read and written, and you'd rather not reason about each one |
+
+<Gotcha title="your ORM is reading, then writing">
+`account.balance += 10; account.save()` is exactly the first run: a SELECT, arithmetic in your process, an UPDATE with a constant. so is any "load the entity, change a field, flush" flow. it works in every test and loses money under load. either push the arithmetic into the UPDATE (most ORMs have an "update where" or an F-expression for this), turn on the ORM's version column, or lock the row when you load it.
+</Gotcha>
+
+<Interview q="how do you stop lost updates in postgres?">
+make the read and the write one step, or make the second writer find out. one statement (`SET balance = balance + 10`) is the cheapest: at READ COMMITTED an UPDATE that waited re-reads the newest row before computing. if the logic has to live in the app, `SELECT ... FOR UPDATE` makes the second reader wait for the newest value. if there's user think time, a version column checked in the UPDATE's WHERE (optimistic locking) turns the conflict into `UPDATE 0`. or run at REPEATABLE READ, where the second writer gets SQLSTATE 40001 and retries. bonus point: plain BEGIN ... COMMIT around a read and a write doesn't fix anything at READ COMMITTED, because the SELECT takes no lock.
+</Interview>
+
+<Keylines>
+- a lost update is a write computed from a stale read. no error, just a missing change.
+- the row lock makes the second writer wait, but not rethink.
+- `SET x = x + 1` re-computes from the newest row after the wait. reach for it first.
+- FOR UPDATE makes the second reader wait. a version column makes the second writer get `UPDATE 0`.
+- REPEATABLE READ turns a lost update into a 40001, which your app must retry.
+</Keylines>

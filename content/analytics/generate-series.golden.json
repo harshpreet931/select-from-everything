@@ -1,0 +1,232 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "9c174f373e236d43": {
+      "db": "empty",
+      "sql": "SELECT n FROM generate_series(1, 10, 3) AS n ORDER BY n;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["n", "int4", 23]
+          ],
+          "rowCount": 4,
+          "digest": "1c596713c3af9576",
+          "rows": [
+            ["1"],
+            ["4"],
+            ["7"],
+            ["10"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "43054024b8eec5fb": {
+      "db": "empty",
+      "sql": "SELECT t\nFROM generate_series(timestamptz '2026-03-28 00:00+00',\n                     timestamptz '2026-03-29 12:00+00',\n                     interval '12 hours') AS t\nORDER BY t;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["t", "timestamptz", 1184]
+          ],
+          "rowCount": 4,
+          "digest": "3c8b9b5f5d9e7826",
+          "rows": [
+            ["2026-03-28 00:00:00+00"],
+            ["2026-03-28 12:00:00+00"],
+            ["2026-03-29 00:00:00+00"],
+            ["2026-03-29 12:00:00+00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a36b828fed031efa": {
+      "db": "empty",
+      "sql": "SELECT d, pg_typeof(d) AS type, d::date AS day\nFROM generate_series(date '2026-04-13', date '2026-04-15', interval '1 day') AS d\nORDER BY d;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["d", "timestamptz", 1184],
+            ["type", "regtype", 2206],
+            ["day", "date", 1082]
+          ],
+          "rowCount": 3,
+          "digest": "3388dc365e9183ab",
+          "rows": [
+            ["2026-04-13 00:00:00+00", "timestamp with time zone", "2026-04-13"],
+            ["2026-04-14 00:00:00+00", "timestamp with time zone", "2026-04-14"],
+            ["2026-04-15 00:00:00+00", "timestamp with time zone", "2026-04-15"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e9a077c67b0d797f": {
+      "db": "events",
+      "sql": "SELECT d::date AS day, count(e.id) AS purchases\nFROM generate_series(date '2026-04-12', date '2026-04-16', interval '1 day') AS d\nLEFT JOIN events AS e\n       ON e.occurred_at::date = d::date AND e.kind = 'purchase'\nGROUP BY d\nORDER BY d;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["day", "date", 1082],
+            ["purchases", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "753188179822d56e",
+          "rows": [
+            ["2026-04-12", "17"],
+            ["2026-04-13", "24"],
+            ["2026-04-14", "0"],
+            ["2026-04-15", "22"],
+            ["2026-04-16", "16"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "42d7ac367e18710e": {
+      "db": "shop",
+      "sql": "SELECT o.id, d::date AS day\nFROM orders AS o\nCROSS JOIN generate_series(o.ordered_at::date, o.shipped_at::date, interval '1 day') AS d\nWHERE o.id IN (1, 3, 11)\nORDER BY o.id, day;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["day", "date", 1082]
+          ],
+          "rowCount": 6,
+          "digest": "f08edb399edb1853",
+          "rows": [
+            ["3", "2025-07-01"],
+            ["3", "2025-07-02"],
+            ["11", "2025-07-01"],
+            ["11", "2025-07-02"],
+            ["11", "2025-07-03"],
+            ["11", "2025-07-04"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0eaa5deecd6a2084": {
+      "db": "empty",
+      "sql": "SELECT t AS utc_step,\n       t2 AS paris_step\nFROM generate_series(timestamptz '2026-03-28 00:00 Europe/Paris',\n                     timestamptz '2026-03-31 00:00 Europe/Paris',\n                     interval '1 day') WITH ORDINALITY AS a (t, i)\nFULL JOIN generate_series(timestamptz '2026-03-28 00:00 Europe/Paris',\n                     timestamptz '2026-03-31 00:00 Europe/Paris',\n                     interval '1 day', 'Europe/Paris') WITH ORDINALITY AS b (t2, i) USING (i)\nORDER BY i;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["utc_step", "timestamptz", 1184],
+            ["paris_step", "timestamptz", 1184]
+          ],
+          "rowCount": 4,
+          "digest": "a8011cd8ba7f202f",
+          "rows": [
+            ["2026-03-27 23:00:00+00", "2026-03-27 23:00:00+00"],
+            ["2026-03-28 23:00:00+00", "2026-03-28 23:00:00+00"],
+            ["2026-03-29 23:00:00+00", "2026-03-29 22:00:00+00"],
+            [null, "2026-03-30 22:00:00+00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "00d0bb59b5767d8b": {
+      "db": "empty",
+      "sql": "SELECT round(random()::numeric, 4) AS today, round(random()::numeric, 4) AS also_today;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["today", "numeric", 1700],
+            ["also_today", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "4b5fef67d1011d67",
+          "rows": [
+            ["0.4900", "0.9731"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1929e8a27eae7c16": {
+      "db": "empty",
+      "sql": "SELECT setseed(0.42);\nSELECT round(random()::numeric, 4) AS r FROM generate_series(1, 3) ORDER BY 1;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["setseed", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "8f3e61524928ad64",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["r", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "49749afc8a6cea4d",
+          "rows": [
+            ["0.3625"],
+            ["0.7429"],
+            ["0.9366"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "131e9fc292c07d03": {
+      "db": "empty",
+      "sql": "SELECT i,\n       (hashint4(i)::bigint + 2147483648) % 100 AS pick_0_to_99,\n       (ARRAY['ios', 'android', 'web'])[1 + (hashint4(i * 7)::bigint + 2147483648) % 3] AS device\nFROM generate_series(1, 5) AS i\nORDER BY i;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["i", "int4", 23],
+            ["pick_0_to_99", "int8", 20],
+            ["device", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "04e7c16b20d6bb58",
+          "rows": [
+            ["1", "22", "web"],
+            ["2", "74", "web"],
+            ["3", "79", "web"],
+            ["4", "15", "android"],
+            ["5", "40", "android"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

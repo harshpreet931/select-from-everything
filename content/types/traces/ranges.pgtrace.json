@@ -1,0 +1,110 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/ranges.scenario.sql",
+ "title": "ranges as written and as stored, march bookings with an exclusion constraint, and the free days as a multirange",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "bookings": {"kind":"table","am":"heap","columns":[{"name":"guest","type":"text"},{"name":"nights","type":"daterange"}]},
+  "bookings_nights_excl": {"kind":"index","am":"gist","columns":[{"name":"nights","type":"daterange"}],"on":"bookings"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT w AS written, r AS stored, lower(r) AS lower, upper(r) AS upper, isempty(r) AS empty,\n       (SELECT array_agg(i ORDER BY i) FROM generate_series(0, 8) AS i WHERE i <@ r) AS members\nFROM (VALUES (1, '[2,5)'), (2, '[2,5]'), (3, '(2,5]'), (4, '(2,5)'), (5, '[4,4)')) AS v (n, w)\nCROSS JOIN LATERAL (SELECT w::int4range AS r) AS c\nORDER BY n",
+   "note": "five int4ranges as you might write them, and the canonical form postgres stores: inclusive lower bound, exclusive upper.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"written","type":"text"},
+     {"name":"stored","type":"int4range"},
+     {"name":"lower","type":"int4"},
+     {"name":"upper","type":"int4"},
+     {"name":"empty","type":"bool"},
+     {"name":"members","type":"_int4"}
+    ],
+    "data": [
+     ["[2,5)","[2,5)","2","5","f","{2,3,4}"],
+     ["[2,5]","[2,6)","2","6","f","{2,3,4,5}"],
+     ["(2,5]","[3,6)","3","6","f","{3,4,5}"],
+     ["(2,5)","[3,5)","3","5","f","{3,4}"],
+     ["[4,4)","empty",null,null,"t",null]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "CREATE TABLE bookings (\n  guest  text NOT NULL,\n  nights daterange NOT NULL,\n  EXCLUDE USING gist (nights WITH &&)\n);\nINSERT INTO bookings VALUES\n  ('ada',   '[2026-03-02,2026-03-05)'),\n  ('grace', '[2026-03-05,2026-03-07)'),\n  ('alan',  '[2026-03-09,2026-03-11)')",
+   "note": "a bookings table for one room: no two stays may overlap.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":3,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO bookings VALUES ('edsger', '[2026-03-04,2026-03-06)')",
+   "note": "a stay from the 4th to the 6th overlaps both ada and grace. the constraint refuses it.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23P01",
+    "message": "conflicting key value violates exclusion constraint \"bookings_nights_excl\"",
+    "detail": "Key (nights)=([2026-03-04,2026-03-06)) conflicts with existing key (nights)=([2026-03-02,2026-03-05))."
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT guest, nights, lower(nights) - date '2026-03-01' AS from_day, upper(nights) - date '2026-03-01' AS to_day,\n       nights && daterange('2026-03-04', '2026-03-06') AS overlaps_4_to_6,\n       nights -|- daterange('2026-03-07', '2026-03-09') AS touches_7_to_9\nFROM bookings\nORDER BY nights",
+   "note": "the bookings, each against the refused stay: && overlaps, -|- is adjacent (touching, not overlapping).",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"guest","type":"text"},
+     {"name":"nights","type":"daterange"},
+     {"name":"from_day","type":"int4"},
+     {"name":"to_day","type":"int4"},
+     {"name":"overlaps_4_to_6","type":"bool"},
+     {"name":"touches_7_to_9","type":"bool"}
+    ],
+    "data": [
+     ["ada","[2026-03-02,2026-03-05)","1","4","t","f"],
+     ["grace","[2026-03-05,2026-03-07)","4","6","t","t"],
+     ["alan","[2026-03-09,2026-03-11)","8","10","f","t"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT range_agg(nights) AS booked,\n       datemultirange(daterange('2026-03-01', '2026-03-11')) - range_agg(nights) AS free\nFROM bookings",
+   "note": "every booked night as one multirange, and march 1 to 11 minus it: the free nights.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"booked","type":"datemultirange"},{"name":"free","type":"datemultirange"}],
+    "data": [
+     ["{[2026-03-02,2026-03-07),[2026-03-09,2026-03-11)}","{[2026-03-01,2026-03-02),[2026-03-07,2026-03-09)}"]
+    ]
+   }
+  }
+ ]
+}

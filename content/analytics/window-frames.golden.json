@@ -1,0 +1,254 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ea71d021df0f17ce": {
+      "db": "org",
+      "sql": "CREATE TABLE leads AS\nSELECT id, name, salary FROM employees\nWHERE manager_id IN (14, 15, 16)\nORDER BY salary, id;\n\nSELECT id, name, salary FROM leads ORDER BY salary, id;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 9,
+          "digest": "f34249a33c610ce8"
+        },
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["salary", "numeric", 1700]
+          ],
+          "rowCount": 9,
+          "digest": "570fc063660861d1",
+          "rows": [
+            ["41", "Olivia Nguyen", "95000.00"],
+            ["44", "Rahul Haddad", "95000.00"],
+            ["48", "Omar Kim", "95000.00"],
+            ["45", "Chen Ahmed", "97000.00"],
+            ["46", "Lucas Ahmed", "98000.00"],
+            ["47", "Emma Smith", "98000.00"],
+            ["42", "Ananya Smith", "99000.00"],
+            ["43", "Lucas Novak", "99000.00"],
+            ["49", "Lucas Haddad", "99000.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "dbb4e3dc43c7369f": {
+      "db": "org",
+      "sql": "SELECT id, salary,\n       count(*) OVER (ORDER BY salary, id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS by_rows,\n       count(*) OVER (ORDER BY salary RANGE BETWEEN 1000 PRECEDING AND 1000 FOLLOWING) AS by_range,\n       count(*) OVER (ORDER BY salary GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS by_groups\nFROM leads\nORDER BY salary, id;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["salary", "numeric", 1700],
+            ["by_rows", "int8", 20],
+            ["by_range", "int8", 20],
+            ["by_groups", "int8", 20]
+          ],
+          "rowCount": 9,
+          "digest": "c7acc587a4d54cf1",
+          "rows": [
+            ["41", "95000.00", "2", "3", "4"],
+            ["44", "95000.00", "3", "3", "4"],
+            ["48", "95000.00", "3", "3", "4"],
+            ["45", "97000.00", "3", "3", "6"],
+            ["46", "98000.00", "3", "6", "6"],
+            ["47", "98000.00", "3", "6", "6"],
+            ["42", "99000.00", "3", "5", "5"],
+            ["43", "99000.00", "3", "5", "5"],
+            ["49", "99000.00", "2", "5", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "93fee0f71886639e": {
+      "db": "org",
+      "sql": "SELECT id, name, salary,\n       last_value(name) OVER (ORDER BY salary) AS top_paid\nFROM leads\nORDER BY salary, id;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["salary", "numeric", 1700],
+            ["top_paid", "text", 25]
+          ],
+          "rowCount": 9,
+          "digest": "4786bd5051e74466",
+          "rows": [
+            ["41", "Olivia Nguyen", "95000.00", "Omar Kim"],
+            ["44", "Rahul Haddad", "95000.00", "Omar Kim"],
+            ["48", "Omar Kim", "95000.00", "Omar Kim"],
+            ["45", "Chen Ahmed", "97000.00", "Chen Ahmed"],
+            ["46", "Lucas Ahmed", "98000.00", "Emma Smith"],
+            ["47", "Emma Smith", "98000.00", "Emma Smith"],
+            ["42", "Ananya Smith", "99000.00", "Lucas Haddad"],
+            ["43", "Lucas Novak", "99000.00", "Lucas Haddad"],
+            ["49", "Lucas Haddad", "99000.00", "Lucas Haddad"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "edb5dcd026fb5067": {
+      "db": "org",
+      "sql": "SELECT id, name, salary,\n       last_value(name) OVER (ORDER BY salary, id\n                              ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS top_paid,\n       first_value(name) OVER (ORDER BY salary DESC, id DESC) AS also_top_paid\nFROM leads\nORDER BY salary, id;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["salary", "numeric", 1700],
+            ["top_paid", "text", 25],
+            ["also_top_paid", "text", 25]
+          ],
+          "rowCount": 9,
+          "digest": "1dd834861e6ad54e",
+          "rows": [
+            ["41", "Olivia Nguyen", "95000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["44", "Rahul Haddad", "95000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["48", "Omar Kim", "95000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["45", "Chen Ahmed", "97000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["46", "Lucas Ahmed", "98000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["47", "Emma Smith", "98000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["42", "Ananya Smith", "99000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["43", "Lucas Novak", "99000.00", "Lucas Haddad", "Lucas Haddad"],
+            ["49", "Lucas Haddad", "99000.00", "Lucas Haddad", "Lucas Haddad"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "065e723ecc51ca99": {
+      "db": "org",
+      "sql": "SELECT id,\n       first_value(id) OVER w AS first_in_frame,\n       lag(id) OVER w AS lag,\n       row_number() OVER w AS row_number\nFROM leads\nWINDOW w AS (ORDER BY salary, id ROWS BETWEEN CURRENT ROW AND CURRENT ROW)\nORDER BY salary, id;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["first_in_frame", "int4", 23],
+            ["lag", "int4", 23],
+            ["row_number", "int8", 20]
+          ],
+          "rowCount": 9,
+          "digest": "26481f555ba41ed3",
+          "rows": [
+            ["41", "41", null, "1"],
+            ["44", "44", "41", "2"],
+            ["48", "48", "44", "3"],
+            ["45", "45", "48", "4"],
+            ["46", "46", "45", "5"],
+            ["47", "47", "46", "6"],
+            ["42", "42", "47", "7"],
+            ["43", "43", "42", "8"],
+            ["49", "49", "43", "9"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bfa8228607b39bb8": {
+      "db": "org",
+      "sql": "SELECT id, name, salary,\n       salary - round(avg(salary) OVER (ORDER BY salary\n                      ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n                      EXCLUDE CURRENT ROW)) AS vs_the_others\nFROM leads\nORDER BY salary, id;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["salary", "numeric", 1700],
+            ["vs_the_others", "numeric", 1700]
+          ],
+          "rowCount": 9,
+          "digest": "b2ddbed50ce4986c",
+          "rows": [
+            ["41", "Olivia Nguyen", "95000.00", "-2500.00"],
+            ["44", "Rahul Haddad", "95000.00", "-2500.00"],
+            ["48", "Omar Kim", "95000.00", "-2500.00"],
+            ["45", "Chen Ahmed", "97000.00", "-250.00"],
+            ["46", "Lucas Ahmed", "98000.00", "875.00"],
+            ["47", "Emma Smith", "98000.00", "875.00"],
+            ["42", "Ananya Smith", "99000.00", "2000.00"],
+            ["43", "Lucas Novak", "99000.00", "2000.00"],
+            ["49", "Lucas Haddad", "99000.00", "2000.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c7c8680533844c40": {
+      "db": "org",
+      "sql": "SELECT id, sum(salary) OVER (ORDER BY salary, id\n                             RANGE BETWEEN 1000 PRECEDING AND CURRENT ROW)\nFROM leads;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P20",
+            "message": "RANGE with offset PRECEDING/FOLLOWING requires exactly one ORDER BY column",
+            "position": 29
+          },
+          "digest": "f0e706b139bfaf7c"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P20",
+        "message": "RANGE with offset PRECEDING/FOLLOWING requires exactly one ORDER BY column",
+        "position": 29,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "c250e6a91ff3daa6": {
+      "db": "org",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT id, sum(salary) OVER w\nFROM leads\nWINDOW w AS (ORDER BY salary ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)\nORDER BY salary, id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "413e0865ffcbd7ca",
+          "rows": [
+            ["Incremental Sort"],
+            ["  Sort Key: salary, id"],
+            ["  Presorted Key: salary"],
+            ["  ->  WindowAgg"],
+            ["        Window: w AS (ORDER BY salary ROWS BETWEEN '1'::bigint PRECEDING AND '1'::bigint FOLLOWING)"],
+            ["        ->  Sort"],
+            ["              Sort Key: salary"],
+            ["              ->  Seq Scan on leads"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

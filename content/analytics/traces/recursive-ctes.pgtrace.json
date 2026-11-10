@@ -1,0 +1,196 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/recursive-ctes.scenario.sql",
+ "title": "a recursive CTE walking down the org chart from one manager, an iteration at a time",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "departments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"budget","type":"numeric"}]
+  },
+  "departments_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"departments"},
+  "departments_name_key": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"departments"},
+  "employees": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"manager_id","type":"int4"},
+    {"name":"dept_id","type":"int4"},
+    {"name":"title","type":"text"},
+    {"name":"salary","type":"numeric"},
+    {"name":"hired_on","type":"date"}
+   ]
+  },
+  "employees_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"employees"},
+  "oncall": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"},{"name":"on_call","type":"bool"}]
+  },
+  "oncall_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"}],
+   "on": "oncall"
+  }
+ },
+ "base": {"xid":795,"lsn":26456368},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, title, 0 AS depth\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, e.title, t.depth + 1\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n)\nSELECT id, name, title, depth FROM team ORDER BY depth, id",
+   "note": "Ama Rossi's team, walked one level per iteration.",
+   "status": "ok",
+   "stages": [
+    {
+     "clause": "anchor",
+     "note": "the anchor runs once: Ama Rossi, manager, employee 14. she is the whole working table, and the first row of the result.",
+     "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, title, 0 AS depth\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, e.title, t.depth + 1\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n)\nSELECT id, name, title, depth FROM team WHERE depth = 0 ORDER BY id",
+     "columns": ["id","name","title","depth"],
+     "types": ["int4","text","text","int4"],
+     "data": [["14","Ama Rossi","manager","0"]]
+    },
+    {
+     "clause": "iteration 1",
+     "note": "the recursive half joins employees to the working table, so it looks for people whose manager is Ama. three leads. they replace her as the working table, and join the result.",
+     "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, title, 0 AS depth\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, e.title, t.depth + 1\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n)\nSELECT id, name, title, depth FROM team WHERE depth = 1 ORDER BY id",
+     "columns": ["id","name","title","depth"],
+     "types": ["int4","text","text","int4"],
+     "data": [["41","Olivia Nguyen","lead","1"],["42","Ananya Smith","lead","1"],["43","Lucas Novak","lead","1"]]
+    },
+    {
+     "clause": "iteration 2",
+     "note": "same join, against the three leads only, not against everything found so far. nine associates.",
+     "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, title, 0 AS depth\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, e.title, t.depth + 1\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n)\nSELECT id, name, title, depth FROM team WHERE depth = 2 ORDER BY id",
+     "columns": ["id","name","title","depth"],
+     "types": ["int4","text","text","int4"],
+     "data": [
+      ["122","Diego Wong","associate","2"],
+      ["123","Jonas Petrov","associate","2"],
+      ["124","Emma Dubois","associate","2"],
+      ["125","Mei Nguyen","associate","2"],
+      ["126","Clara Garcia","associate","2"],
+      ["127","Valentina Haddad","associate","2"],
+      ["128","Ama Haddad","associate","2"],
+      ["129","Ivan Hansen","associate","2"],
+      ["130","Ivan Ahmed","associate","2"]
+     ]
+    },
+    {
+     "clause": "iteration 3",
+     "note": "nobody reports to the nine associates. the join finds nothing, the working table is empty, and postgres stops. 13 rows in all.",
+     "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, title, 0 AS depth\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, e.title, t.depth + 1\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n)\nSELECT id, name, title, depth FROM team WHERE depth = 3 ORDER BY id",
+     "columns": ["id","name","title","depth"],
+     "types": ["int4","text","text","int4"],
+     "data": []
+    }
+   ],
+   "result": {
+    "command": "SELECT",
+    "rows": 13,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"title","type":"text"},
+     {"name":"depth","type":"int4"}
+    ],
+    "data": [
+     ["14","Ama Rossi","manager","0"],
+     ["41","Olivia Nguyen","lead","1"],
+     ["42","Ananya Smith","lead","1"],
+     ["43","Lucas Novak","lead","1"],
+     ["122","Diego Wong","associate","2"],
+     ["123","Jonas Petrov","associate","2"],
+     ["124","Emma Dubois","associate","2"],
+     ["125","Mei Nguyen","associate","2"],
+     ["126","Clara Garcia","associate","2"],
+     ["127","Valentina Haddad","associate","2"],
+     ["128","Ama Haddad","associate","2"],
+     ["129","Ivan Hansen","associate","2"],
+     ["130","Ivan Ahmed","associate","2"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, 0 AS depth\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, t.depth + 1\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n) SEARCH BREADTH FIRST BY id SET ord\nSELECT id, name, depth, ord FROM team ORDER BY ord",
+   "note": "SEARCH BREADTH FIRST: a level at a time, like the iterations ran. ord is (depth, id) under the hood.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 13,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"depth","type":"int4"},
+     {"name":"ord","type":"record"}
+    ],
+    "data": [
+     ["14","Ama Rossi","0","(0,14)"],
+     ["41","Olivia Nguyen","1","(1,41)"],
+     ["42","Ananya Smith","1","(1,42)"],
+     ["43","Lucas Novak","1","(1,43)"],
+     ["122","Diego Wong","2","(2,122)"],
+     ["123","Jonas Petrov","2","(2,123)"],
+     ["124","Emma Dubois","2","(2,124)"],
+     ["125","Mei Nguyen","2","(2,125)"],
+     ["126","Clara Garcia","2","(2,126)"],
+     ["127","Valentina Haddad","2","(2,127)"],
+     ["128","Ama Haddad","2","(2,128)"],
+     ["129","Ivan Hansen","2","(2,129)"],
+     ["130","Ivan Ahmed","2","(2,130)"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, 0 AS depth\n  FROM employees\n  WHERE id = 14\n  UNION ALL\n  SELECT e.id, e.name, t.depth + 1\n  FROM employees AS e\n  JOIN team AS t ON e.manager_id = t.id\n) SEARCH DEPTH FIRST BY id SET ord\nSELECT id, name, depth, ord FROM team ORDER BY ord",
+   "note": "SEARCH DEPTH FIRST: down one branch to the bottom before the next. ord is the path of ids from the top, so sorting by it walks the tree.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 13,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"depth","type":"int4"},
+     {"name":"ord","type":"_record"}
+    ],
+    "data": [
+     ["14","Ama Rossi","0","{(14)}"],
+     ["41","Olivia Nguyen","1","{(14),(41)}"],
+     ["122","Diego Wong","2","{(14),(41),(122)}"],
+     ["123","Jonas Petrov","2","{(14),(41),(123)}"],
+     ["124","Emma Dubois","2","{(14),(41),(124)}"],
+     ["42","Ananya Smith","1","{(14),(42)}"],
+     ["125","Mei Nguyen","2","{(14),(42),(125)}"],
+     ["126","Clara Garcia","2","{(14),(42),(126)}"],
+     ["127","Valentina Haddad","2","{(14),(42),(127)}"],
+     ["43","Lucas Novak","1","{(14),(43)}"],
+     ["128","Ama Haddad","2","{(14),(43),(128)}"],
+     ["129","Ivan Hansen","2","{(14),(43),(129)}"],
+     ["130","Ivan Ahmed","2","{(14),(43),(130)}"]
+    ]
+   }
+  }
+ ],
+ "db": "org"
+}

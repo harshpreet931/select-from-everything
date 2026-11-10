@@ -1,0 +1,218 @@
+import { NullGate } from "@/components/figures/basics/NullGate";
+import { Kleene } from "@/components/figures/basics/Kleene";
+import { prov, resultOf } from "@/components/figures/basics/captured";
+import trace from "./traces/null-and-three-valued-logic.pgtrace.json";
+
+{/* the three figures read traces/null-and-three-valued-logic.scenario.sql, captured on PGlite:
+    the gate's verdicts, the AND/OR/NOT table and the "same or not" list are postgres's own
+    answers, looked up, never computed in the browser. */}
+
+export const gate = resultOf(trace, 0);
+export const kleene = resultOf(trace, 1);
+export const same = resultOf(trace, 2);
+export const source = prov(trace);
+
+<InShort>
+NULL means **no value here**. compare anything with it, even another NULL, and the answer isn't true or false but **unknown**. WHERE keeps a row only when its condition is **true**, so a row with a NULL in the wrong place drops out of `WHERE p` and out of `WHERE NOT p` too.
+
+ask about NULL with **IS NULL** and **IS DISTINCT FROM**, never with `=`.
+</InShort>
+
+## the picture
+
+you know how `WHERE email = NULL` comes back empty, even though Grace has no email? no error, no warning, just zero rows. it feels like a bug. it's the rules working exactly as written.
+
+think of a paper form where someone left the city blank. ask a clerk "is this person's city London?" and an honest clerk says "no idea, it's blank". ask "is it *not* London?" and you get the same shrug. WHERE is a bouncer that only lets in a clear yes. "no idea" isn't a yes, so the blank form stays outside whichever way you phrase the question.
+
+<Figure wide caption={<>pick a condition, wrap it in NOT, and press <code>→ null</code> to blank out someone's city. a row is <C k="live">kept</C> only when the condition says true. unknown (dashed) is dropped just like false, so watch the <em>in neither</em> count.</>}>
+<NullGate
+  table={gate}
+  people={[
+    { name: "Ada Lovelace", city: "London" },
+    { name: "Zoë Martin", city: "Paris" },
+    { name: "Ana Lima", city: "" },
+    { name: "Grace Okafor", city: "Lagos" },
+    { name: "José Silva", city: null },
+  ]}
+  preds={[
+    { sql: "city = 'London'", col: "eq", notCol: "not eq", note: "Ada gets in, everyone with another city gets false. José has no city, so postgres can't say whether it's London: unknown." },
+    { sql: "city <> 'London'", col: "ne", notCol: "not ne", note: "the opposite question, and José still can't answer it. unknown doesn't flip to true just because you asked the other way round." },
+    { sql: "city = NULL", col: "eqnull", notCol: "not eqnull", note: "nobody gets in, José included. anything compared with NULL is unknown, NULL compared with NULL too." },
+    { sql: "city IS NULL", col: "isnull", notCol: "not isnull", note: "IS NULL asks a different question: is the value missing? that one always has a yes or no answer." },
+    { sql: "city IS DISTINCT FROM 'London'", col: "distinct", notCol: "not distinct", note: "a comparison that treats NULL as one more value. a missing city is distinct from 'London', so José gets in, and nothing is ever unknown." },
+    { sql: "city IN ('London', 'Paris')", col: "in", notCol: "not in", note: "IN is a chain of ORs: city = 'London' OR city = 'Paris'. for José both halves are unknown, and so is the OR." },
+    { sql: "city NOT IN ('London', NULL)", col: "notinnull", notCol: "not notinnull", note: "NOT IN is a chain of ANDs: city <> 'London' AND city <> NULL. the second half is unknown for everyone, so nobody can get better than unknown." },
+  ]}
+  trace={source}
+/>
+</Figure>
+
+notice Ana. her city is `''`, an empty string, and an empty string is a value: it's not London, so she gets a clean false. only José, whose city is really missing, falls into the hole. (her `''` and his NULL are the two customers [first query](/learn/start/first-query) warned you about.)
+
+## true, false and unknown
+
+NULL isn't a value. it's a marker that says "there's no value in this cell". so when you ask postgres whether a NULL equals something, it has nothing to compare, and it answers with a NULL boolean. the standard calls that truth value **unknown**, and postgres stores it as NULL.
+
+```sql run
+SELECT NULL = NULL AS "NULL = NULL",
+       NULL = 1    AS "NULL = 1",
+       NULL <> 1   AS "NULL <> 1",
+       NULL > 1    AS "NULL > 1";
+```
+
+four NULLs. not false, not an error: unknown, every one of them.
+
+so SQL logic has three values, and AND, OR and NOT need rules for the third one. there's a neat way to work them out: read unknown as "true or false, nobody knows which", try both, and if both give the same answer, that's the answer.
+
+<Figure caption={<>every cell is postgres's own answer. click one with an unknown in it: the narration tries the unknown as true and as false. <code>false AND anything</code> is false and <code>true OR anything</code> is true, so those cells come out definite.</>}>
+<Kleene table={kleene} trace={source} />
+</Figure>
+
+that's why `NULL AND false` is false (no matter what the NULL turns out to be, the AND fails) but `NULL AND true` is unknown (it hangs on the NULL). and NOT unknown is unknown: flipping a shrug gives you a shrug.
+
+<Predict options={["the 46 with no email", "no rows", "an error"]} answer={1}>
+```sql
+SELECT name FROM customers WHERE email = NULL;
+```
+<Explain>
+`email = NULL` is unknown for every customer: for the ones with an email, because there's nothing on the right to compare with, and for the ones without, because there's nothing on either side. WHERE keeps only true, so nothing survives. no error, because it's a perfectly legal question. it just never has a yes for an answer.
+</Explain>
+</Predict>
+
+zero rows, and postgres doesn't complain:
+
+```sql run db=shop
+SELECT name FROM customers WHERE email = NULL;
+```
+
+the question you meant is IS NULL. it asks whether the value is missing, which always has a yes or no answer:
+
+```sql run db=shop
+SELECT count(*) FROM customers WHERE email IS NULL;
+SELECT id, name, email FROM customers WHERE email IS NULL ORDER BY id LIMIT 3;
+```
+
+46 customers without an email, Grace first. `IS NOT NULL` is its opposite, and it never says unknown either.
+
+## the rows that vanish
+
+this is the part that bites in real queries. a condition and its NOT should split a table in two. with NULLs around, they don't:
+
+```sql run db=shop
+SELECT count(*) AS london FROM customers WHERE city = 'London';
+SELECT count(*) AS not_london FROM customers WHERE NOT (city = 'London');
+SELECT count(*) AS everyone FROM customers;
+```
+
+159 plus 1,786 is 1,945, not 2,000. the missing 55 are the customers whose city is NULL: `city = 'London'` is unknown for them, NOT unknown is unknown, and WHERE turns both away. you can ask for them by name, with `IS UNKNOWN`, the boolean cousin of IS NULL:
+
+```sql run db=shop
+SELECT count(*) FROM customers WHERE (city = 'London') IS UNKNOWN;
+```
+
+there they are. it's the same trap the gate showed, at the size of a real table: every report that says "everyone who isn't in London" is quietly 55 people short.
+
+<Gotcha title="NOT (a = b) is not the opposite of a = b">
+with NULLs in play, `WHERE p` and `WHERE NOT p` together can miss rows. if you mean "everything except", say what should happen to the NULLs: `WHERE city <> 'London' OR city IS NULL`, or the shorter spelling in the next section.
+</Gotcha>
+
+## IS DISTINCT FROM
+
+sometimes you want a comparison that treats NULL as a value like any other: two NULLs are the same, NULL and `'London'` are different, and the answer is never unknown. that's `IS DISTINCT FROM`, and its opposite `IS NOT DISTINCT FROM`.
+
+```sql run db=shop
+SELECT count(*) FROM customers WHERE city <> 'London';
+SELECT count(*) FROM customers WHERE city IS DISTINCT FROM 'London';
+```
+
+1,786 with `<>`, 1,841 with IS DISTINCT FROM: the 55 NULL cities are back. it's in the standard (SQL:1999) and postgres has had it for ages. it's the right tool for "did this column change?" between two nullable columns, where `old <> new` would say unknown every time one side is NULL.
+
+it isn't the right tool for looking up one value, though. `customers` has a unique index on email, and `=` uses it. IS NOT DISTINCT FROM can't:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE email = 'ada@example.com';
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE email IS NOT DISTINCT FROM 'ada@example.com';
+```
+
+an index scan for `=`, a full sequential scan for the other one. if the value you're looking for can't be NULL, plain `=` already means the same thing, and it's fast. ([what an index is](/learn/indexes/what-an-index-is) explains the first plan.)
+
+## NOT IN with a NULL in it
+
+`x IN (a, b)` is shorthand for `x = a OR x = b`. so `x NOT IN (a, b)` is `x <> a AND x <> b`. put a NULL in the list and one half of that AND is unknown for every row, so no row can ever get a true:
+
+```sql run db=shop
+SELECT count(*) FROM products WHERE category NOT IN ('kitchen');
+SELECT count(*) FROM products WHERE category NOT IN ('kitchen', NULL);
+```
+
+178, then 0. a literal NULL in a list is easy to spot. a NULL that arrives through a subquery, `WHERE id NOT IN (SELECT customer_id FROM ...)`, is not, and it empties the result just as thoroughly. that one has [a chapter of its own](/learn/joins/not-in-trap).
+
+## where two NULLs are the same after all
+
+so `NULL = NULL` is unknown. and yet the [logical order](/learn/basics/logical-order) chapter put three products with no category into one GROUP BY bucket. NULL has a split personality, and it depends on which question is being asked:
+
+<Figure caption={<>two NULLs, nine places, one captured query. comparisons ask "are these equal?" and get unknown. grouping, DISTINCT and UNION ask "are these distinct?" and decide no. a UNIQUE column decides the other way and stores both.</>}>
+<ResultTable columns={same.columns.slice(1).map((c) => c.name)} rows={same.rows.map((r) => r.slice(1))} />
+</Figure>
+
+the rule of thumb: an **operator** (`=`, `<`, `IN`) answers unknown. an **operation that sorts rows into piles** (GROUP BY, DISTINCT, UNION) puts the NULLs on one pile, because it needs every row to land somewhere. ORDER BY sorts NULLs together and, in postgres, treats them as bigger than every value, so they come last ([sorting with ORDER BY](/learn/basics/order-by) shows how to move them).
+
+UNIQUE is the odd one out. it lets in as many NULLs as you like, which is how 46 customers can share a NULL email in a column marked UNIQUE: a NULL isn't known to equal anything, so it can't be a duplicate. since postgres 15 <Since v={15} /> you can ask for the other behaviour with `UNIQUE NULLS NOT DISTINCT`.
+
+and count(DISTINCT x) skips NULLs altogether, like every aggregate does, which is the next thing.
+
+## counting and adding NULLs
+
+aggregates skip NULLs. `count(*)` counts rows, `count(email)` counts emails that are there:
+
+```sql run db=shop
+SELECT count(*) AS customers, count(email) AS emails, count(city) AS cities
+FROM customers;
+```
+
+2,000 customers, 1,954 emails, 1,945 cities. the same rule applies to `sum`, `avg`, `min` and `max`: a NULL isn't zero, it isn't counted at all.
+
+```sql run
+SELECT sum(x), count(x), count(*), avg(x)
+FROM (VALUES (1), (NULL), (3)) AS t (x);
+```
+
+three rows, two values. the average is 4 over 2, not 4 over 3. [aggregate functions](/learn/basics/aggregates) has the details, including what they return when there's nothing to aggregate.
+
+arithmetic and most functions go the other way: one NULL in, NULL out. `concat` is one of the few that skips them:
+
+```sql run
+SELECT 'Grace ' || NULL AS glued, concat('Grace ', NULL) AS concatenated, 1 + NULL AS added;
+```
+
+when you want a stand-in for the missing value, `coalesce(email, 'no email')` gives you one. it gets its own section in [CASE, COALESCE and NULLIF](/learn/basics/case-expressions).
+
+<Gotcha title="CHECK lets unknown through">
+WHERE keeps a row only if the condition is true. a CHECK constraint is the mirror image: it rejects a row only if the condition is false. unknown passes. so `CHECK (qty > 0)` happily stores a NULL, and only a real 0 gets refused:
+
+```sql run expect=error
+CREATE TABLE line (qty int CHECK (qty > 0));
+INSERT INTO line VALUES (NULL);
+INSERT INTO line VALUES (0);
+```
+
+if a column must have a value, say `NOT NULL` as well. [constraints](/learn/design/constraints) has more on that.
+</Gotcha>
+
+<Deep title="where NULL came from, and who still hates it">
+Codd described NULL and the three-valued logic that comes with it in a 1979 paper. about a decade later he wanted two kinds: one for "applicable but missing" (we don't know her phone number) and one for "doesn't apply" (she has no phone), which would have meant a four-valued logic. nobody built it. Chris Date spent years arguing that NULL should go altogether and that missing data belongs in separate tables.
+
+SQL kept one NULL that has to mean both. so when you see one, the database can't tell you whether the value is unknown or simply doesn't exist. you can, if you write it down: a separate `phone_status` column, or a design with no nullable column at all. [entities and relationships](/learn/design/er-modeling) is where that decision gets made.
+</Deep>
+
+<Interview q="why doesn't WHERE x <> 3 return the rows where x is NULL?">
+because `NULL <> 3` isn't true, it's unknown: there's no value to compare, so postgres can't say whether it differs from 3. WHERE keeps only rows where the condition is true, so unknown rows go, just like false ones. the fix is to say what you want for NULLs: `WHERE x <> 3 OR x IS NULL`, or `WHERE x IS DISTINCT FROM 3`. bonus point: the same logic is why `NOT IN` with a NULL in the list returns nothing, and why a CHECK constraint lets NULLs through (CHECK only rejects false).
+</Interview>
+
+<Keylines>
+- NULL is a marker for "no value", and any comparison with it is unknown, not false.
+- WHERE keeps only true. unknown rows drop out of WHERE p and WHERE NOT p alike.
+- ask with IS NULL, IS UNKNOWN and IS DISTINCT FROM, never with = NULL.
+- operators say unknown; GROUP BY, DISTINCT and UNION put NULLs in one pile; UNIQUE lets them all in.
+- aggregates skip NULLs, arithmetic spreads them, CHECK lets them pass.
+</Keylines>

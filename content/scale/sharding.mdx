@@ -1,0 +1,113 @@
+import { ShardMap } from "@/components/figures/scale/ShardMap";
+import { PlanPick } from "@/components/figures/scale/PlanPick";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, sqlOf } from "@/lib/db/captured";
+import keys from "./traces/shard-keys.pgtrace.json";
+import fdw from "./traces/fdw-shards.pgtrace.json";
+
+{/* the shard map's load comes from traces/shard-keys.scenario.sql (PGlite, events dataset); where
+    users land is the figure's own arithmetic. the postgres_fdw plans are traces/fdw-shards.scenario.sql
+    on a native postgres 18.6: a partitioned table whose partitions are foreign tables reached over a
+    loopback connection, two schemas standing in for two machines. */}
+
+export const users = keys.steps[0].result.data;
+export const months = keys.steps[1].result.data;
+export const split = fdw.steps[0].result.data;
+export const runs = ["one user", "one kind", "per user", "a total"].map((label, j) => { const st = fdw.steps[j + 1]; return { label, note: st.note, sql: sqlOf(st), plan: st.result.data.map((r) => r[0]).join("\n") }; });
+
+<InShort>
+**sharding** splits one table's rows across several independent databases, by a **shard key**. a query that names the key goes to one shard; a query that doesn't goes to all of them and gets merged. the key decides everything: an even spread of load (or a **hot shard**), which joins stay local, and how painful it is to add a machine later.
+</InShort>
+
+## the picture
+
+you know how [partitioning](/learn/scale/partitioning) splits a table into pieces on one server? sharding is the same split with each piece on its own server, so the pieces stop sharing a CPU, a disk and a WAL. that's how writes scale past one machine, and it's also where every query starts needing a map.
+
+think of a library that outgrew its building and moved into four branches (the shards). books are shelved by the author's surname (the shard key). ask for one author, and you know which branch to call. ask "every book published in 1999" and you're calling all four.
+
+<Figure wide caption={<>500 users of the events dataset on n shards. pick a key and a map, then switch the load to last week's writes. the line marks the average shard; <C k="hot">the busiest</C> lights up when it's well above. the chip shows who moves when a shard is added.</>}>
+<ShardMap users={users} months={months} />
+</Figure>
+
+## picking a shard key
+
+a good shard key is one that almost every query includes, that spreads both data and traffic, and that keeps rows queried together on the same shard. three common shapes:
+
+- **hash of an id**: even data, no range queries across shards, and every user's rows together. what most systems default to.
+- **range of an id or a name**: neighbours stay together, so range scans hit one shard. skew lands wherever the busy ranges are.
+- **range of time**: wonderful for retention, terrible for writes. every insert goes to the newest shard.
+
+the events dataset makes the skew real. hashing spreads users evenly, but users aren't equally busy:
+
+```sql run db=events
+SELECT ((hashint4(user_id) % 4) + 4) % 4 AS shard,
+       count(DISTINCT user_id) AS users,
+       count(*) AS events
+FROM events
+GROUP BY 1
+ORDER BY 1;
+```
+
+```sql run db=events
+SELECT user_id, count(*) AS events, round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+FROM events
+GROUP BY user_id
+ORDER BY events DESC, user_id
+LIMIT 3;
+```
+
+one user owns more than 4% of all events. no hash can split one key across shards, so that user's shard carries all of it. a **hot key** like that (a celebrity account, a big tenant) needs special handling: its own shard, or a key that splits it (user plus day).
+
+<Predict question="a SaaS app shards by tenant_id. the dashboard query is: total revenue across all tenants for today. how many shards does it touch?" options={["one", "all of them", "it can't run"]} answer={1}>
+```sql
+SELECT sum(amount) FROM invoices WHERE created_at >= current_date;
+```
+<Explain>
+all of them. the WHERE doesn't mention tenant_id, so every shard might have matching rows. each shard computes its own partial sum and something adds them up: scatter, then gather. it works, but its latency is the slowest shard's, and it does work on every machine.
+</Explain>
+</Predict>
+
+## asking one shard, or all of them
+
+postgres can do a small version of this with postgres_fdw: a partitioned table whose partitions are foreign tables on other servers. here the "servers" are two schemas reached over a loopback connection, so the plans are real and the network is pretend. {split.map((r) => `${r[0]} holds ${Number(r[1]).toLocaleString("en-US")} events of ${r[2]} users`).join(", ")}.
+
+<Figure wide caption={<>EXPLAIN (VERBOSE) of four queries on the sharded table. each Foreign Scan prints the Remote SQL it sends to its shard. with the shard key, one shard gets the query; without it, both do; and only a GROUP BY on the shard key lets each shard aggregate on its own.</>}>
+<PlanPick runs={runs} trace={prov(fdw)} hot={["Remote SQL"]} />
+</Figure>
+
+the last one is the honest surprise: a total across shards still ships every matching row back to be counted, because postgres_fdw doesn't push partial aggregates down to the remote side. purpose-built systems do (citus sends each worker the partial aggregate and combines the results), which is a big part of why they exist.
+
+## joins across shards
+
+a join is cheap when both sides live on the same shard. so sharded schemas get designed around it:
+
+<Figure wide caption={<>where a join can run, depending on how its two tables are placed. hover a stage.</>}>
+<Flow stages={[
+  { label: "co-located", sub: "same shard key", note: "orders and order_items both sharded by customer_id: every customer's rows are on one shard, so the join runs locally, shard by shard." },
+  { label: "reference table", sub: "copied everywhere", note: "small tables (countries, plans, products) copied in full to every shard, so any shard can join to them." },
+  { label: "repartition", sub: "move rows to match", note: "different keys on each side: rows are reshuffled over the network so matching keys meet. correct, and expensive." },
+  { label: "in the app", sub: "two queries", note: "fetch from one shard, then ask the others by id. the N+1 problem, across machines." },
+]} />
+</Figure>
+
+the same goes for constraints. a unique index or a foreign key is enforced inside one database; across shards, uniqueness only holds when the key includes the shard key (exactly the [partitioning](/learn/scale/partitioning) rule, for the same reason), and a transaction that writes to two shards needs [two-phase commit](/learn/scale/two-phase-commit) to be atomic.
+
+## resharding
+
+shards fill up, and you add one. with `hash mod n`, changing n changes almost every key's shard: going from 4 to 5 moves about 4 keys in 5. so real systems don't map keys to shards directly. they hash into a fixed, larger number of slots (or ranges, or a consistent-hashing ring) and move whole slots between machines, so adding a shard moves only its fair share. try both maps in the figure. the move itself is a copy plus catching up on changes made during the copy, often with [logical replication](/learn/wal/logical-replication), then a short pause to switch the map.
+
+<Gotcha title="shard last">
+sharding turns every query, every constraint and every migration into a distributed problem. before it: a bigger machine, [read replicas](/learn/scale/read-replicas) for reads, [partitioning](/learn/scale/partitioning) for retention, [pooling](/learn/scale/connections-and-pooling), and fixing the queries ([finding slow queries](/learn/optimizer/finding-slow-queries)). when it's truly needed, systems that do it for you (citus as a postgres extension, or the [distributed SQL](/learn/scale/distributed-sql) databases) save you writing the router, the rebalancer and the cross-shard planner yourself.
+</Gotcha>
+
+<Interview q="how would you choose a shard key?">
+pick the column nearly every query filters on, that spreads both data and traffic evenly, and that keeps rows queried together on one shard (tenant_id for a SaaS app, user_id for a social app). avoid monotonically increasing keys like timestamps with range sharding, which send every insert to one shard. watch for hot keys that no hash can split. bonus point: hash into many fixed slots instead of mod n, so adding a shard moves only a small share of the data.
+</Interview>
+
+<Keylines>
+- sharding = partitions on separate machines, chosen by a shard key.
+- queries with the key hit one shard; without it, all of them (scatter, gather).
+- hash spreads keys, not load: hot keys stay hot.
+- co-locate tables that join; copy small reference tables everywhere.
+- map keys to many slots, not mod n, so resharding moves little.
+</Keylines>

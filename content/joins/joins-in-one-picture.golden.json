@@ -1,0 +1,310 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "c6320ade41d7a55a": {
+      "db": "empty",
+      "sql": "CREATE TABLE customers (name text, city text);\nINSERT INTO customers VALUES ('Ada', 'London'), ('Alan', 'London'), ('Grace', 'Paris'), ('Edsger', NULL);\nCREATE TABLE stores (city text, store text);\nINSERT INTO stores VALUES ('London', 'soho'), ('Paris', 'marais'), ('Berlin', 'mitte'), (NULL, 'online');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 4",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "456641ddbdad5ac9"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "INSERT 0 4",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "01f7a3f15b104b8b"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3889f1f2cd7eaa67": {
+      "db": "empty",
+      "sql": "SELECT c.name, c.city, s.city, s.store\nFROM customers AS c CROSS JOIN stores AS s\nORDER BY c.name, s.store;",
+      "statements": [
+        {
+          "tag": "SELECT 16",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25],
+            ["city", "text", 25],
+            ["store", "text", 25]
+          ],
+          "rowCount": 16,
+          "digest": "bf1209a00326a477",
+          "rows": [
+            ["Ada", "London", "Paris", "marais"],
+            ["Ada", "London", "Berlin", "mitte"],
+            ["Ada", "London", null, "online"],
+            ["Ada", "London", "London", "soho"],
+            ["Alan", "London", "Paris", "marais"],
+            ["Alan", "London", "Berlin", "mitte"],
+            ["Alan", "London", null, "online"],
+            ["Alan", "London", "London", "soho"],
+            ["Edsger", null, "Paris", "marais"],
+            ["Edsger", null, "Berlin", "mitte"],
+            ["Edsger", null, null, "online"],
+            ["Edsger", null, "London", "soho"],
+            ["Grace", "Paris", "Paris", "marais"],
+            ["Grace", "Paris", "Berlin", "mitte"],
+            ["Grace", "Paris", null, "online"],
+            ["Grace", "Paris", "London", "soho"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "544bde8fca7c36cc": {
+      "db": "empty",
+      "sql": "SELECT c.name, c.city, s.city, s.store\nFROM customers AS c JOIN stores AS s ON s.city = c.city\nORDER BY c.name, s.store;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25],
+            ["city", "text", 25],
+            ["store", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "2a6a2a888dbd05fc",
+          "rows": [
+            ["Ada", "London", "London", "soho"],
+            ["Alan", "London", "London", "soho"],
+            ["Grace", "Paris", "Paris", "marais"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "924ef4548917762c": {
+      "db": "empty",
+      "sql": "SELECT c.name, c.city, s.city, s.store\nFROM customers AS c FULL JOIN stores AS s ON s.city = c.city\nORDER BY c.name, s.store;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25],
+            ["city", "text", 25],
+            ["store", "text", 25]
+          ],
+          "rowCount": 6,
+          "digest": "afa05874bbd68d03",
+          "rows": [
+            ["Ada", "London", "London", "soho"],
+            ["Alan", "London", "London", "soho"],
+            ["Edsger", null, null, null],
+            ["Grace", "Paris", "Paris", "marais"],
+            [null, null, "Berlin", "mitte"],
+            [null, null, null, "online"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "669b7351b8a379bc": {
+      "db": "empty",
+      "sql": "INSERT INTO stores VALUES ('London', 'camden');\n\nSELECT c.name, s.store\nFROM customers AS c JOIN stores AS s ON s.city = c.city\nORDER BY c.name, s.store;",
+      "statements": [
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "eaea7cec8f5af4bd"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["store", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "2450fccda1332689",
+          "rows": [
+            ["Ada", "camden"],
+            ["Ada", "soho"],
+            ["Alan", "camden"],
+            ["Alan", "soho"],
+            ["Grace", "marais"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "92dd8701f462118d": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM products;\nSELECT count(*) FROM products AS p JOIN order_items AS oi ON oi.product_id = p.id;\nSELECT count(*) FROM products AS p LEFT JOIN order_items AS oi ON oi.product_id = p.id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "d450969eda47b329",
+          "rows": [
+            ["200"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "e9f03e86f3646699",
+          "rows": [
+            ["24942"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "85e54e77b8c9da7d",
+          "rows": [
+            ["24943"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "700a751c20af0d37": {
+      "db": "shop",
+      "sql": "SELECT p.id, p.name, count(*) AS rows_in_join\nFROM products AS p JOIN order_items AS oi ON oi.product_id = p.id\nGROUP BY p.id\nORDER BY rows_in_join DESC, p.id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["rows_in_join", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "069f1564a7ec4cfa",
+          "rows": [
+            ["1", "chef's knife", "1826"],
+            ["2", "cast iron pan", "716"],
+            ["3", "the art of sql", "559"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ada55fe917f0d1f8": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM (SELECT id FROM products INTERSECT SELECT product_id FROM order_items) AS sold;\nSELECT id, name FROM products EXCEPT SELECT p.id, p.name FROM products AS p JOIN order_items AS oi ON oi.product_id = p.id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b962a29ecac255ee",
+          "rows": [
+            ["199"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "2ccf4fbccc44bdcd",
+          "rows": [
+            ["200", "left-handed teapot"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c8796db0ad11da03": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM products CROSS JOIN order_items;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "31e98ecd5f38205a",
+          "rows": [
+            ["4988400"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2272f20128d767ef": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT p.name, oi.qty\nFROM products AS p JOIN order_items AS oi ON oi.product_id = p.id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e3730a5e87ec852d",
+          "rows": [
+            ["Hash Join"],
+            ["  Hash Cond: (oi.product_id = p.id)"],
+            ["  ->  Seq Scan on order_items oi"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on products p"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

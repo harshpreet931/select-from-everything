@@ -1,0 +1,377 @@
+{
+ "v": 1,
+ "scenario": "content/locking/traces/ssi-false-positive.scenario.sql",
+ "title": "false positives: two serializable transactions that touch different rows, without an index, with one, and with one on full pages",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "plain": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"v","type":"int4"}]},
+  "keyed": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"v","type":"int4"}]},
+  "keyed_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"keyed"},
+  "packed": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"v","type":"int4"}]},
+  "packed_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"packed"}
+ },
+ "base": {"xid":763,"lsn":23439688},
+ "setup": "CREATE TABLE plain (id int NOT NULL, v int NOT NULL);\nINSERT INTO plain SELECT g, 0 FROM generate_series(1, 1000) AS g;\nCREATE TABLE keyed (id int PRIMARY KEY, v int NOT NULL) WITH (fillfactor = 50);\nINSERT INTO keyed SELECT g, 0 FROM generate_series(1, 1000) AS g;\nVACUUM ANALYZE plain;\nVACUUM ANALYZE keyed;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT v FROM plain WHERE id = 1",
+   "note": "round one: plain has no index. T1 reads row 1. with no index, that's a seq scan, and the SIRead lock covers the whole relation.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"v","type":"int4"}],"data":[["0"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT v FROM plain WHERE id = 2",
+   "note": "T2 reads row 2, also a seq scan: another relation-wide note.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"v","type":"int4"}],"data":[["0"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE plain SET v = v + 1 WHERE id = 1",
+   "note": "T1 writes row 1. T2's note covers the whole table, so this counts as T2 → T1.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"plain","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"763","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "UPDATE plain SET v = v + 1 WHERE id = 2",
+   "note": "T2 writes row 2: T1 → T2. on paper, a cycle, though the two never touched the same row.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"plain","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"763","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"764","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits fine.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"plain","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"764","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 5,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2's commit fails with 40001. a false positive: running T1 then T2 one at a time would have given exactly this result.",
+   "status": "error",
+   "error": {
+    "sqlstate": "40001",
+    "message": "could not serialize access due to read/write dependencies among transactions",
+    "detail": "Reason code: Canceled on identification as a pivot, during commit attempt."
+   },
+   "locks": []
+  },
+  {
+   "i": 6,
+   "session": "obs",
+   "sql": "SELECT 'round two' AS round",
+   "note": "round two: the same thing on keyed, which has a primary key.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"round","type":"text"}],"data":[["round two"]]},
+   "locks": []
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT v FROM keyed WHERE id = 1",
+   "note": "T1 reads row 1 through the index. now the notes are small: one tuple, one index page.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"v","type":"int4"}],"data":[["0"]]},
+   "locks": [
+    {"session":"T1","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"tuple","target":"keyed (0,1)","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 8,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT v FROM keyed WHERE id = 2",
+   "note": "T2 reads row 2 the same way.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"v","type":"int4"}],"data":[["0"]]},
+   "locks": [
+    {"session":"T1","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"tuple","target":"keyed (0,1)","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"tuple","target":"keyed (0,2)","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "UPDATE keyed SET v = v + 1 WHERE id = 1",
+   "note": "T1 writes row 1. nobody else's note covers it.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"765","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"tuple","target":"keyed (0,2)","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 10,
+   "session": "T2",
+   "sql": "UPDATE keyed SET v = v + 1 WHERE id = 2",
+   "note": "T2 writes row 2. no edge either way.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"keyed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"765","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"766","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"page","target":"keyed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"keyed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"766","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 12,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "and so does T2. no false positive this time.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": []
+  },
+  {
+   "i": 13,
+   "session": "obs",
+   "sql": "CREATE TABLE packed (id int PRIMARY KEY, v int NOT NULL);\nINSERT INTO packed SELECT g, 0 FROM generate_series(1, 1000) AS g;\nVACUUM ANALYZE packed",
+   "note": "round three: the same table, but packed full (fillfactor 100), so an update can't stay on its page.",
+   "status": "ok",
+   "result": {"command":"VACUUM","rows":null,"columns":[],"data":[]},
+   "locks": []
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT v FROM packed WHERE id = 1",
+   "note": "T1 reads row 1 through the index: one tuple, one index leaf page.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"v","type":"int4"}],"data":[["0"]]},
+   "locks": [
+    {"session":"T1","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"tuple","target":"packed (0,1)","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/6","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 15,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT v FROM packed WHERE id = 2",
+   "note": "T2 reads row 2: another tuple, and the same leaf page, because keys 1 and 2 sit side by side.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"v","type":"int4"}],"data":[["0"]]},
+   "locks": [
+    {"session":"T1","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"tuple","target":"packed (0,1)","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/6","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"tuple","target":"packed (0,2)","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/6","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "UPDATE packed SET v = v + 1 WHERE id = 1",
+   "note": "T1 writes row 1. the page is full, so the new version goes to another page and needs a new index entry, on the leaf page T2 has a note on: T2 → T1.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"770","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/6","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"tuple","target":"packed (0,2)","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/6","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 17,
+   "session": "T2",
+   "sql": "UPDATE packed SET v = v + 1 WHERE id = 2",
+   "note": "T2 writes row 2, with a new index entry on the page T1 read: T1 → T2.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"packed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"770","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/6","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"771","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/6","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 18,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"page","target":"packed_pkey page 1","mode":"SIReadLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"packed_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"771","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/6","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 19,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 fails again: the notes were per page, and the page was shared.",
+   "status": "error",
+   "error": {
+    "sqlstate": "40001",
+    "message": "could not serialize access due to read/write dependencies among transactions",
+    "detail": "Reason code: Canceled on identification as a pivot, during commit attempt."
+   },
+   "locks": []
+  }
+ ]
+}

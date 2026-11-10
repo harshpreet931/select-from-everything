@@ -1,0 +1,115 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "8316a5d171d79bab": {
+      "db": "org",
+      "sql": "SELECT id, name, manager_id, title FROM employees WHERE id <= 11 ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 11",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["manager_id", "int4", 23],
+            ["title", "text", 25]
+          ],
+          "rowCount": 11,
+          "digest": "8e7c7232bf971da3",
+          "rows": [
+            ["1", "Fatima Lopez", null, "ceo"],
+            ["2", "Olivia Lopez", "1", "vp"],
+            ["3", "Mei Dubois", "1", "vp"],
+            ["4", "Chen Smith", "1", "vp"],
+            ["5", "Rahul Singh", "2", "director"],
+            ["6", "Amelia Hansen", "2", "director"],
+            ["7", "Olivia Singh", "2", "director"],
+            ["8", "Noah Silva", "3", "director"],
+            ["9", "Valentina Haddad", "3", "director"],
+            ["10", "Kenji Larsen", "3", "director"],
+            ["11", "Valentina Okafor", "4", "director"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3e875f0818658d57": {
+      "db": "org",
+      "sql": "WITH RECURSIVE team AS (\n  SELECT id, name, 1 AS depth FROM employees WHERE manager_id = 2\n  UNION ALL\n  SELECT e.id, e.name, team.depth + 1\n  FROM employees AS e JOIN team ON e.manager_id = team.id\n)\nSELECT depth, count(*) AS people FROM team GROUP BY depth ORDER BY depth;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["depth", "int4", 23],
+            ["people", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "c03412f9dff815bc",
+          "rows": [
+            ["1", "3"],
+            ["2", "9"],
+            ["3", "27"],
+            ["4", "81"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "35019e813d01c243": {
+      "db": "org",
+      "sql": "CREATE TABLE org_paths AS\nWITH RECURSIVE t AS (\n  SELECT id, name, text2ltree(id::text) AS path FROM employees WHERE manager_id IS NULL\n  UNION ALL\n  SELECT e.id, e.name, t.path || e.id::text FROM employees AS e JOIN t ON e.manager_id = t.id\n) SELECT * FROM t;\nCREATE INDEX ON org_paths USING gist (path);\n\nSELECT count(*) AS team FROM org_paths WHERE path <@ '1.2' AND path <> '1.2';\nSELECT path, name FROM org_paths WHERE path @> (SELECT path FROM org_paths WHERE id = 287) ORDER BY nlevel(path);",
+      "statements": [
+        {
+          "tag": "SELECT 300",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 300,
+          "digest": "ed704070b5d1e7e6"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["team", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "de23efba16b7fdd0",
+          "rows": [
+            ["120"]
+          ]
+        },
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["path", "ltree", 24577],
+            ["name", "text", 25]
+          ],
+          "rowCount": 6,
+          "digest": "515246371beaa04b",
+          "rows": [
+            ["1", "Fatima Lopez"],
+            ["1.4", "Chen Smith"],
+            ["1.4.11", "Valentina Okafor"],
+            ["1.4.11.32", "Mei Kowalski"],
+            ["1.4.11.32.96", "Amelia Yilmaz"],
+            ["1.4.11.32.96.287", "Lucas Kim"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

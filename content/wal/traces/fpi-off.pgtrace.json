@@ -1,0 +1,63 @@
+{
+ "v": 1,
+ "scenario": "content/wal/traces/fpi-off.scenario.sql",
+ "title": "the same UPDATEs with full_page_writes off: no page image after the checkpoint",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "off"
+ },
+ "sessions": ["T1"],
+ "rels": {"notes":{"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]}},
+ "base": {"xid":759,"lsn":22517216},
+ "setup": "CREATE TABLE notes (id int, body text NOT NULL);\nINSERT INTO notes SELECT g, 'note ' || g || ': ' || repeat('.', 40) FROM generate_series(1, 60) AS g;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CHECKPOINT;\nSELECT set_config('my.a', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;\nUPDATE notes SET body = 'changed' WHERE id = 1;\nSELECT count(*) AS records, sum(record_length) AS wal_bytes, sum(fpi_length) AS fpi_bytes\nFROM pg_get_wal_records_info(current_setting('my.a')::pg_lsn, pg_current_wal_insert_lsn()) WHERE resource_manager LIKE 'Heap%'",
+   "note": "wal_compression off (the default), the first change to the page since a checkpoint.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"records","type":"int8"},{"name":"wal_bytes","type":"int8"},{"name":"fpi_bytes","type":"int8"}],
+    "data": [["1","76","0"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT set_config('my.a', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;\nUPDATE notes SET body = 'changed' WHERE id = 2;\nSELECT count(*) AS records, sum(record_length) AS wal_bytes, sum(fpi_length) AS fpi_bytes\nFROM pg_get_wal_records_info(current_setting('my.a')::pg_lsn, pg_current_wal_insert_lsn()) WHERE resource_manager LIKE 'Heap%'",
+   "note": "the same page again, no checkpoint in between.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"records","type":"int8"},{"name":"wal_bytes","type":"int8"},{"name":"fpi_bytes","type":"int8"}],
+    "data": [["1","76","0"]]
+   }
+  }
+ ]
+}

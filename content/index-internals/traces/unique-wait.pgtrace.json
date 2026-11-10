@@ -1,0 +1,161 @@
+{
+ "v": 1,
+ "scenario": "content/index-internals/traces/unique-wait.scenario.sql",
+ "title": "two sessions insert the same key into a unique index",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "k": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"}]},
+  "k_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"k"}
+ },
+ "base": {"xid":759,"lsn":23197744},
+ "setup": "CREATE TABLE k (id int PRIMARY KEY);\nINSERT INTO k VALUES (1), (2), (3);\nVACUUM k;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nINSERT INTO k VALUES (5)",
+   "note": "T1 inserts 5 and doesn't commit yet. its index entry for 5 is in the leaf already.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"k","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "INSERT INTO k VALUES (5)",
+   "note": "T2 inserts 5. the unique check finds T1's entry, whose row is neither committed nor aborted, so T2 waits on T1's transaction id.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"k","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"k","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"k_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits. T2 wakes up, checks again, finds a committed 5, and fails with 23505.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [
+    {
+     "session": "T2",
+     "step": 1,
+     "error": {
+      "sqlstate": "23505",
+      "message": "duplicate key value violates unique constraint \"k_pkey\"",
+      "detail": "Key (id)=(5) already exists."
+     }
+    }
+   ],
+   "locks": []
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "BEGIN;\nINSERT INTO k VALUES (7)",
+   "note": "round two: T1 inserts 7 and stays open.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"k","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "INSERT INTO k VALUES (7)",
+   "note": "T2 inserts 7, and waits on T1 again.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"761","mode":"ShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"k","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"k","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"k_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"762","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"761","mode":"ShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "T1 rolls back. T2 wakes, checks again: the only other 7 belongs to an aborted transaction, so it doesn't count. T2's insert succeeds.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]},
+   "woke": [{"session":"T2","step":4,"result":{"command":"INSERT","rows":1,"columns":[],"data":[]}}],
+   "locks": [],
+   "btree": {
+    "k_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false},
+        {"off":4,"key":"5","tid":[0,4],"dead":false},
+        {"off":5,"key":"7","tid":[0,6],"dead":true},
+        {"off":6,"key":"7","tid":[0,7],"dead":false}
+       ]
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

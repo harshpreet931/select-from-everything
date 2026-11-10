@@ -1,0 +1,136 @@
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { prov, resultOf } from "@/components/figures/basics/captured";
+import school from "./traces/limit-and-offset.pgtrace.json";
+import shop from "./traces/limit-and-offset-shop.pgtrace.json";
+
+{/* traces/limit-and-offset.scenario.sql (school, PGlite): LIMIT 3 before and after an UPDATE,
+    and the WITH TIES stages. traces/limit-and-offset-shop.scenario.sql (shop, PGlite): EXPLAIN
+    ANALYZE for six pages of orders, and two pages read on either side of an INSERT. */}
+
+export const coin = { "before the update": resultOf(school, 0), "after the update": resultOf(school, 1) };
+export const pages = [["OFFSET 0", 0], ["OFFSET 100", 1], ["OFFSET 1000", 2], ["OFFSET 5000", 3], ["OFFSET 9990", 4], ["WHERE id > 9990", 5]].map(([label, i]) => ({ label, value: shop.steps[i].explain.Plan.Plans[0]["Actual Rows"], tone: i === 5 ? "live" : undefined }));
+export const p1 = resultOf(shop, 6);
+export const p2 = resultOf(shop, 7);
+export const dup = p1.rows[p1.rows.length - 1][0];
+export const shift = { "page 1": p1, "page 2, after a new order": { ...p2, tones: p2.rows.map((r) => (r[0] === dup ? "dead" : null)) } };
+
+<InShort>
+**LIMIT n** keeps the first n rows of the result, in whatever order the result has. with no ORDER BY that's no order at all, so "the first 3" can be any 3. **OFFSET n** skips rows, and to skip them it has to read them.
+
+**FETCH FIRST n ROWS** is the standard spelling, and its **WITH TIES** keeps going while rows tie with the last one.
+</InShort>
+
+## the picture
+
+you know how `LIMIT 10` feels like "the first ten"? first by what? without an ORDER BY there's no first. there's only the order postgres happened to find the rows in, which is something it never promised to keep.
+
+think of asking for "the first three people in the room". in a queue, that means something. in a crowd, it means whoever is nearest the door right now, and that changes when someone wanders off and comes back. a table is a crowd.
+
+<Figure caption={<>switch between before and after. the query is the same, and the UPDATE in between changes no value you can see. student 1 gets a new version at the end of the page, and the "first three" become a different three.</>}>
+<RunSwitch options={[{ key: "when", values: ["before the update", "after the update"] }]} runs={coin} hot={["LIMIT 3"]} trace={prov(school)} />
+</Figure>
+
+here it is in your browser. the second block runs in the same session, after the first:
+
+```sql run db=school session=coin unordered
+SELECT id, name, year
+FROM students
+LIMIT 3;
+```
+
+```sql run session=coin unordered
+UPDATE students SET year = year WHERE id = 1;
+SELECT id, name, year
+FROM students
+LIMIT 3;
+```
+
+students 1, 2, 3, then 2, 3, 4. nothing is broken: postgres [never overwrites a row](/learn/mvcc/update-is-insert), it writes a new version, and a sequential scan returns rows in the order they sit on the page. on a real server, a [parallel plan](/learn/execution/parallel-query) can shuffle the answer without anyone touching the table at all, and so can `synchronize_seqscans`, which lets a scan of a big table start halfway through to share reads with a scan that's already running. ([first query](/learn/start/first-query) promised you'd see this go wrong. there it is.)
+
+## LIMIT goes last
+
+in [the logical order](/learn/basics/logical-order), LIMIT is the very last step: it cuts the finished, sorted result. so `ORDER BY ... LIMIT n` means exactly what it says, as long as the ORDER BY decides every position. when the sort leaves ties, LIMIT cuts through the middle of a tie, and which of the tied rows make it is up to the sort ([ties](/learn/basics/order-by) shows postgres picking differently with and without the LIMIT).
+
+the fix is the same as ever: break the tie with a unique key, so the cut lands in one place. or, when the tie is the point, keep all of it.
+
+## FETCH FIRST and WITH TIES
+
+the standard's spelling of LIMIT is `FETCH FIRST n ROWS ONLY` (SQL:2008, and `OFFSET n ROWS` for the offset). postgres accepts both, and they do the same thing:
+
+```sql run db=school
+SELECT code FROM courses ORDER BY code LIMIT 3;
+SELECT code FROM courses ORDER BY code FETCH FIRST 3 ROWS ONLY;
+```
+
+FETCH FIRST has one trick LIMIT doesn't: `WITH TIES` (postgres 13 and up). instead of stopping at exactly n rows, it keeps going as long as the next row ties with the last one it kept, on the ORDER BY keys.
+
+<Predict options={["3", "9", "12"]} answer={1}>
+```sql
+SELECT code, credits, title
+FROM courses
+ORDER BY credits DESC
+FETCH FIRST 3 ROWS WITH TIES;
+```
+<Explain>
+the senior thesis has 6 credits. after it come eight courses with 4 credits each, all tied. the third row is one of them, and WITH TIES keeps every row that ties with the third: all eight. 1 + 8 = 9 rows. only the three 3-credit courses are left out.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>step through it. ORDER BY lines the courses up by credits, and FETCH stops after the third row, then keeps going through the rest of its tie. only rows with fewer credits than the third one are cut.</>}>
+<ClauseStepper trace={school} step={2} maxRows={12} />
+</Figure>
+
+asked for 3, got 9. that's the honest answer to "the courses with the most credits, three or so": it doesn't arbitrarily drop five courses that are exactly as good as the ones it kept. it needs an ORDER BY to know what a tie is, and says so if you forget:
+
+```sql run db=school expect=error
+SELECT code FROM courses FETCH FIRST 3 ROWS WITH TIES;
+```
+
+## OFFSET reads what it skips
+
+`LIMIT 10 OFFSET 1000` is page 101 of a list. it looks like a jump. it's a walk: postgres produces rows in order and throws the first 1,000 away. there's no way to land on row 1,001 without counting past the thousand before it.
+
+<Figure caption={<>rows the scan had to produce for one page of 10 orders, from EXPLAIN ANALYZE. every page costs its offset plus ten. the last bar asks for the same last page with <code>WHERE id &gt; 9990</code>, and reads 10.</>}>
+<Bars data={pages} unit="rows" />
+</Figure>
+
+the plan for the last page says it plainly. the Limit hands back 10 rows, the index scan under it produced 10,000:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, customer_id, status FROM orders ORDER BY id LIMIT 10 OFFSET 9990;
+```
+
+on 10,000 orders that's nothing. on 10 million it's the slow page every app has. the fix is to remember where the last page ended and ask for what comes after it, `WHERE id > 9990 ORDER BY id LIMIT 10`, which an index can jump straight to. that's [keyset pagination](/learn/indexes/keyset-pagination), and it's the right default for "load more".
+
+## pages that move
+
+OFFSET has a second problem, and it doesn't need a big table. the offset counts rows *at the moment you ask*. if rows arrive between page 1 and page 2, everything slides down, and page 2 starts with something you've already seen:
+
+<Figure caption={<>switch to page 2. Ada placed an order while page 1 was on screen, so every older order moved down one place, and order 9996 shows up twice. a deleted row would do the opposite: one order would never show up at all.</>}>
+<RunSwitch options={[{ key: "show", values: ["page 1", "page 2, after a new order"] }]} runs={shift} hot={["OFFSET 5"]} trace={prov(shop)} />
+</Figure>
+
+keyset pagination doesn't have this problem either: "orders older than the last one I showed you" means the same thing no matter what got inserted at the top.
+
+<Deep title="LIMIT ALL, LIMIT NULL, and OFFSET on its own">
+`LIMIT ALL` and `LIMIT NULL` both mean no limit, which is handy when the limit is a parameter that's sometimes "everything". OFFSET works without a LIMIT, and both accept expressions, not just numbers:
+
+```sql run db=school
+SELECT code FROM courses ORDER BY code LIMIT NULL OFFSET 10;
+```
+
+the last 2 of 12. and LIMIT doesn't make the work smaller by itself: if postgres can't produce rows in order without sorting all of them, it sorts all of them (it just keeps fewer, see the top-N heapsort in [sorting with ORDER BY](/learn/basics/order-by)). an index on the ORDER BY columns is what lets it stop early, like the index scan above that read exactly 10 rows for page 1.
+</Deep>
+
+<Interview q="why is OFFSET pagination slow on page 5,000?">
+because OFFSET can't jump. to return rows 50,001 to 50,010, postgres produces the first 50,000 in order and discards them, so every page costs its offset plus its size, and the last pages are the slowest. it also drifts: rows inserted or deleted between requests shift the offsets, so pages repeat or skip rows. keyset pagination fixes both: remember the sort key of the last row shown and ask for WHERE key > that ORDER BY key LIMIT n, which an index answers by reading only n rows. bonus point: with a non-unique sort key, the keyset needs a tie-breaker too, compared as a row: WHERE (ordered_at, id) < (x, y).
+</Interview>
+
+<Keylines>
+- LIMIT keeps the first n rows of the result's order. no ORDER BY, no first.
+- a row can move just because it was updated, so "the first 3" can change with no visible change.
+- LIMIT cuts through ties at random. break them with a unique key, or keep them with WITH TIES.
+- OFFSET reads every row it skips, and shifts when rows come and go.
+- for deep pages and "load more", remember the last key instead: keyset pagination.
+</Keylines>

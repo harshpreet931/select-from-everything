@@ -1,0 +1,234 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* everything below the browser blocks is a recorded run: a bash script in the writer's
+    scratchpad drove Postgres.app's 18.6 binaries against a throwaway cluster with WAL archiving,
+    then restored it into a second throwaway cluster. paths are shortened ($PGDATA, /archive);
+    the rest is the tools' own output. */}
+
+export const restoreLog = `LOG:  database system was interrupted; last known up at 2026-11-04 15:09:01 IST
+LOG:  starting backup recovery with redo LSN 0/4000028, checkpoint LSN 0/4000080, on timeline ID 1
+LOG:  restored log file "000000010000000000000004" from archive
+LOG:  starting point-in-time recovery to 2026-11-04 09:39:01.804859+00
+LOG:  redo starts at 0/4000028
+LOG:  restored log file "000000010000000000000005" from archive
+LOG:  completed backup recovery with redo LSN 0/4000028 and end LSN 0/4000120
+LOG:  consistent recovery state reached at 0/4000120
+LOG:  database system is ready to accept read-only connections
+cp: /archive/000000010000000000000006: No such file or directory
+LOG:  recovery stopping before commit of transaction 756, time 2026-11-04 09:39:03.306749+00
+LOG:  redo done at 0/50366F8 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.03 s
+LOG:  selected new timeline ID: 2
+LOG:  archive recovery complete
+LOG:  checkpoint starting: end-of-recovery immediate wait
+LOG:  database system is ready to accept connections`;
+
+<InShort>
+**pg_dump** writes out a snapshot as SQL: you can restore exactly that moment, and nothing after it. a **base backup** copies the data files while the server runs, and with **WAL archiving** every segment after it is kept too. restore the base backup, replay the archived WAL, and stop wherever you like: that's **point-in-time recovery**, down to the second before the mistake. the restored server starts a new **timeline**. postgres 17 added **incremental** base backups.
+</InShort>
+
+## the picture
+
+you know how someone runs `DELETE FROM accounts` without the WHERE at 14:32, and the nightly dump is from 02:00? restoring the dump loses twelve and a half hours of everyone else's work. what you want is the database as it was at 14:31:59.
+
+think of a photo album and a diary (a base backup and the WAL archive). the photo is from last Sunday. the diary has every change since, in order, timestamped. to see the house as it was on Wednesday at 14:31:59, start from Sunday's photo and act out the diary until the entry just before 14:32. you can't do that with a photo alone, and you can't do it with a diary alone: you need the starting point and every entry after it.
+
+<Figure caption={<>point-in-time recovery, end to end. hover a stage. the first two run all the time; the rest only on the day you need them.</>}>
+<Flow
+  stages={[
+    { label: "base backup", sub: "pg_basebackup", note: "a copy of the data directory taken while the server runs, plus a backup_label saying which WAL position it starts from." },
+    { label: "archive WAL", sub: "archive_command", note: "every finished 16 MB segment is copied somewhere safe. the archive and the base backup together can rebuild any moment after the backup." },
+    { label: "restore", sub: "copy + recovery.signal", note: "copy the base backup into a new data directory, set restore_command and a recovery target, create recovery.signal." },
+    { label: "replay", sub: "to the target", note: "the startup process fetches segments from the archive and replays them, exactly like crash recovery, until the target." },
+    { label: "promote", sub: "new timeline", note: "stop replaying, pick a new timeline id, start accepting writes. the old future is a branch nobody follows." },
+  ]}
+/>
+</Figure>
+
+| | pg_dump | base backup + WAL archive |
+| --- | --- | --- |
+| what it is | SQL (or a custom-format file) that recreates the data | a copy of the data files, plus every WAL segment after |
+| restore to | the moment the dump started | any moment after the base backup |
+| granularity | one database, or chosen tables | the whole cluster |
+| works across versions | yes, it's how you move to a new major | no, same major version only |
+| restore time | rebuilds every table and index | copy files, replay WAL |
+
+they answer different questions, and most production setups run both: continuous archiving for "the second before the mistake", an occasional dump for "give me that one table from last month".
+
+## the setup
+
+archiving is two settings and a restart: `archive_mode = on`, and `archive_command`, a shell command postgres runs for each finished segment (`%p` is its path, `%f` its file name). the browser engine has neither archiving nor a second machine, so it shows the settings switched off:
+
+```sql run db=lab
+SELECT name, setting FROM pg_settings
+WHERE name IN ('archive_mode', 'archive_command', 'wal_level', 'summarize_wal', 'restore_command')
+ORDER BY name;
+SELECT pg_walfile_name(pg_current_wal_lsn()) AS current_segment;
+```
+
+on a real server, this run used `archive_command = 'cp %p /archive/%f'` (fine for a demo; production wants something that refuses to overwrite and fsyncs, like pgBackRest, barman or WAL-G), a table of 1,000 accounts, and then a base backup:
+
+```bash
+$ pg_basebackup -h /tmp/w17prim -p 5493 -U postgres -D full --checkpoint=fast --progress
+waiting for checkpoint
+24045/24045 kB (100%), 0/1 tablespace
+24045/24045 kB (100%), 1/1 tablespace
+$ head -c 600 full/backup_label
+START WAL LOCATION: 0/2000028 (file 000000010000000000000002)
+CHECKPOINT LOCATION: 0/2000080
+BACKUP METHOD: streamed
+BACKUP FROM: primary
+START TIME: 2026-11-04 15:09:01 IST
+LABEL: pg_basebackup base backup
+START TIMELINE: 1
+```
+
+<Provenance recorded="pg_basebackup 18.6 against a throwaway postgres 18.6 cluster with archiving on, on this mac" />
+
+the copy is taken while writes continue, so the files in it are not consistent with each other: some pages are older than others. that's fine, for the same reason crash recovery is fine. `backup_label` says where replay has to start (the backup's own checkpoint, `0/2000028`), and replaying WAL from there to the end of the backup makes it consistent ([crash recovery](/learn/wal/crash-recovery) is the same loop).
+
+## the mistake, and the way back
+
+a day of work goes by: 100 balances updated, 1,000 more accounts. then:
+
+```psql
+SELECT count(*), sum(balance) FROM accounts;
+ count |    sum
+-------+-----------
+  2000 | 200100.00
+(1 row)
+
+SELECT now() AS before_the_mistake;
+      before_the_mistake
+-------------------------------
+ 2026-11-04 09:39:01.804859+00
+(1 row)
+
+DELETE FROM accounts;
+DELETE 2000
+```
+
+<Provenance recorded="psql 18.6 on the archiving cluster; the pg_sleep(1.5) between the two statements is left out" />
+
+the restore goes into a fresh directory: the base backup (here, the full one combined with an incremental, see below), three settings, and a signal file:
+
+```bash
+$ cp -R restored $PGDATA
+$ cat >> $PGDATA/postgresql.conf
+restore_command = 'cp /archive/%f %p'
+recovery_target_time = '2026-11-04 09:39:01.804859+00'
+recovery_target_action = 'promote'
+$ touch $PGDATA/recovery.signal
+$ pg_ctl start
+```
+
+<Provenance recorded="the shell, same run" />
+
+<Figure caption={<>the restored server's log. it fetches segments from the archive, replays them, and stops in front of the first commit after the target: transaction 756, the DELETE.</>}>
+<SqlPanel code={restoreLog} lang="text" nolines file="server log" />
+<Provenance recorded="the restored cluster's log, same run; postgres's own lines about missing .history files are left out" />
+</Figure>
+
+"recovery stopping before commit of transaction 756, time ... 09:39:03.306749". the DELETE committed a second and a half after the target, so its commit record is where replay stops. and then:
+
+```psql
+SELECT count(*), sum(balance) FROM accounts;
+ count |    sum
+-------+-----------
+  2000 | 200100.00
+(1 row)
+
+SELECT pg_is_in_recovery(), timeline_id FROM pg_control_checkpoint();
+ pg_is_in_recovery | timeline_id
+-------------------+-------------
+ f                 |           2
+(1 row)
+```
+
+<Provenance recorded="psql 18.6 on the restored cluster, same run" />
+
+all 2,000 accounts, every balance. the recovery target can also be a transaction id (`recovery_target_xid`), an LSN (`recovery_target_lsn`), or a name you set earlier with `pg_create_restore_point()`. a time is what you usually have, from the person who ran the DELETE.
+
+<Predict question="you PITR the cluster to 14:31:59 to get back a table someone dropped at 14:32. what happens to an order another app committed at 14:31:30 in a different database?" options={["it's kept", "it's lost", "it depends on the table"]} answer={0}>
+```sql
+-- 14:31:30 shop db: INSERT INTO orders ... COMMIT
+-- 14:32:00 crm db:  DROP TABLE customers;
+-- restore the cluster with recovery_target_time = '14:31:59'
+```
+<Explain>
+kept: it committed before the target, so it's replayed. but anything any database committed after 14:31:59 is gone, because PITR rewinds the whole cluster, not one table or one database. the usual move is to restore into a separate server, pull the dropped table out of it with pg_dump, and load it back into production.
+</Explain>
+</Predict>
+
+## timelines
+
+once the restored server promotes, there are two futures after `0/50366F8`: the original server's, where the DELETE happened, and this one's, where it didn't. postgres keeps them apart with a **timeline id**, the first eight hex digits of every WAL file name. the restored server picked timeline 2 and wrote a history file saying where it branched:
+
+```bash
+$ cat $PGDATA/pg_wal/00000002.history
+1	0/50366F8	before 2026-11-04 09:39:03.306749+00
+```
+
+<Provenance recorded="the restored cluster's pg_wal, same run" />
+
+<Figure caption={<>two timelines. new WAL on the restored server goes into files named 00000002..., so it can never be confused with timeline 1's segments in the same archive.</>}>
+<Tree>{`
+timeline 1 // the original server
+    base backup at 0/2000028 #meta
+    a day of work
+    0/50366F8: the branch point #hot // the last thing replayed
+        DELETE FROM accounts, xid 756 #dead // only on timeline 1
+    timeline 2 #live // the restored server, from 0/50366F8 on
+        new writes, in 000000020000000000000005 and up
+`}</Tree>
+<Provenance drawn="from the history file above" />
+</Figure>
+
+timelines are what let you try a restore, decide it was the wrong target, and try again from the same archive. `recovery_target_timeline` (default `latest`) says which branch to follow; [streaming replication](/learn/wal/streaming-replication) uses the same mechanism when a standby is promoted.
+
+## incremental backups
+
+a full base backup of a big cluster every night is a lot of copying. postgres 17 added incremental ones: with `summarize_wal = on`, a background process writes summaries of which blocks each stretch of WAL changed, and `pg_basebackup --incremental=<previous backup's manifest>` copies only those blocks. `pg_combinebackup` stitches a full backup and its chain of incrementals into one directory you can start, which is what the restore above used:
+
+```bash
+$ pg_basebackup -h /tmp/w17prim -p 5493 -U postgres -D incr1 --checkpoint=fast --incremental=full/backup_manifest
+$ du -sk full incr1 full/base incr1/base full/pg_wal incr1/pg_wal
+40108	full
+22308	incr1
+22976	full/base
+5408	incr1/base
+16384	full/pg_wal
+16384	incr1/pg_wal
+$ pg_combinebackup full incr1 -o restored
+```
+
+<Provenance recorded="pg_basebackup and pg_combinebackup 18.6, same run" />
+
+<Figure caption={<>size of the copied data files (base/) in each backup, in KB. both also carry one 16 MB WAL segment, the WAL needed to make the copy consistent.</>}>
+<Bars
+  unit=" KB"
+  data={[
+    { label: "full: base/", value: 22976 },
+    { label: "incremental: base/", value: 5408, tone: "live" },
+  ]}
+/>
+<Provenance recorded="du -sk on the two backup directories, same run" />
+</Figure>
+
+after a day that touched 100 rows and added 1,000 more, the incremental copied a quarter of what the full one did. on a big, mostly cold database the ratio gets much better, and the WAL segment stops mattering.
+
+<Gotcha title="a replica is not a backup">
+a streaming replica gets the DELETE a few milliseconds after the primary does. it protects you from a dead disk, not from a bad statement. and a backup you've never restored is a hope, not a backup: practise the restore, time it, and check the archive has no gaps (`pg_verifybackup` checks a base backup against its manifest; a missing WAL segment shows up as a restore that stops early).
+</Gotcha>
+
+<Interview q="how would you recover a postgres database to the moment before someone ran a bad DELETE?">
+it needs continuous archiving set up beforehand: a base backup (pg_basebackup or a tool like pgBackRest) plus every WAL segment since, via archive_command or archive_library. to recover: restore the base backup into a new data directory, set restore_command to fetch segments from the archive, set recovery_target_time (or recovery_target_xid / recovery_target_lsn) to just before the DELETE, create recovery.signal, and start it. postgres replays the archived WAL and stops before the first commit past the target, then promotes onto a new timeline. it restores the whole cluster, so usually you do it on a separate server and copy the lost data back. bonus point: since 17, incremental backups (summarize_wal, pg_basebackup --incremental, pg_combinebackup) cut the size of nightly backups.
+</Interview>
+
+<Keylines>
+- pg_dump restores one moment. base backup + archived WAL restores any moment after the backup.
+- archive_command copies each finished WAL segment. restore_command fetches them back.
+- recovery stops before the first commit past recovery_target_time, xid or lsn.
+- PITR rewinds the whole cluster. restore elsewhere, copy the lost data back.
+- a promoted restore starts a new timeline, recorded in a .history file.
+- postgres 17+: incremental backups with summarize_wal, --incremental and pg_combinebackup.
+</Keylines>

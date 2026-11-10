@@ -1,0 +1,198 @@
+import { planOf, prov } from "@/components/figures/joins/captured";
+import trace from "./traces/ctes.pgtrace.json";
+
+{/* the four plans read traces/ctes.scenario.sql: EXPLAIN ANALYZE on PGlite, so the row counts
+    are real. the two queries in the first figure both run further down. */}
+
+export const inlined = planOf(trace, 0);
+export const materialized = planOf(trace, 1);
+export const twice = planOf(trace, 2);
+export const twiceInlined = planOf(trace, 3);
+export const source = prov(trace);
+export const hl = (code, subs) => subs.map((sub) => ({ from: code.indexOf(sub), to: code.indexOf(sub) + sub.length, tone: "hot" }));
+export const nested = "SELECT c.name, c.city, p.n\nFROM customers AS c\nJOIN (SELECT customer_id, count(*) AS n\n      FROM orders\n      GROUP BY customer_id) AS p\n  ON p.customer_id = c.id\nWHERE p.n > (SELECT avg(n)\n             FROM (SELECT customer_id, count(*) AS n\n                   FROM orders\n                   GROUP BY customer_id) AS again)\nORDER BY p.n DESC, c.id\nLIMIT 5;";
+export const named = "WITH per_customer AS (\n  SELECT customer_id, count(*) AS n\n  FROM orders\n  GROUP BY customer_id\n)\nSELECT c.name, c.city, p.n\nFROM per_customer AS p\nJOIN customers AS c ON c.id = p.customer_id\nWHERE p.n > (SELECT avg(n) FROM per_customer)\nORDER BY p.n DESC, c.id\nLIMIT 5;";
+
+<InShort>
+`WITH name AS (query)` gives a subquery a **name**, up front, so the main query can use it like a table and you can read the whole thing top to bottom. that's a **CTE** (common table expression).
+
+postgres **inlines** a CTE that's used once, as if you'd written the subquery in place. it **materializes** one (computes it once, keeps the result) when it's used more than once, or when you write `MATERIALIZED`.
+</InShort>
+
+## the picture
+
+you know the query you have to read from the middle out? a subquery inside a JOIN, another one in the WHERE, and inside *that* one the first subquery again, copied, because it's needed twice. it works. nobody can review it.
+
+think of a recipe. one version says "fold in a sauce made by melting butter, whisking in flour, then adding milk slowly until..." in the middle of step four. the other says, at the top, "make a béchamel: butter, flour, milk", and step four says "fold in the béchamel". same dish. the second one you can follow, and if the sauce is needed twice, you write it down once.
+
+<Figure wide caption={<>step through the same question written twice: customers with more orders than the average customer. the nested version has the per-customer count written out twice. the CTE version names it once and uses the name twice.</>}>
+<Slides>
+<Slide note="nested: the per-customer subquery appears twice, once to join against and once, wrapped in another subquery, to average. read it from the inside out.">
+<SqlPanel code={nested} marks={hl(nested, ["(SELECT customer_id, count(*) AS n\n      FROM orders\n      GROUP BY customer_id)", "(SELECT customer_id, count(*) AS n\n                   FROM orders\n                   GROUP BY customer_id)"])} file="nested.sql" />
+</Slide>
+<Slide note="with a CTE: the counting step has a name, per_customer, and comes first. the main query reads like the sentence: these customers, whose count beats the average count.">
+<SqlPanel code={named} marks={hl(named, ["per_customer AS (", "FROM per_customer AS p", "FROM per_customer)"])} file="cte.sql" />
+</Slide>
+</Slides>
+</Figure>
+
+## writing one
+
+the CTE version, for real:
+
+```sql run db=shop
+WITH per_customer AS (
+  SELECT customer_id, count(*) AS n
+  FROM orders
+  GROUP BY customer_id
+)
+SELECT c.name, c.city, p.n
+FROM per_customer AS p
+JOIN customers AS c ON c.id = p.customer_id
+WHERE p.n > (SELECT avg(n) FROM per_customer)
+ORDER BY p.n DESC, c.id
+LIMIT 5;
+```
+
+`WITH` comes first, before the SELECT. inside the parentheses is any query. after that, `per_customer` can be used anywhere in the statement where a table could go, as many times as you like. it exists for this one statement and is gone after it. the nested version returns exactly the same rows:
+
+```sql run db=shop
+SELECT c.name, c.city, p.n
+FROM customers AS c
+JOIN (SELECT customer_id, count(*) AS n
+      FROM orders
+      GROUP BY customer_id) AS p
+  ON p.customer_id = c.id
+WHERE p.n > (SELECT avg(n)
+             FROM (SELECT customer_id, count(*) AS n
+                   FROM orders
+                   GROUP BY customer_id) AS again)
+ORDER BY p.n DESC, c.id
+LIMIT 5;
+```
+
+## a chain of steps
+
+a WITH can hold several CTEs, separated by commas, and each one can use the ones before it. that turns a big query into a list of named steps, like variables in a program:
+
+```sql run db=shop
+WITH per_customer AS (
+  SELECT customer_id, count(*) AS n
+  FROM orders
+  GROUP BY customer_id
+),
+regulars AS (
+  SELECT customer_id FROM per_customer WHERE n >= 20
+),
+by_country AS (
+  SELECT c.country, count(*) AS regulars
+  FROM regulars AS r
+  JOIN customers AS c ON c.id = r.customer_id
+  GROUP BY c.country
+)
+SELECT country, regulars
+FROM by_country
+ORDER BY regulars DESC, country;
+```
+
+count per customer, keep the regulars, group them by country. each step is small enough to check on its own: select from any one of them and look. that's most of the value of a CTE, and it's why the [fan-out](/learn/joins/fan-out) fix ("aggregate first, then join") usually ends up written as one.
+
+a CTE that refers to *itself* is a different animal: a [recursive CTE](/learn/analytics/recursive-ctes), the query that walks an org chart, in part 4. and a CTE can also hold an INSERT, UPDATE or DELETE with RETURNING, which is in [changing data](/learn/writes/update-and-delete).
+
+## inlined by default
+
+does naming a subquery change how it runs? for a CTE used once, no:
+
+<Predict options={["all 2,000 rows", "one row, by index", "an error"]} answer={1}>
+```sql
+WITH c AS (SELECT * FROM customers)
+SELECT name, city FROM c WHERE id = 42;
+```
+<Explain>
+the CTE is used once and has no side effects, so postgres inlines it: the query becomes `SELECT name, city FROM (SELECT * FROM customers) AS c WHERE id = 42`, the `id = 42` is pushed down into the subquery, and the primary key's index finds one row. the CTE never runs as a separate step.
+</Explain>
+</Predict>
+
+ask for `MATERIALIZED` and that changes. the CTE is computed first, all of it, and the outer query reads the stored result:
+
+<Figure wide caption={<>the same query, inlined and materialized. inlined, the filter reaches the index: one row read. materialized, all 2,000 customers go into the CTE's result first, and the filter throws away 1,999 of them.</>}>
+<Tabs>
+<Tab label="inlined (default)">
+<PlanTree plan={inlined} show={["actual"]} />
+</Tab>
+<Tab label="AS MATERIALIZED">
+<PlanTree plan={materialized} show={["actual"]} />
+</Tab>
+</Tabs>
+</Figure>
+
+the same thing, as EXPLAIN prints it:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+WITH c AS (SELECT * FROM customers)
+SELECT name, city FROM c WHERE id = 42;
+
+EXPLAIN (COSTS OFF)
+WITH c AS MATERIALIZED (SELECT * FROM customers)
+SELECT name, city FROM c WHERE id = 42;
+```
+
+no `CTE` in the first plan at all: it's just an Index Scan on customers. the second has a `CTE c` subplan (a Seq Scan of every customer) and a `CTE Scan` over its result, with the filter applied after.
+
+## used twice, computed once
+
+when a CTE is referenced more than once, postgres materializes it by default: compute it once, read the stored result every time it's named. here `per_customer` is used twice, once for the rows and once for the average:
+
+<Figure wide caption={<>switch between the default and NOT MATERIALIZED. by default, orders is grouped once (the HashAggregate on the left is the CTE, computed one time) and two CTE Scans read its result. NOT MATERIALIZED inlines both uses, so orders is read and grouped twice.</>}>
+<Tabs>
+<Tab label="default: materialized">
+<PlanTree plan={twice} show={["actual"]} />
+</Tab>
+<Tab label="AS NOT MATERIALIZED">
+<PlanTree plan={twiceInlined} show={["actual"]} />
+</Tab>
+</Tabs>
+</Figure>
+
+EXPLAIN labels the parts the tree leaves out: `CTE per_customer` is the one computation, and each `CTE Scan on per_customer` is a read of its result.
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+WITH per_customer AS (
+  SELECT customer_id, count(*) AS n FROM orders GROUP BY customer_id
+)
+SELECT count(*) FROM per_customer
+WHERE n > (SELECT avg(n) FROM per_customer);
+```
+
+and the answer itself:
+
+```sql run db=shop
+WITH per_customer AS (
+  SELECT customer_id, count(*) AS n FROM orders GROUP BY customer_id
+)
+SELECT count(*) AS above_average, (SELECT round(avg(n), 2) FROM per_customer) AS average_orders
+FROM per_customer
+WHERE n > (SELECT avg(n) FROM per_customer);
+```
+
+681 customers have more orders than the average of 5.10. the default is usually right for a CTE used twice: grouping 10,000 orders once is cheaper than twice. `NOT MATERIALIZED` is for the cases where each use can push its own filter into the CTE and make it much cheaper, which inlining allows and materializing doesn't.
+
+so the rules, as the postgres 12 release notes put them: a CTE is inlined automatically if it's referenced once, isn't recursive and has no side effects. `MATERIALIZED` prevents that, `NOT MATERIALIZED` forces it for a CTE referenced more than once. (a CTE with side effects, like a DELETE ... RETURNING, is always run exactly once.)
+
+<Gotcha title="advice from before postgres 12">
+up to postgres 11, every CTE was materialized, always. a CTE was an "optimization fence": filters from outside never got in, so `WITH c AS (SELECT * FROM customers) ... WHERE id = 42` really did read every customer. a lot of blog posts and answers from those years say "avoid CTEs for performance" or, the other way round, "use a CTE to stop the planner from doing X". both are about the old behaviour. on 12 and later, a once-used CTE costs nothing, and if you want the fence, you write `MATERIALIZED` and say so.
+</Gotcha>
+
+<Interview q="is a CTE faster or slower than the same subquery?">
+since postgres 12, neither, for a CTE used once: it's inlined and planned exactly like the subquery would be. the difference shows up when it's used twice (materialized by default, computed once, which is often cheaper, but filters can't be pushed into it) or when you write MATERIALIZED (computed once, in full, before the outer query runs). so a CTE is about readability first, and you choose the execution with MATERIALIZED or NOT MATERIALIZED when the plan says it matters. bonus point: mention that before 12 every CTE was materialized, which is where "CTEs are an optimization fence" comes from.
+</Interview>
+
+<Keylines>
+- `WITH name AS (query)` names a subquery for one statement. later CTEs can use earlier ones.
+- use a CTE for readability: one named step at a time, top to bottom.
+- used once, it's inlined: planned as if the subquery were written in place.
+- used twice, it's materialized: computed once, its result scanned each time.
+- MATERIALIZED and NOT MATERIALIZED override the default. recursive CTEs are part 4.
+</Keylines>

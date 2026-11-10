@@ -1,0 +1,90 @@
+import { TwoPhaseChart } from "@/components/figures/locking/TwoPhaseChart";
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import strict from "./traces/strict-2pl.pgtrace.json";
+
+{/* the theory figures are the textbook model, drawn by hand. the postgres figure is captured on
+    a real postgres 18.6 server (traces/strict-2pl.scenario.sql), lock list = pg_locks. */}
+
+<InShort>
+**two-phase locking** (2PL): a transaction takes locks (shared to read, exclusive to write) and never takes a new one after it has released any. a **growing phase**, then a **shrinking phase**. that one rule guarantees conflict serializability. **strict 2PL** holds write locks until commit, which also rules out **cascading aborts**. postgres keeps its row locks until commit, strict-style, but its plain reads take no row locks at all: MVCC handles them.
+</InShort>
+
+## the picture
+
+you know [the precedence graph](/learn/locking/serializability): a schedule is serializable when its conflicts never form a cycle. 2PL is the oldest way to make sure they can't.
+
+think of borrowing tools for a job. you collect every tool you need first, and only once you've started handing tools back do you stop collecting. if you returned the hammer and then went back for the saw, someone could use both in between and the state you see would be half theirs. "collect, then return, never collect again" is the whole protocol.
+
+<Figure caption={<>switch the protocol. the line is how many locks T1 holds over time. the <C k="hot">lock point</C> is where growing stops. strict 2PL drops everything at COMMIT; the third shape releases and acquires again, and loses the guarantee.</>}>
+<TwoPhaseChart />
+</Figure>
+
+## why it works
+
+take two transactions with a conflict between them: T1 touches x first, T2 touches x later, at least one writes. under 2PL, T2's lock on x can only be granted after T1 released its lock on x. T1 released it in its shrinking phase, so T1's lock point came first. every edge T1 → T2 in the precedence graph goes from an earlier lock point to a later one.
+
+lock points are moments in time, and time doesn't loop. so edges only point forward in lock-point order, the graph can't have a cycle, and sorting the transactions by lock point gives the equivalent serial order. that's the proof, more or less in full.
+
+the rule is shared/exclusive with the obvious compatibility: many readers or one writer. the lock modes in a real system multiply from there ([table lock modes](/learn/locking/table-lock-modes) has eight, for tables alone), but the two-phase rule is the same.
+
+## cascading aborts
+
+basic 2PL allows something nasty. T1 writes x and releases its lock early (it's in its shrinking phase, that's allowed). T2 reads x. then T1 aborts:
+
+<Figure caption={<>basic 2PL, textbook model. T2 read a value T1 had written but not committed. when T1 aborts, T2 has based its work on data that never existed, so T2 must abort too, and so must anyone who read from T2.</>}>
+<SessionLanes
+  sessions={["T1", "T2"]}
+  side="db"
+  sideTitle="x"
+  provenance="drawn by hand · the textbook cascading abort"
+  steps={[
+    { ops: ["X-lock(x), W(x) = 5", null], db: { x: 5 }, note: "T1 locks x exclusively and writes 5. not committed." },
+    { ops: [{ sql: "unlock(x)", tone: "hot" }, null], db: { x: 5 }, note: "T1 has all the locks it needs, so it's in its shrinking phase and releases x. still not committed. basic 2PL allows this." },
+    { ops: [null, "S-lock(x), R(x) → 5"], db: { x: 5 }, note: "T2 locks x and reads 5: a dirty read of uncommitted data." },
+    { ops: [{ sql: "ABORT", tone: "dead" }, null], db: { x: "old value" }, note: "T1 aborts. its write is undone. the 5 never existed." },
+    { ops: [null, { sql: "ABORT (cascade)", tone: "dead" }], db: { x: "old value" }, note: "T2 read the 5, so it has to abort too. if T2 had already committed, the schedule couldn't be recovered at all." },
+  ]}
+/>
+</Figure>
+
+**strict 2PL** fixes it by holding every exclusive lock until the transaction commits or aborts. nobody can read what you wrote until it's final. (**rigorous 2PL**, or strong strict, holds shared locks to the end too, which also makes the serial order the commit order.) almost every lock-based database uses one of these two. the growing/shrinking distinction then mostly disappears: you just take locks as you go and drop them all at the end.
+
+<Predict question="under strict 2PL, can a transaction ever read data written by a transaction that later aborts?" options={["yes, after the writer unlocks", "no: write locks last until commit", "only at READ COMMITTED"]} answer={1}>
+```text
+T1: X-lock(x)  W(x)  ...  COMMIT or ABORT  → unlock(x)
+T2:                  S-lock(x)  waits ............ until T1 ends
+```
+<Explain>
+no. the writer holds its exclusive lock until it commits or aborts, so any reader waits until then and sees either the committed value or the original one. no dirty reads means no cascading aborts.
+</Explain>
+</Predict>
+
+## postgres: strict for writes, MVCC for reads
+
+postgres uses locks for writes and keeps them until the end of the transaction, exactly like strict 2PL. but a plain SELECT doesn't lock the rows it reads. it reads the version its [snapshot](/learn/mvcc/snapshots) can see, so it never waits for a writer and never makes a writer wait. here's both halves on a real server:
+
+<Figure wide caption={<>step through, with pg_locks on the right. T1 reads alice: only <C k="meta">table</C> locks, nothing on the row, so T2 updates alice without waiting. T1 updates bob: now it holds an exclusive lock on its transaction id, which is what row-lock waiters queue on, and it keeps it after the statement ends. T2 waits for bob until T1's COMMIT releases everything at once.</>}>
+<LockLanes trace={strict} locks={{ types: ["relation", "transactionid"], objs: ["accounts"] }} sideTitle="T1 and T2's locks (pg_locks)" />
+</Figure>
+
+that's why postgres's READ COMMITTED and REPEATABLE READ aren't serializable: reads leave no trace, so nothing stops a cycle that goes through a read ([write skew](/learn/transactions/write-skew)). you can get 2PL behaviour for a particular read by asking for it, with [SELECT ... FOR SHARE or FOR UPDATE](/learn/transactions/row-locking-clauses): those are the shared and exclusive locks of the textbook, held to commit. and SERIALIZABLE doesn't use 2PL at all: it tracks reads with notes that block nobody ([SSI](/learn/locking/ssi)).
+
+<Gotcha title="2PL doesn't prevent deadlocks, it causes them">
+two transactions that each hold one lock and want the other's are a perfectly legal 2PL schedule. 2PL guarantees that what commits is serializable; it says nothing about getting stuck. every lock-based system pairs it with deadlock handling: detection ([inside the deadlock detector](/learn/locking/deadlock-detection)), timeouts, or prevention schemes like wait-die and wound-wait that use timestamps to decide who may wait.
+</Gotcha>
+
+<Deep title="phantoms: locking rows isn't enough">
+2PL on rows protects the rows you read, not the rows that *aren't there yet*. "count the doctors on call" read two rows; a new on-call doctor inserted by someone else isn't locked by anyone. to be truly serializable a lock-based system must also lock the *predicate* or a range of an index: next-key or gap locks in InnoDB, key-range locks in SQL Server. postgres's SSI notes cover this by noting index pages and whole relations, not just tuples.
+</Deep>
+
+<Interview q="what is two-phase locking and why does it guarantee serializability?">
+every transaction acquires all its locks before releasing any: a growing phase, then a shrinking phase. for any conflict between T1 and T2 on some item, T2 can only lock it after T1 releases it, so T1's lock point (the moment it stopped acquiring) precedes T2's. every precedence-graph edge therefore goes from an earlier lock point to a later one, so the graph is acyclic and the lock-point order is an equivalent serial order. strict 2PL holds write locks until commit, preventing dirty reads and cascading aborts. bonus point: postgres holds row locks until commit but doesn't lock rows on plain reads (MVCC), so it isn't 2PL for reads; its SERIALIZABLE uses SSI instead.
+</Interview>
+
+<Keylines>
+- 2PL: acquire, then release, never acquire again. growing, lock point, shrinking.
+- every conflict edge points from an earlier lock point to a later one, so no cycles.
+- basic 2PL allows dirty reads and cascading aborts. strict 2PL holds write locks to commit.
+- postgres holds write locks to commit, like strict 2PL. plain reads take no row locks: MVCC.
+- 2PL can deadlock. it needs a detector or a prevention scheme next to it.
+</Keylines>

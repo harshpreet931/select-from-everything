@@ -1,0 +1,143 @@
+import { DialectMatrix } from "@/components/figures/start/DialectMatrix";
+import { Timeline } from "@/components/figures/start/Timeline";
+
+<InShort>
+SQL is an ISO standard (ISO/IEC 9075, latest revision **SQL:2023**), and every database speaks it with an **accent**: extra features, missing ones, and a few places where the same query gives different answers.
+
+this book writes postgres 18. when something is postgres-only, or new in a version, or comes from a particular revision of the standard, a small chip says so.
+</InShort>
+
+## the picture
+
+you know how british and american english are one language, right up until someone asks for chips? SQL is like that. the grammar is shared, the everyday words are shared, and then `||` means "join these strings" in one place and "or" in another.
+
+that's not a reason to fear it. most of what you write runs everywhere. you just want to know where the accents are, so they don't surprise you in production.
+
+<Figure wide caption={<>pick a statement. postgres ran it here (the blocks below), sqlite 3.54.1 was run and recorded by the author, and the mysql column is what the 8.4 manual says, with a link, because no mysql ran for this page. <C k="dead">red</C> is an error.</>}>
+<DialectMatrix />
+</Figure>
+
+## one standard
+
+the standard is written by an ISO committee and revised every few years. each revision adds features; almost nothing is ever taken away.
+
+<Figure caption="click a revision, or focus the timeline and use the arrow keys. what each one is best known for.">
+<Timeline
+  start={3}
+  source="postgresql.org's SQL conformance page, and the standard's revision history"
+  events={[
+    { year: "1986", label: "SQL-86", note: "the first standard, from ANSI (ISO adopted it in 1987). small: queries, basic tables, little else." },
+    { year: "1989", label: "SQL-89", note: "a minor revision that added integrity constraints: the rules that make a table refuse bad rows." },
+    { year: "1992", label: "SQL-92", note: "the big one. explicit JOIN ... ON and outer joins are from here, and most databases still treat SQL-92 as the baseline." },
+    { year: "1999", label: "SQL:1999", note: "recursive queries (WITH RECURSIVE), triggers, and regular expression matching. the year format changes too: SQL:1999, not SQL-99." },
+    { year: "2003", label: "SQL:2003", note: "window functions, standard sequences, and the first XML support." },
+    { year: "2008", label: "SQL:2008", note: "FETCH FIRST n ROWS ONLY (the standard's LIMIT), TRUNCATE, INSTEAD OF triggers, and ORDER BY allowed outside cursors." },
+    { year: "2011", label: "SQL:2011", note: "temporal tables: periods of time as part of a row (PERIOD FOR)." },
+    { year: "2016", label: "SQL:2016", note: "JSON functions, row pattern matching (MATCH_RECOGNIZE) and polymorphic table functions." },
+    { year: "2023", label: "SQL:2023", note: "a JSON data type, and a new part 16 for property graph queries (SQL/PGQ). postgres 18 doesn't implement part 16 yet.", here: true },
+  ]}
+/>
+</Figure>
+
+nobody implements all of it. the standard splits features into **Core** (mandatory) and a long optional tail. postgres's own documentation says it conforms to at least 170 of the 177 mandatory Core features of SQL:2023, and that, as of writing, no database claims full Core conformance. that's close enough for this book to teach "the standard" and "postgres" side by side, and point out where they part.
+
+<Docs href="https://www.postgresql.org/docs/18/features.html" title="SQL conformance">
+which parts of the standard postgres covers (the core covers parts 1, 2, 9, 11 and 14), and the full list of supported and unsupported features, by feature id.
+</Docs>
+
+## where they agree
+
+a lot. this question uses nothing that isn't SQL-92, so it means the same thing in postgres, mysql, sqlite and nearly anything else:
+
+```sql run db=shop
+SELECT country, count(*) AS customers
+FROM customers
+WHERE city IS NOT NULL
+GROUP BY country
+HAVING count(*) > 150
+ORDER BY customers DESC, country;
+```
+
+`SELECT`, `FROM`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, joins, `CASE`, `CAST`, `COALESCE`, subqueries: most of [one table](/learn/basics/logical-order) and [joins and subqueries](/learn/joins/joins-in-one-picture) live in this shared core.
+
+## where they don't
+
+here's the postgres column of the figure, run. every statement is exactly the one in the matrix:
+
+```sql run errors=continue
+SELECT 'a' || 'b';
+SELECT 3 / 5;
+SELECT 1 / 0;
+SELECT 'Ada' = 'ada';
+SELECT 'Ada' LIKE 'ada';
+SELECT 'Ada' ILIKE 'ada';
+SELECT '42'::int;
+SELECT 1 FETCH FIRST 1 ROWS ONLY;
+```
+
+```sql run errors=continue
+CREATE TABLE t (n integer);
+INSERT INTO t VALUES ('forty-two');
+INSERT INTO t VALUES (7) RETURNING n;
+SELECT a.n, b.n FROM t AS a FULL OUTER JOIN t AS b ON a.n = b.n;
+```
+
+the differences fall into three kinds, and only one of them is dangerous:
+
+- **syntax one side doesn't have** (`ILIKE`, `::`, `RETURNING` in mysql, `FETCH FIRST` in sqlite). harmless: you get an error the first time you try, and you fix it.
+- **types and strictness**. postgres refuses `'forty-two'` in an integer column; sqlite stores it. mostly harmless, until a report sums a column with words in it.
+- **the same statement, a different answer**. `3 / 5` is `0` in postgres and `0.60` in mysql. `'Ada' = 'ada'` is false in postgres and true under mysql's default collation. `1 / 0` is an error in postgres and NULL in the other two. these are the dangerous ones, because nothing fails: a query you moved between databases quietly means something else.
+
+<Quiz question={<>you want the first three rows of <code>SELECT name FROM customers ORDER BY id</code>. which ending runs unchanged on postgres, sqlite and mysql?</>} options={["LIMIT 3", "FETCH FIRST 3 ROWS ONLY", "LIMIT 3::int"]} answer={0}>
+<Explain>
+`LIMIT` isn't in the standard at all, yet all three accept it. `FETCH FIRST` is the standard spelling (since SQL:2008), and sqlite and mysql 8.4 don't have it. `::` is postgres's own cast, so `3::int` stops the other two. portable and standard aren't the same thing.
+</Explain>
+</Quiz>
+
+even `LIMIT` has an accent. mysql and sqlite also accept `LIMIT 10, 3` (skip 10, then take 3). postgres refuses it, and says what to write instead:
+
+```sql run db=shop expect=error
+SELECT id, name FROM customers ORDER BY id LIMIT 10, 3;
+```
+
+<Figure caption={<>the same page of results (rows 11 to 13), three spellings. the first is the standard's, the second works in all three databases, the last only in mysql and sqlite.</>}>
+<div className="grid gap-3">
+<SqlPanel file="the standard, SQL:2008 · postgres" nolines code={"SELECT id, name FROM customers ORDER BY id\nOFFSET 10 ROWS FETCH FIRST 3 ROWS ONLY;"} />
+<SqlPanel file="postgres, mysql, sqlite" nolines code={"SELECT id, name FROM customers ORDER BY id\nLIMIT 3 OFFSET 10;"} />
+<SqlPanel file="mysql, sqlite (not postgres)" nolines code={"SELECT id, name FROM customers ORDER BY id\nLIMIT 10, 3;"} />
+</div>
+</Figure>
+
+```sql run db=shop
+SELECT id, name FROM customers ORDER BY id
+OFFSET 10 ROWS FETCH FIRST 3 ROWS ONLY;
+```
+
+## how this book marks it
+
+postgres speaks the standard with a few extensions of its own, and the book uses them when they're the best tool. when it does, it says so, inline, with a chip:
+
+| chip | means | for example |
+| --- | --- | --- |
+| <span className="whitespace-nowrap"><Since only /></span> | postgres's own, not in the standard | `DISTINCT ON`, `ILIKE`, `::` casts |
+| <Since std="SQL:2008" /> | in the standard since that revision | `FETCH FIRST` <Since std="SQL:2008" />, window functions <Since std="SQL:2003" />, `WITH RECURSIVE` <Since std="SQL:1999" /> |
+| <Since v={18} /> | needs at least that postgres version | `RETURNING` with `OLD` and `NEW` |
+| <span className="whitespace-nowrap"><Since v={19} preview /></span> | in the next postgres, not released yet | can't run on this page's 18.6 |
+
+no chip means it's plain, shared SQL. and "not in the standard" isn't the same as "postgres only": `LIMIT` is neither standard nor postgres's alone, and `RETURNING` is a postgres extension that sqlite modelled its own on (since 3.35). when that matters, the text says it.
+
+<Gotcha title="the ORM doesn't make you portable">
+an ORM writes the SQL for you, so it feels database-neutral. but it can't change what `3 / 5` means, how your collation compares strings, or whether a bad value is an error or a NULL. moving databases is a testing project, not a config change. run the tests against the database you'll actually use.
+</Gotcha>
+
+<Interview q="is LIMIT standard SQL?">
+no. the standard spelling, since SQL:2008, is `OFFSET n ROWS FETCH FIRST m ROWS ONLY`, which postgres also accepts. the postgres manual calls `LIMIT` and `OFFSET` postgres-specific syntax that mysql also uses, and sqlite has them too, so in practice `LIMIT` is the more portable of the two. bonus point: the standard form has a variant `LIMIT` doesn't, `FETCH FIRST ... WITH TIES`, which keeps going past the limit while rows tie on the `ORDER BY` key (see [LIMIT, OFFSET and FETCH FIRST](/learn/basics/limit-and-offset)).
+</Interview>
+
+<Keylines>
+- SQL is an ISO standard. the latest revision is SQL:2023, and nobody implements all of it.
+- the core (SELECT, joins, GROUP BY, subqueries) is the same everywhere.
+- the dangerous differences don't error: integer division, case sensitivity, division by zero.
+- portable and standard aren't the same: LIMIT is neither standard nor rare.
+- chips in this book mark postgres-only features, standard revisions and version requirements.
+</Keylines>

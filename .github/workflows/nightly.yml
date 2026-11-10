@@ -1,0 +1,42 @@
+name: nightly
+
+# the slow checks, against a real postgres 18 from the PGDG apt repository:
+#   every sql block on native postgres (differences from the browser engine's goldens are warnings,
+#   `native` blocks must match), pgtrace captures still reproduce, and every block twice on PGlite
+#   (two fresh copies must print the same thing).
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: postgres 18 from PGDG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18
+          /usr/lib/postgresql/18/bin/postgres --version
+      - run: pnpm install --frozen-lockfile
+      - name: every sql block on native postgres 18
+        run: pnpm sql-check --engine=native
+        env:
+          PG_BIN: /usr/lib/postgresql/18/bin
+      - name: pgtrace captures still reproduce
+        run: pnpm pgtrace --check content
+        env:
+          PG_BIN: /usr/lib/postgresql/18/bin
+      - name: every block twice on PGlite
+        run: pnpm sql-check --twice

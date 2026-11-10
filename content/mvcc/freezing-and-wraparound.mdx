@@ -1,0 +1,125 @@
+import { PageSteps } from "@/components/figures/mvcc/PageSteps";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import freeze from "./traces/freeze.pgtrace.json";
+import settings from "./traces/vacuum-settings.pgtrace.json";
+
+export const age = Object.fromEntries(settings.steps[1].result.data.map((r) => [r[0], Number(r[1])]));
+export const half = 2 ** 31;
+export const stop = half - 3000000;
+export const rf = freeze.steps.map((s) => s.result.data[0]);
+
+<InShort>
+transaction ids are 32 bits, so they **wrap around** after about 4 billion. postgres compares them on a circle: for any xid, the 2 billion before it are the past and the 2 billion after it are the future. a tuple whose xmin drifts more than 2 billion behind would suddenly look like it's from the future, and vanish. **freezing** prevents that: VACUUM marks old tuples as older than everything, and `age(relfrozenxid)` tracks how far behind each table's oldest unfrozen xid is.
+</InShort>
+
+## the picture
+
+you know how [every tuple carries its xmin](/learn/mvcc/transaction-ids)? that's a 32-bit number, and a busy server can burn through a few thousand xids a second. 4 billion goes faster than it sounds. postgres can't make the field bigger without making every tuple bigger, so it lets the numbers wrap, and compares them modulo 2³².
+
+think of a clock face with 4 billion marks. "now" is the hand. the half circle behind the hand is the past, the half in front is the future. as the hand moves round, a mark that was in the past slides, one day, into the future. unless you've stamped the tuple "older than any clock" first: that's freezing.
+
+<Figure wide caption={<>a model, not a capture. drag the current xid round the circle. the row's xmin stays put; once the hand is more than 2³¹ ahead of it, it lands in the <C k="dead">future</C> half and the row would vanish. switch the row to frozen and it's safe at any angle. the <C k="meta">tick</C> is autovacuum_freeze_max_age, where an anti-wraparound vacuum would have come for it long before.</>}>
+<SnapshotLine ring={{ xmin: 752 }} />
+<Provenance sim="model of 32-bit xid comparison (modulo 2³², 2³¹ each way), drawn from the postgres 18 docs" />
+</Figure>
+
+the 64-bit view exists too: `pg_current_xact_id()` returns an `xid8` with an epoch counter in the high bits, and that one never wraps. but tuples store only the low 32 bits, and that's the number that has to be dealt with.
+
+## what freezing does to a tuple
+
+a frozen tuple's xmin no longer means anything: it's visible to every snapshot, forever, without looking at the commit log. on disk it's two hint bits set at once, `HEAP_XMIN_COMMITTED` and `HEAP_XMIN_INVALID`, which together read as `HEAP_XMIN_FROZEN`. here's a fresh three-row table on a real server, from load to frozen:
+
+<Figure wide caption={<>switch moments and watch slot 1's infomask. after the load: no hints. after a plain VACUUM: <C k="meta">XMIN_COMMITTED</C>, and the page is all-visible, but young tuples aren't frozen. after VACUUM (FREEZE): XMIN_COMMITTED and XMIN_INVALID together, which pageinspect reports as <C k="meta">XMIN_FROZEN</C>.</>}>
+<PageSteps trace={freeze} rel="accounts" steps={[0, 1, 2]} labels={["loaded", "after VACUUM", "after VACUUM (FREEZE)"]} focus={1} fields={["id", "owner"]} />
+</Figure>
+
+relfrozenxid, the table's "everything older than this is frozen" mark, went {rf[0][0]} → {rf[1][0]} → {rf[2][0]}, and `age(relfrozenxid)` from {rf[0][1]} to {rf[1][1]} to {rf[2][1]}.
+
+<Predict question="after VACUUM (FREEZE), what's in a frozen tuple's t_xmin?" options={["2, the special frozen xid", "the original xmin, unchanged", "0"]} answer={1}>
+```sql
+VACUUM (FREEZE) accounts;
+SELECT t_xmin FROM heap_page_items(get_raw_page('accounts', 0));
+```
+<Explain>
+the original xmin. before postgres 9.4, freezing overwrote xmin with a special xid, FrozenTransactionId (2), and databases upgraded from back then can still have some. today it only sets the two infomask bits and leaves xmin as it was, which keeps the history readable for anyone debugging. readers check the bits first, so the number is ignored.
+</Explain>
+</Predict>
+
+the same in the browser, on lab, with the whole database's numbers too:
+
+```sql run db=lab session=frz
+SELECT datname, datfrozenxid, age(datfrozenxid) FROM pg_database ORDER BY datname;
+SELECT relname, relfrozenxid, age(relfrozenxid) FROM pg_class
+WHERE relname IN ('accounts', 'notes') ORDER BY relname;
+```
+
+`datfrozenxid` is the minimum relfrozenxid of every table in the database, so the database is only as young as its oldest table. now freeze accounts:
+
+```sql run session=frz
+VACUUM (FREEZE) accounts;
+SELECT lp, t_xmin, t_infomask, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).combined_flags
+FROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;
+SELECT relfrozenxid, age(relfrozenxid) FROM pg_class WHERE relname = 'accounts';
+SELECT all_visible, all_frozen FROM pg_visibility_map('accounts');
+```
+
+t_xmin still 752, `HEAP_XMIN_FROZEN` in the combined flags, relfrozenxid moved up to the present, and the page is all-frozen in the [visibility map](/learn/storage/fsm-and-vm). that last bit means no vacuum ever has to read this page for freezing again, until something changes on it.
+
+## the ladder of ages
+
+vacuum doesn't freeze every tuple the moment it can: a tuple that's about to be updated would be frozen for nothing. instead there's a ladder of ages, each a setting, each with a default a real server reports:
+
+<Figure caption={<>the freezing ages for transaction ids, from pg_settings on a postgres 18.6 server, and the point (2³¹ minus three million) where postgres stops handing out xids. everything left of <C k="meta">autovacuum_freeze_max_age</C> is routine.</>}>
+<Bars data={[
+  { label: "vacuum_freeze_min_age", value: age.vacuum_freeze_min_age, tone: "meta" },
+  { label: "vacuum_freeze_table_age", value: age.vacuum_freeze_table_age, tone: "meta" },
+  { label: "autovacuum_freeze_max_age", value: age.autovacuum_freeze_max_age, tone: "meta" },
+  { label: "vacuum_failsafe_age", value: age.vacuum_failsafe_age, tone: "hot" },
+  { label: "xid assignment stops", value: stop, tone: "dead" },
+]} unit=" xids" />
+<Provenance trace={prov(settings)} />
+</Figure>
+
+<Defs>
+<dt>vacuum_freeze_min_age</dt><dd>any vacuum freezes the tuples it sees that are older than this. postgres 18 also lets an ordinary vacuum freeze some all-visible pages early, a little at a time ("eagerly scanned" in VACUUM VERBOSE) <Since v={18} />.</dd>
+<dt>vacuum_freeze_table_age</dt><dd>once a table's relfrozenxid is this old, its next vacuum is aggressive: it reads every page that isn't all-frozen, so relfrozenxid can move.</dd>
+<dt>autovacuum_freeze_max_age</dt><dd>past this, autovacuum vacuums the table to prevent wraparound, whatever its other settings, even with autovacuum off.</dd>
+<dt>vacuum_failsafe_age</dt><dd>past this, a running vacuum stops being polite: no cost delay, no index vacuuming, no ring buffer, just freeze and advance relfrozenxid as fast as it can.</dd>
+</Defs>
+
+## the shutdown nobody wants
+
+if all of that fails (autovacuum disabled, workers always busy, or a [transaction left open](/learn/mvcc/xmin-horizon) for weeks so nothing can be frozen), the database counts down. at 40 million xids from wraparound every session starts getting warnings:
+
+```text
+WARNING:  database "mydb" must be vacuumed within 39985967 transactions
+HINT:  To avoid XID assignment failures, execute a database-wide VACUUM in that database.
+```
+
+and at three million it refuses to assign any more xids at all. reads keep working; anything that writes gets:
+
+```text
+ERROR:  database is not accepting commands that assign new transaction IDs to avoid wraparound data loss in database "mydb"
+HINT:  Execute a database-wide VACUUM in that database.
+```
+
+(both quoted from the postgres 18 manual, [routine vacuuming](https://www.postgresql.org/docs/18/routine-vacuuming.html).) it's an outage, on purpose: the alternative is rows that silently disappear. the way out is the same as the way to avoid it: end the old transactions, prepared transactions and replication slots holding the horizon back, then a plain database-wide VACUUM. not VACUUM FULL, which needs an xid itself.
+
+<Gotcha title="watch age(datfrozenxid), not just bloat">
+a database can be perfectly tidy and still be marching toward wraparound, if one big table never gets an aggressive vacuum to finish. graph `age(datfrozenxid)` per database and `age(relfrozenxid)` for the biggest tables. anything heading past autovacuum_freeze_max_age without coming back down means anti-wraparound vacuums aren't completing, and that's worth a page, not a ticket.
+</Gotcha>
+
+the commit log only needs to remember xids back to the oldest datfrozenxid, so freezing also lets `pg_xact` throw old segments away ([the commit log](/learn/mvcc/commit-log-and-hint-bits)). and there's a second counter with exactly the same problem, for row locks shared by several transactions: [MultiXacts](/learn/mvcc/multixacts).
+
+<Interview q="what is transaction id wraparound, and how does postgres prevent it?">
+xids are 32-bit and compared modulo 2³², so each xid sees 2³¹ xids as past and 2³¹ as future. a tuple whose xmin falls more than 2³¹ behind the current xid would flip to "in the future" and become invisible. VACUUM prevents that by freezing old tuples: it sets HEAP_XMIN_FROZEN (two infomask bits), which means visible to everyone regardless of xmin. each table's relfrozenxid records the oldest unfrozen xid it may contain; past vacuum_freeze_table_age vacuum scans everything not all-frozen, past autovacuum_freeze_max_age (200 million by default) autovacuum forces a vacuum, and 3 million xids before the limit postgres stops assigning xids. bonus point: old long-running transactions, prepared transactions or replication slots stop freezing from making progress, and MultiXact ids have the same problem with their own ages.
+</Interview>
+
+<Keylines>
+- 32-bit xids wrap; postgres compares them on a circle, 2 billion back and 2 billion ahead.
+- freezing sets two infomask bits that mean "older than everything". xmin itself stays.
+- relfrozenxid per table, datfrozenxid per database: watch their age().
+- min age, table age, max age, failsafe: a ladder from "freeze if handy" to "drop everything and freeze".
+- three million xids from the edge, postgres stops accepting writes rather than lose rows.
+</Keylines>

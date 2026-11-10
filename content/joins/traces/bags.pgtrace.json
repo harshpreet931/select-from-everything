@@ -1,0 +1,114 @@
+{
+ "v": 1,
+ "scenario": "content/joins/traces/bags.scenario.sql",
+ "title": "two baskets with duplicates and a NULL, combined six ways",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "ada": {"kind":"table","am":"heap","columns":[{"name":"item","type":"text"}]},
+  "sean": {"kind":"table","am":"heap","columns":[{"name":"item","type":"text"}]}
+ },
+ "base": {"xid":757,"lsn":25832192},
+ "setup": "CREATE TABLE ada (item text);\nINSERT INTO ada VALUES ('kettle'), ('kettle'), ('kettle'), ('whisk'), (NULL);\nCREATE TABLE sean (item text);\nINSERT INTO sean VALUES ('kettle'), ('kettle'), ('atlas'), (NULL);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT item FROM ada ORDER BY item NULLS LAST",
+   "note": "Ada's basket.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"item","type":"text"}],
+    "data": [["kettle"],["kettle"],["kettle"],["whisk"],[null]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT item FROM sean ORDER BY item NULLS LAST",
+   "note": "Sean's basket.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"item","type":"text"}],
+    "data": [["atlas"],["kettle"],["kettle"],[null]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT item FROM ada UNION SELECT item FROM sean ORDER BY item NULLS LAST",
+   "note": "UNION: every distinct item from either basket, once. the two NULLs count as the same item.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"item","type":"text"}],
+    "data": [["atlas"],["kettle"],["whisk"],[null]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT item FROM ada UNION ALL SELECT item FROM sean ORDER BY item NULLS LAST",
+   "note": "UNION ALL: both baskets poured into one, nothing removed. 5 + 4 = 9 rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [{"name":"item","type":"text"}],
+    "data": [["atlas"],["kettle"],["kettle"],["kettle"],["kettle"],["kettle"],["whisk"],[null],[null]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT item FROM ada INTERSECT SELECT item FROM sean ORDER BY item NULLS LAST",
+   "note": "INTERSECT: the distinct items in both baskets: kettle, and NULL, which set operations treat as equal to NULL.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":2,"columns":[{"name":"item","type":"text"}],"data":[["kettle"],[null]]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT item FROM ada INTERSECT ALL SELECT item FROM sean ORDER BY item NULLS LAST",
+   "note": "INTERSECT ALL: as many copies as both baskets have: Ada has 3 kettles, Sean 2, so 2 come out.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"item","type":"text"}],
+    "data": [["kettle"],["kettle"],[null]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT item FROM ada EXCEPT SELECT item FROM sean ORDER BY item NULLS LAST",
+   "note": "EXCEPT: distinct items in Ada's basket and not in Sean's. only the whisk.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"item","type":"text"}],"data":[["whisk"]]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT item FROM ada EXCEPT ALL SELECT item FROM sean ORDER BY item NULLS LAST",
+   "note": "EXCEPT ALL: each of Sean's copies cancels one of Ada's. 3 kettles minus 2 leaves 1, and the whisk.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":2,"columns":[{"name":"item","type":"text"}],"data":[["kettle"],["whisk"]]}
+  }
+ ]
+}

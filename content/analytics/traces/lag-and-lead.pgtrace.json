@@ -1,0 +1,304 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/lag-and-lead.scenario.sql",
+ "title": "LAG and LEAD over the shop's monthly revenue, and a running total",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":799,"lsn":33646040},
+ "setup": "CREATE VIEW monthly AS\nSELECT date_trunc('month', o.ordered_at)::date AS month,\n       sum(oi.qty * oi.unit_price) AS revenue\nFROM orders AS o\nJOIN order_items AS oi ON oi.order_id = o.id\nWHERE o.status NOT IN ('cancelled', 'refunded')\nGROUP BY 1;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT month, revenue,\n       lag(month)   OVER w AS read_from,\n       lag(revenue) OVER w AS value\nFROM monthly\nWINDOW w AS (ORDER BY month)\nORDER BY month",
+   "note": "lag(revenue) reads the row one before in the window's order: last month. july has no row before it, so it gets NULL.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [
+     {"name":"month","type":"date"},
+     {"name":"revenue","type":"numeric"},
+     {"name":"read_from","type":"date"},
+     {"name":"value","type":"numeric"}
+    ],
+    "data": [
+     ["2025-07-01","348021.73",null,null],
+     ["2025-08-01","360384.79","2025-07-01","348021.73"],
+     ["2025-09-01","342888.77","2025-08-01","360384.79"],
+     ["2025-10-01","358400.90","2025-09-01","342888.77"],
+     ["2025-11-01","354606.47","2025-10-01","358400.90"],
+     ["2025-12-01","346452.85","2025-11-01","354606.47"],
+     ["2026-01-01","352732.50","2025-12-01","346452.85"],
+     ["2026-02-01","331476.19","2026-01-01","352732.50"],
+     ["2026-03-01","355904.75","2026-02-01","331476.19"],
+     ["2026-04-01","355887.10","2026-03-01","355904.75"],
+     ["2026-05-01","353582.15","2026-04-01","355887.10"],
+     ["2026-06-01","306277.84","2026-05-01","353582.15"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT month, revenue,\n       lag(month, 2)   OVER w AS read_from,\n       lag(revenue, 2) OVER w AS value\nFROM monthly\nWINDOW w AS (ORDER BY month)\nORDER BY month",
+   "note": "lag(revenue, 2) reads two rows back. the first two months have nothing that far back.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [
+     {"name":"month","type":"date"},
+     {"name":"revenue","type":"numeric"},
+     {"name":"read_from","type":"date"},
+     {"name":"value","type":"numeric"}
+    ],
+    "data": [
+     ["2025-07-01","348021.73",null,null],
+     ["2025-08-01","360384.79",null,null],
+     ["2025-09-01","342888.77","2025-07-01","348021.73"],
+     ["2025-10-01","358400.90","2025-08-01","360384.79"],
+     ["2025-11-01","354606.47","2025-09-01","342888.77"],
+     ["2025-12-01","346452.85","2025-10-01","358400.90"],
+     ["2026-01-01","352732.50","2025-11-01","354606.47"],
+     ["2026-02-01","331476.19","2025-12-01","346452.85"],
+     ["2026-03-01","355904.75","2026-01-01","352732.50"],
+     ["2026-04-01","355887.10","2026-02-01","331476.19"],
+     ["2026-05-01","353582.15","2026-03-01","355904.75"],
+     ["2026-06-01","306277.84","2026-04-01","355887.10"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT month, revenue,\n       lead(month)   OVER w AS read_from,\n       lead(revenue) OVER w AS value\nFROM monthly\nWINDOW w AS (ORDER BY month)\nORDER BY month",
+   "note": "lead(revenue) looks the other way: next month. now it's june, the last row, that has nothing to read.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [
+     {"name":"month","type":"date"},
+     {"name":"revenue","type":"numeric"},
+     {"name":"read_from","type":"date"},
+     {"name":"value","type":"numeric"}
+    ],
+    "data": [
+     ["2025-07-01","348021.73","2025-08-01","360384.79"],
+     ["2025-08-01","360384.79","2025-09-01","342888.77"],
+     ["2025-09-01","342888.77","2025-10-01","358400.90"],
+     ["2025-10-01","358400.90","2025-11-01","354606.47"],
+     ["2025-11-01","354606.47","2025-12-01","346452.85"],
+     ["2025-12-01","346452.85","2026-01-01","352732.50"],
+     ["2026-01-01","352732.50","2026-02-01","331476.19"],
+     ["2026-02-01","331476.19","2026-03-01","355904.75"],
+     ["2026-03-01","355904.75","2026-04-01","355887.10"],
+     ["2026-04-01","355887.10","2026-05-01","353582.15"],
+     ["2026-05-01","353582.15","2026-06-01","306277.84"],
+     ["2026-06-01","306277.84",null,null]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT month, revenue,\n       sum(revenue) OVER (ORDER BY month) AS running_total\nFROM monthly\nORDER BY month",
+   "note": "a running total: sum over the default frame, from the first month to this one.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [
+     {"name":"month","type":"date"},
+     {"name":"revenue","type":"numeric"},
+     {"name":"running_total","type":"numeric"}
+    ],
+    "data": [
+     ["2025-07-01","348021.73","348021.73"],
+     ["2025-08-01","360384.79","708406.52"],
+     ["2025-09-01","342888.77","1051295.29"],
+     ["2025-10-01","358400.90","1409696.19"],
+     ["2025-11-01","354606.47","1764302.66"],
+     ["2025-12-01","346452.85","2110755.51"],
+     ["2026-01-01","352732.50","2463488.01"],
+     ["2026-02-01","331476.19","2794964.20"],
+     ["2026-03-01","355904.75","3150868.95"],
+     ["2026-04-01","355887.10","3506756.05"],
+     ["2026-05-01","353582.15","3860338.20"],
+     ["2026-06-01","306277.84","4166616.04"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT month, revenue,\n       array_agg(month) OVER w AS frame,\n       sum(revenue)     OVER w AS total\nFROM monthly\nWINDOW w AS (ORDER BY month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)\nORDER BY month",
+   "note": "a running total: the frame starts at the first month and ends at this one, so it grows by a month every row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [
+     {"name":"month","type":"date"},
+     {"name":"revenue","type":"numeric"},
+     {"name":"frame","type":"_date"},
+     {"name":"total","type":"numeric"}
+    ],
+    "data": [
+     ["2025-07-01","348021.73","{2025-07-01}","348021.73"],
+     ["2025-08-01","360384.79","{2025-07-01,2025-08-01}","708406.52"],
+     ["2025-09-01","342888.77","{2025-07-01,2025-08-01,2025-09-01}","1051295.29"],
+     ["2025-10-01","358400.90","{2025-07-01,2025-08-01,2025-09-01,2025-10-01}","1409696.19"],
+     ["2025-11-01","354606.47","{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01}","1764302.66"],
+     [
+      "2025-12-01",
+      "346452.85",
+      "{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01,2025-12-01}",
+      "2110755.51"
+     ],
+     [
+      "2026-01-01",
+      "352732.50",
+      "{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01,2025-12-01,2026-01-01}",
+      "2463488.01"
+     ],
+     [
+      "2026-02-01",
+      "331476.19",
+      "{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01,2025-12-01,2026-01-01,2026-02-01}",
+      "2794964.20"
+     ],
+     [
+      "2026-03-01",
+      "355904.75",
+      "{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01,2025-12-01,2026-01-01,2026-02-01,2026-03-01}",
+      "3150868.95"
+     ],
+     [
+      "2026-04-01",
+      "355887.10",
+      "{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01,2025-12-01,2026-01-01,2026-02-01,2026-03-01,2026-04-01}",
+      "3506756.05"
+     ],
+     [
+      "2026-05-01",
+      "353582.15",
+      "{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01,2025-12-01,2026-01-01,2026-02-01,2026-03-01,2026-04-01,2026-05-01}",
+      "3860338.20"
+     ],
+     [
+      "2026-06-01",
+      "306277.84",
+      "{2025-07-01,2025-08-01,2025-09-01,2025-10-01,2025-11-01,2025-12-01,2026-01-01,2026-02-01,2026-03-01,2026-04-01,2026-05-01,2026-06-01}",
+      "4166616.04"
+     ]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT month, revenue,\n       array_agg(month) OVER w AS frame,\n       sum(revenue)     OVER w AS total\nFROM monthly\nWINDOW w AS (ORDER BY month ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)\nORDER BY month",
+   "note": "a three-month moving total: the frame is this month and the two before, so it slides instead of growing. the first two months have shorter frames.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [
+     {"name":"month","type":"date"},
+     {"name":"revenue","type":"numeric"},
+     {"name":"frame","type":"_date"},
+     {"name":"total","type":"numeric"}
+    ],
+    "data": [
+     ["2025-07-01","348021.73","{2025-07-01}","348021.73"],
+     ["2025-08-01","360384.79","{2025-07-01,2025-08-01}","708406.52"],
+     ["2025-09-01","342888.77","{2025-07-01,2025-08-01,2025-09-01}","1051295.29"],
+     ["2025-10-01","358400.90","{2025-08-01,2025-09-01,2025-10-01}","1061674.46"],
+     ["2025-11-01","354606.47","{2025-09-01,2025-10-01,2025-11-01}","1055896.14"],
+     ["2025-12-01","346452.85","{2025-10-01,2025-11-01,2025-12-01}","1059460.22"],
+     ["2026-01-01","352732.50","{2025-11-01,2025-12-01,2026-01-01}","1053791.82"],
+     ["2026-02-01","331476.19","{2025-12-01,2026-01-01,2026-02-01}","1030661.54"],
+     ["2026-03-01","355904.75","{2026-01-01,2026-02-01,2026-03-01}","1040113.44"],
+     ["2026-04-01","355887.10","{2026-02-01,2026-03-01,2026-04-01}","1043268.04"],
+     ["2026-05-01","353582.15","{2026-03-01,2026-04-01,2026-05-01}","1065374.00"],
+     ["2026-06-01","306277.84","{2026-04-01,2026-05-01,2026-06-01}","1015747.09"]
+    ]
+   }
+  }
+ ],
+ "db": "shop"
+}

@@ -1,0 +1,683 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/lost-update-repeatable-read.scenario.sql",
+ "title": "lost update, prevented: repeatable read refuses the second write",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23210088},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN ISOLATION LEVEL REPEATABLE READ",
+   "note": "T1 wants to add 10, at repeatable read.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [{"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8112,
+      "special": 8192,
+      "lsn": 23064408,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "it reads 100.00 and computes 110.00.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8112,
+      "special": 8192,
+      "lsn": 23064408,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL REPEATABLE READ",
+   "note": "T2 wants to add 20, also at repeatable read.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":null,"iso":"repeatable read","inTxn":true}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8112,
+      "special": 8192,
+      "lsn": 23064408,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "it reads 100.00 and computes 120.00.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8112,
+      "special": 8192,
+      "lsn": 23064408,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = 110.00 WHERE id = 1",
+   "note": "T1 writes 110.00.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":759,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23210168,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"in progress"}
+  },
+  {
+   "i": 5,
+   "session": "T2",
+   "sql": "UPDATE accounts SET balance = 120.00 WHERE id = 1",
+   "note": "T2 tries to write and waits for T1.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   },
+   "xids": {
+    "T1": {"xid":759,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true},
+    "T2": {"xid":760,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"repeatable read","inTxn":true}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"tuple","target":"accounts (0,1)","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   ],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23210168,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"in progress","760":"in progress"}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits. T2 wakes up to a row changed after its snapshot, and gets 40001 instead of overwriting it.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [
+    {
+     "session": "T2",
+     "step": 5,
+     "error": {"sqlstate":"40001","message":"could not serialize access due to concurrent update"}
+    }
+   ],
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"repeatable read","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23210168,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 7,
+   "session": "T2",
+   "sql": "ROLLBACK",
+   "note": "T2 has to roll back. the app should retry the whole transaction.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23210168,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "alice has 110.00. T2's +20 didn't happen yet, but it wasn't silently lost either.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["110.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23210168,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  }
+ ]
+}

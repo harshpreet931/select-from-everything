@@ -1,0 +1,211 @@
+import { LabVsServer } from "@/components/figures/start/LabVsServer";
+
+<InShort>
+every **run** button on this site runs your SQL on a real **postgres 18.6**, compiled to webassembly by the **PGlite** project, inside this browser tab. nothing is faked and nothing leaves your machine.
+
+it's a lab postgres: one session, no background processes, nothing saved when you leave. everything else, the parser, the planner, the executor, the pages on "disk", is the real thing.
+</InShort>
+
+## the picture
+
+you know how most SQL tutorials either show you output someone pasted in years ago, or ask you to install a server before you've written a single query?
+
+think of a flight simulator built around the real plane's flight computer. the software making the decisions is the same code that flies the real plane (the postgres source, compiled for the browser). the cockpit around it is a mockup (a browser tab): there's no weather, no other traffic, and when you climb out, the flight never happened. for learning to fly, that's exactly what you want.
+
+ask it who it is:
+
+```sql run
+SELECT version();
+```
+
+`PostgreSQL 18.6`: the same release you'd install on a server. `wasm32-unknown-emscripten` is the "machine" it was compiled for: webassembly, through the emscripten toolchain. `32-bit` is why the book's datasets stay under 30,000 rows a table, so a phone can hold them.
+
+## what happens when you press run
+
+<Figure caption="hover a stage. the first run downloads the engine once; every run after that starts from a fresh copy of the dataset in memory.">
+<Flow
+  stages={[
+    { label: "run", sub: "your SQL", note: "the page splits your text into statements the way psql does, so each one runs and reports on its own." },
+    { label: "web worker", sub: "off the main thread", note: "the database runs in a background thread of this tab, so a slow query can't freeze the page." },
+    { label: "PGlite", sub: "postgres 18.6, wasm", note: "the real postgres C code, compiled to webassembly. one backend, in single-user mode." },
+    { label: "fresh copy", sub: "of the dataset", note: "the dataset (shop, school, bank...) is built once from plain SQL, then snapshotted. each run restores the snapshot, so you always start clean." },
+    { label: "result grid", sub: "vs the book", note: "your output is compared with the one the book printed (the golden). if they match, it says same as postgres 18.6 output." },
+  ]}
+/>
+</Figure>
+
+the first run costs a download. this is what's in it, gzipped, and nothing comes from anywhere but this site:
+
+<Figure caption={<>the engine, by file, as the site serves it: 5,936,497 bytes in all. it's fetched once, and only when you go to press run (hovering the button starts it).</>}>
+<Bars
+  unit="MB"
+  data={[
+    { label: "pglite.wasm (postgres itself)", value: 3.45 },
+    { label: "pglite.data (catalog, timezones...)", value: 2.14 },
+    { label: "initdb.wasm", value: 0.15 },
+    { label: "javascript glue", value: 0.14 },
+    { label: "nine extensions", value: 0.11 },
+  ]}
+/>
+</Figure>
+
+then it builds the dataset a block asks for (`db=shop`, `db=bank`...) by running its plain SQL (the files in [`datasets/`](https://github.com/harshpreet931/select-from-everything/tree/main/datasets)), and keeps a snapshot in memory. every run restores that snapshot, so nothing you do can break the next block. go ahead:
+
+```sql run db=shop
+TRUNCATE customers CASCADE;
+SELECT count(*) AS customers FROM customers;
+```
+
+every customer gone, and (that's the `CASCADE`) every order and line item that pointed at one. now run this:
+
+```sql run db=shop
+SELECT count(*) AS customers FROM customers;
+```
+
+all 2,000 are back. each block starts from the same database the book used, which is why your output can be checked against the book's at all. when blocks *should* share state (create a table, then use it), the book chains them into a session, and the block says "continues session".
+
+<Deep title="how a fresh copy can be that fast">
+the dataset isn't rebuilt per run. the first time, the engine runs `initdb`, loads the SQL, runs `VACUUM (ANALYZE)` and a `CHECKPOINT`, then dumps its whole data directory into one blob (about 61 MB raw for shop). a run hands that blob to a new PGlite instance as its starting data directory. measured in node on an apple M4 Pro: about 1.3 s to build shop once, then 90 to 104 ms for a fresh copy plus its first query. a browser is slower than node, but not by enough to notice.
+</Deep>
+
+## the same postgres
+
+the parser, the catalog, the planner and the executor are postgres's own C code, so plans are real plans and errors are real errors, down to the character position. the storage is real too: tables are 8 KB pages, every change is written to the WAL first, and the `lab` database ships six extensions for looking inside them:
+
+```sql run db=lab
+SELECT extname
+FROM pg_extension
+ORDER BY extname;
+```
+
+that's how the internals chapters can show you [a page](/learn/storage/the-page), [a b-tree](/learn/index-internals/nbtree-pages) or [WAL records](/learn/wal/wal-records) from inside the very engine that's running your queries.
+
+## the short list of what it can't do
+
+here it is, all of it. every line was run, on this engine and on a real postgres 18.6 server.
+
+<Figure wide caption={<>pick a difference. the dashed panel is this page's engine, the solid one a real server, and the link says where the book shows the real thing. every line here is actual output.</>}>
+<LabVsServer />
+</Figure>
+
+a few of those, run right here. first, how many sessions does this postgres have?
+
+```sql run
+SELECT pid, backend_type FROM pg_stat_activity ORDER BY pid;
+```
+
+one: a `standalone backend`, which is what postgres calls itself when it runs in single-user mode, with no server process around it. a real server, asked the same thing, lists its helpers too. (two client backends, because the checker that ran this keeps two connections open. it also turns autovacuum off so its numbers hold still; a default server would list an autovacuum launcher as well.)
+
+```sql native
+SELECT backend_type, count(*) AS processes
+FROM pg_stat_activity
+GROUP BY backend_type
+ORDER BY backend_type;
+```
+
+no helpers means no background work. the settings say so:
+
+```sql run
+SELECT name, setting
+FROM pg_settings
+WHERE name IN ('max_worker_processes', 'max_parallel_workers', 'io_method', 'fsync')
+ORDER BY name;
+```
+
+`max_worker_processes` is 0, so autovacuum and parallel queries never start, even though `SHOW autovacuum` says `on`. reads happen synchronously (`io_method = sync`, where a server defaults to `worker`), and `fsync = off`, because there's no disk to be durable on: it all lives in memory, and closing the tab throws it away.
+
+timeouts don't fire either. postgres implements them with a timer signal, and inside a webassembly worker nothing delivers one while a query is running:
+
+```sql run errors=continue
+SET statement_timeout = '50ms';
+SELECT 'still here' AS answer FROM pg_sleep(0.3);
+```
+
+it slept the full 0.3 seconds and answered. on a real server the same two lines are cancelled:
+
+```sql native expect=error
+-- the same two lines, on a real server
+SET statement_timeout = '50ms';
+SELECT 'still here' AS answer FROM pg_sleep(0.3);
+```
+
+so the page keeps its own clock: after 10 seconds it stops the whole engine and starts a new one.
+
+text sorts in byte order by default, because the database was created with the C collation. capital letters come before lowercase ones, and `é` after everything:
+
+```sql run
+SELECT x
+FROM (VALUES ('b'), ('B'), ('a'), ('_z'), ('é'), ('Z'), ('apple'), ('Apple')) AS v (x)
+ORDER BY x;
+```
+
+ICU's language-neutral order is here, if you ask for it by name, and it matches a real server's `unicode` collation exactly:
+
+```sql run
+SELECT x
+FROM (VALUES ('b'), ('B'), ('a'), ('_z'), ('é'), ('Z'), ('apple'), ('Apple')) AS v (x)
+ORDER BY x COLLATE "unicode";
+```
+
+what's missing is ICU's per-language data, so German or Swedish rules can't be loaded:
+
+```sql run
+CREATE COLLATION german (provider = icu, locale = 'de-DE');
+```
+
+the warning is the tell: the collation gets created, but it falls back to the root order. [text and collations](/learn/types/text-and-collation) shows real language collations on a server.
+
+some things the run button won't even send, because there's no one on the other end. forced through the engine anyway (PGlite 0.5.12 in node), this is what happens:
+
+```text title="forced through the engine, PGlite 0.5.12" nolines
+COPY customers FROM STDIN;
+  the engine exits (wasm exit status 1): no client is there to send rows
+
+CREATE EXTENSION pg_stat_statements;
+  ERROR 0A000: extension "pg_stat_statements" is not available
+  HINT: The extension must first be installed on the system where PostgreSQL is running.
+
+SELECT pg_terminate_backend(42);
+  WARNING: could not send signal to process 42: Operation not permitted
+  f
+
+ALTER SYSTEM SET work_mem = '8MB';
+SELECT pg_reload_conf();
+  ALTER SYSTEM
+  WARNING: failed to send signal to postmaster: Operation not permitted
+  f
+```
+
+and you can make a second database, but you can't get into it: switching databases means a new connection (`\c` in [psql](/learn/start/psql)), and there's only ever one.
+
+```sql run
+CREATE DATABASE shop2;
+SELECT datname FROM pg_database ORDER BY datname;
+SELECT current_database();
+```
+
+<Quiz question="which of these can you watch on a run button on this site?" options={["two sessions waiting on a lock", "the plan for a join", "autovacuum at work"]} answer={1}>
+<Explain>
+planning is postgres's own code running in one session, so it's identical here. lock waits need two sessions and autovacuum needs a background worker; the book shows both from captures of a real server, as figures you step through, and says so under each one.
+</Explain>
+</Quiz>
+
+## where the real server shows up
+
+when a chapter's point needs something from that list, it says so and switches engines. three ways, each labelled:
+
+- **native blocks**, like the two above: checked on a real postgres 18.6 server, shown with their output, and no run button.
+- **captured traces**: two or three sessions scripted against a real server, every step recorded (locks, waits, row versions), then drawn as figures you can step through. [lost updates](/learn/transactions/lost-updates) and [deadlocks](/learn/transactions/deadlocks) are built that way.
+- **psql transcripts**: a real terminal session, pasted whole. [psql and a real server](/learn/start/psql) is where you set one up yourself.
+
+<Gotcha title="the clock and random() are yours">
+`now()` returns your machine's time and `random()` your browser's randomness, so blocks that use them can't match the book's output, and the page tells you so. everything else should match to the character. if it doesn't, the page says "the browser engine disagrees with the book" in orange, and that's a bug worth [reporting](https://github.com/harshpreet931/select-from-everything/issues).
+</Gotcha>
+
+<Keylines>
+- every run button runs real postgres 18.6, compiled to webassembly, in your tab.
+- each block starts from a fresh copy of its dataset, so you can't break anything.
+- one session, no background processes, no durability: that's the whole list of differences.
+- text sorts in byte order unless you ask for COLLATE "unicode".
+- when a chapter needs a real server, you get native output or a captured trace, labelled.
+</Keylines>

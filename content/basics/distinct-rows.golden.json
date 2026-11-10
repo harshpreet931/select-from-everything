@@ -1,0 +1,154 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "75e3cb09ec950978": {
+      "db": "school",
+      "sql": "EXPLAIN (COSTS OFF) SELECT DISTINCT dept FROM courses;\nEXPLAIN (COSTS OFF) SELECT dept FROM courses GROUP BY dept;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "37d5ac8563b653bb",
+          "rows": [
+            ["HashAggregate"],
+            ["  Group Key: dept"],
+            ["  ->  Seq Scan on courses"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b65f2137dc08d292",
+          "rows": [
+            ["HashAggregate"],
+            ["  Group Key: dept"],
+            ["  ->  Seq Scan on courses"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ce128a7dcf8e473c": {
+      "db": "shop",
+      "sql": "SELECT DISTINCT email FROM customers WHERE id IN (2, 11, 42) ORDER BY email;\nSELECT count(DISTINCT email) FROM customers WHERE id IN (2, 11, 42);",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["email", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "6bd4e8365517be4c",
+          "rows": [
+            ["ada@example.com"],
+            [null]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "3c20bf21079ed1b9",
+          "rows": [
+            ["1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "651b913a91b99d9f": {
+      "db": "shop",
+      "sql": "SELECT DISTINCT ON (customer_id) customer_id, id, status, ordered_at\nFROM orders\nWHERE customer_id IN (3, 9, 42)\nORDER BY customer_id, ordered_at DESC;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["customer_id", "int4", 23],
+            ["id", "int4", 23],
+            ["status", "text", 25],
+            ["ordered_at", "timestamptz", 1184]
+          ],
+          "rowCount": 3,
+          "digest": "4e5501bc5fb30c1d",
+          "rows": [
+            ["3", "9607", "delivered", "2026-06-12 22:20:00+00"],
+            ["9", "8744", "delivered", "2026-05-12 18:45:00+00"],
+            ["42", "9946", "placed", "2026-06-25 04:02:00+00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e682e4e29253ab19": {
+      "db": "school",
+      "sql": "SELECT DISTINCT ON (dept) dept, code\nFROM courses\nORDER BY credits DESC;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P10",
+            "message": "SELECT DISTINCT ON expressions must match initial ORDER BY expressions",
+            "position": 21
+          },
+          "digest": "aa5d63d2315e1b3d"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P10",
+        "message": "SELECT DISTINCT ON expressions must match initial ORDER BY expressions",
+        "position": 21,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "47dcc7d468dc2880": {
+      "db": "school",
+      "sql": "SELECT DISTINCT dept FROM courses ORDER BY credits;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P10",
+            "message": "for SELECT DISTINCT, ORDER BY expressions must appear in select list",
+            "position": 44
+          },
+          "digest": "964683a8a3e51612"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P10",
+        "message": "for SELECT DISTINCT, ORDER BY expressions must appear in select list",
+        "position": 44,
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

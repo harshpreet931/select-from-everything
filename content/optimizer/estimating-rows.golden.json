@@ -1,0 +1,140 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "bec5b4bbc4f6206c": {
+      "db": "events",
+      "sql": "SELECT (most_common_vals::text::int[])[1:5] AS top_5,\n       most_common_freqs[1:5] AS freqs,\n       array_length(most_common_freqs, 1) AS kept\nFROM pg_stats\nWHERE tablename = 'events' AND attname = 'user_id';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["top_5", "int4[]", 1007],
+            ["freqs", "float4[]", 1021],
+            ["kept", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "40bf4eb08e86e9d1",
+          "rows": [
+            ["{1,2,3,4,18}", "{0.04536,0.0184,0.0154,0.01244,0.0118}", "100"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "36416343a2287227": {
+      "db": "events",
+      "sql": "EXPLAIN SELECT * FROM events WHERE user_id = 1;\nSELECT count(*) FROM events WHERE user_id = 1;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d865c1131483655b",
+          "rows": [
+            ["Seq Scan on events  (cost=0.00..647.50 rows=1134 width=78)"],
+            ["  Filter: (user_id = 1)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "8423ca34dce9e3df",
+          "rows": [
+            ["1134"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0dbe08b3dcc025af": {
+      "db": "events",
+      "sql": "SELECT (histogram_bounds::text::int[])[46:49] AS around_250\nFROM pg_stats\nWHERE tablename = 'events' AND attname = 'user_id';\nEXPLAIN SELECT * FROM events WHERE user_id < 250;\nSELECT count(*) FROM events WHERE user_id < 250;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["around_250", "int4[]", 1007]
+          ],
+          "rowCount": 1,
+          "digest": "c684e80be441e58f",
+          "rows": [
+            ["{246,250,254,257}"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d4c52e6c8338ed94",
+          "rows": [
+            ["Seq Scan on events  (cost=0.00..647.50 rows=17655 width=78)"],
+            ["  Filter: (user_id < 250)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "21c343e804b469ce",
+          "rows": [
+            ["17665"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f3e733e8eeaa7552": {
+      "db": "events",
+      "sql": "EXPLAIN SELECT * FROM events WHERE lower(kind) = 'view';\nEXPLAIN SELECT * FROM events WHERE kind = 'view';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ee632044c72e9c04",
+          "rows": [
+            ["Seq Scan on events  (cost=0.00..710.00 rows=125 width=78)"],
+            ["  Filter: (lower(kind) = 'view'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b7e98b200cd32e6b",
+          "rows": [
+            ["Seq Scan on events  (cost=0.00..647.50 rows=15112 width=78)"],
+            ["  Filter: (kind = 'view'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

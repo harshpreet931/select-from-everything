@@ -1,0 +1,152 @@
+import { TieLadder } from "@/components/figures/analytics/TieLadder";
+import { resultOf, runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/ranking.pgtrace.json";
+
+{/* the tie ladder and the top-4 switch read traces/ranking.scenario.sql, captured on PGlite:
+    the school's students ranked by grade point average, numbered three ways in one query. */}
+
+export const top = resultOf(trace, 0);
+export const four = runsOf(trace, ["row_number", "rank", "dense_rank"], 1);
+export const coin = runsOf(trace, ["as stored", "in reverse", "in reverse, with id"], 4);
+
+<InShort>
+three ways to number rows in order. **row_number** gives every row its own number. **rank** gives tied rows the same number and then skips ahead. **dense_rank** gives tied rows the same number and doesn't skip.
+
+they agree on every row without a tie. ties are the only place they differ, which is exactly where the questions are.
+</InShort>
+
+## the picture
+
+you know how a race can have two people share second place, and then the next runner is... third? or fourth? depends who you ask. SQL has one function per answer, and picking the wrong one quietly changes who's on the podium.
+
+the class of 37 graded students, ranked by grade point average. three are on 4.00, two on 3.50, nine on 3.00:
+
+<Figure wide caption={<>pick a function. each line is one gpa, the people on it are tied. rank skips the numbers a tie used up (<C k="faint">dashed</C>: nobody got them). dense_rank never skips. row_number never ties, so somebody has to decide who goes first.</>}>
+<TieLadder
+  columns={top.columns}
+  rows={top.rows}
+  name="name"
+  value="gpa"
+  fns={["row_number", "rank", "dense_rank"]}
+  notes={{
+    row_number: "1 to 15, no repeats. the three students on 4.00 are numbered 1, 2, 3 by id, because the window says ORDER BY gpa DESC, id. take the id away and the order among them is up to the sort.",
+    rank: "the three on 4.00 share 1, so 2 and 3 are gone and the next gpa starts at 4. the 3.00s are all 7th: six people are ahead of each of them.",
+    dense_rank: "1, 2, 3, 4: one number per different gpa. the 3.00s are 4th, because three different gpas are ahead of them.",
+  }}
+  trace={prov(trace)}
+/>
+</Figure>
+
+think of it as three questions. row_number: "what line are you on?" rank: "how many people beat you, plus one?" dense_rank: "how many different scores beat you, plus one?"
+
+## the three of them
+
+the gpa is a view, so the rest of the page can say `FROM gpa`:
+
+```sql run db=school session=gpa
+CREATE VIEW gpa AS
+SELECT s.id, s.name,
+       round(avg(CASE e.grade WHEN 'A' THEN 4 WHEN 'B' THEN 3 WHEN 'C' THEN 2
+                              WHEN 'D' THEN 1 ELSE 0 END), 2) AS gpa
+FROM students AS s
+JOIN enrollments AS e ON e.student_id = s.id
+WHERE e.grade IS NOT NULL
+GROUP BY s.id;
+
+SELECT id, name, gpa,
+       row_number() OVER (ORDER BY gpa DESC, id) AS row_number,
+       rank()       OVER (ORDER BY gpa DESC)     AS rank,
+       dense_rank() OVER (ORDER BY gpa DESC)     AS dense_rank
+FROM gpa
+ORDER BY gpa DESC, id
+LIMIT 8;
+```
+
+all three need an ORDER BY inside OVER, since "first" means nothing without one, and they ignore the [frame](/learn/analytics/window-frames): they number the whole partition. and notice the outer ORDER BY is `gpa DESC, id`, not `gpa DESC`. the result has ties too, and a page that prints rows in an order nobody promised teaches the bug. ([ORDER BY](/learn/basics/order-by) has that rule.)
+
+<Predict options={["2", "3", "4"]} answer={0}>
+```sql
+-- three students tie for first.
+-- what does dense_rank() give the next student?
+SELECT name, gpa, dense_rank() OVER (ORDER BY gpa DESC)
+FROM gpa;
+```
+<Explain>
+2. dense_rank counts distinct values ahead of you, and only one value (4.00) is ahead. rank would say 4, because three *rows* are ahead. row_number would say 4 too, since it never ties in the first place.
+</Explain>
+</Predict>
+
+## who's in the top four?
+
+the classic use: number the rows in a subquery, keep the small numbers outside (a window can't go in WHERE, [window functions](/learn/analytics/window-functions) has why). same question, same data, three answers:
+
+<Figure wide caption={<>switch the function. row_number keeps exactly four rows and leaves Mateus Lima out, though he has the same gpa as Mateo Garcia. rank keeps both: five rows. dense_rank reads "top four" as "top four <em>gpas</em>": fifteen rows.</>}>
+<RunPick options={[{ key: "n is", values: ["row_number", "rank", "dense_rank"] }]} runs={four} hot={["row_number()", "rank()", "dense_rank()"]} group="gpa" trace={prov(trace)} />
+</Figure>
+
+none of them is wrong. they're answers to different questions, and the question usually comes from somebody else:
+
+- "exactly four rows, for a page of four cards": **row_number**, with a tiebreaker you can defend.
+- "everyone who placed fourth or better": **rank**. it's what a leaderboard means, and it's what `FETCH FIRST 4 ROWS WITH TIES` gives you without a window at all ([LIMIT and OFFSET](/learn/basics/limit-and-offset)).
+- "the four best scores, and everyone on them": **dense_rank**.
+
+## row_number and ties
+
+row_number has to give tied rows different numbers, so something has to decide their order. if your ORDER BY doesn't, postgres's sort does, and the sort makes no promise about rows that compare equal.
+
+here it is without the `id`, on purpose, fed the same rows in two different orders. the outer ORDER BY is total, so the rows print in a fixed order; watch the number each one gets:
+
+<Figure wide caption={<>switch how the rows reach the window. same <code>OVER (ORDER BY gpa DESC)</code>, same data. as stored, Mateus Lima is 4th and Mateo Garcia 5th. in reverse, Nora Jensen jumps from 3rd to 1st. add <code>id</code> to the window and both inputs agree.</>}>
+<RunPick options={[{ key: "rows arrive", values: ["as stored", "in reverse", "in reverse, with id"] }]} runs={coin} hot={["ORDER BY gpa DESC)", "ORDER BY id DESC", "ORDER BY gpa DESC, id)"]} group="gpa" trace={prov(trace)} />
+</Figure>
+
+the first one, to run yourself:
+
+```sql run session=gpa
+SELECT id, name, gpa,
+       row_number() OVER (ORDER BY gpa DESC) AS n
+FROM gpa
+ORDER BY gpa DESC, id
+LIMIT 6;
+```
+
+fed in reverse, Nora Jensen moved from 3rd to 1st. same window, same data, different numbers: both answers are correct, because the query never said who goes first among equals. a different plan, a different postgres version, or an UPDATE that moved rows around can change it again. so the rule is short: **make the window's ORDER BY total** whenever row_number feeds anything that matters. `ORDER BY gpa DESC, id` costs nothing and settles it.
+
+<Gotcha title="the tiebreaker has to be unique">
+`ORDER BY gpa DESC, name` looks like a tiebreaker, but the school has two students called Alex Kim, both on 3.00. two equal names are still a tie. break ties with a key (`id`), or with a list of columns that's unique together.
+</Gotcha>
+
+## the relatives
+
+three more ranking functions answer "where do I stand?" as a fraction or a bucket:
+
+```sql run session=gpa
+SELECT name, gpa,
+       round((percent_rank() OVER w)::numeric, 3) AS percent_rank,
+       round((cume_dist() OVER w)::numeric, 3)    AS cume_dist,
+       ntile(4) OVER (ORDER BY gpa DESC, id) AS quartile
+FROM gpa
+WINDOW w AS (ORDER BY gpa DESC)
+ORDER BY gpa DESC, id
+LIMIT 8;
+```
+
+- `percent_rank()` is (rank − 1) / (rows − 1): 0 for the top, 1 for the bottom. the 3.50s get 3/36 = 0.083.
+- `cume_dist()` is the share of rows at or ahead of you, ties included. the 3.50s get 5/37 = 0.135.
+- `ntile(4)` deals the rows into 4 buckets as evenly as it can, like dealing cards. it splits ties without blinking (hence the `id` again), so it's a bucket number, not a rank.
+
+and if you want the rank a value *would* have without adding it to the table, that's a hypothetical-set aggregate: `rank(3.6) WITHIN GROUP (ORDER BY gpa DESC)`, in [percentiles and medians](/learn/analytics/ordered-set-aggregates).
+
+<Docs href="https://www.postgresql.org/docs/18/functions-window.html" title="window functions">the manual's table of general-purpose window functions: row_number, rank, dense_rank, percent_rank, cume_dist, ntile, lag, lead, first_value, last_value and nth_value, with the exact definition of each.</Docs>
+
+<Interview q="what's the difference between row_number, rank and dense_rank?">
+they only differ on ties. row_number numbers rows 1, 2, 3 with no repeats, so ties are broken arbitrarily unless the ORDER BY breaks them. rank gives ties the same number and skips: 1, 1, 1, 4. dense_rank gives ties the same number without skipping: 1, 1, 1, 2. for "top n per group" pick by meaning: row_number for exactly n rows, rank to include everyone tied at the cut. bonus point: say that row_number over a non-unique ORDER BY is nondeterministic, and add a unique column as the last sort key.
+</Interview>
+
+<Keylines>
+- row_number never ties. rank ties and skips. dense_rank ties and doesn't skip.
+- they disagree only on ties, so "top n" with each gives a different number of rows.
+- row_number over a non-unique ORDER BY is a coin toss. end the ORDER BY with a key.
+- rank ≤ n is the same set as FETCH FIRST n ROWS WITH TIES.
+- percent_rank, cume_dist and ntile place a row as a fraction or a bucket.
+</Keylines>

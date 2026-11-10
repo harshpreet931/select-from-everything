@@ -1,0 +1,154 @@
+import coldWarm from "./traces/cold-warm.pgtrace.json";
+
+<InShort>
+postgres never reads a page straight into your query. every page anyone reads or writes goes through **shared buffers**: a fixed array of 8 KB frames in shared memory, 16,384 of them at the default 128 MB. a hash table, the **buffer table**, says which page is in which frame.
+
+a query that finds its page there scores a **hit**. one that doesn't has to **read** it in first, into a frame some other page gets thrown out of. `Buffers: shared hit=3` counts pages, not rows.
+</InShort>
+
+## the picture
+
+you know the `Buffers: shared hit=3 read=2` line at the bottom of an EXPLAIN? it's the most useful number in the plan and the least explained. it's a count of trips to the buffer pool, and of the trips that missed.
+
+think of a reading room with a fixed number of desks (the frames). books live in the archive downstairs (the files). at the door there's a card box saying which book is on which desk (the buffer table). you look up your book: if it's on a desk, you sit down and read (a hit). if not, someone fetches it from the archive and puts it on a desk, clearing off whatever book was there (a read, and an eviction). while you're reading, there's a tag on the desk so nobody clears it under you (a pin). and if you scribbled in the book, it has to be copied back to the archive before that desk can be given to anyone else (a dirty page).
+
+here's ada lovelace, customer 42, looked up from an empty pool on a real server, and then looked up again:
+
+<Figure wide caption={<>step through. the frames that hold shop's pages, and the plan that put them there. the cold lookup reads its pages in (<C k="hot">read</C>), the second one finds them (<C k="live">hit</C>). the pips under each frame are its usage count.</>}>
+<PgStepper trace={coldWarm} panels={["pool", "plan"]} />
+</Figure>
+
+the cold lookup reads 3 pages: the root of `customers_pkey`, a leaf, and the heap page ada is on. two more frames filled up during planning, not execution: the planner reads each index's metapage to learn how tall the tree is, which is why there's a metapage of `customers_email_key` in there even though the query never uses that index. the second lookup is 3 hits and no reads, and each hit bumped its frame's usage count from 1 to 2.
+
+this capture runs on a native postgres 18.6 with `io_method = sync`, so a read is a plain read and nothing reads ahead behind its back. (the default is `worker`; [asynchronous I/O](/learn/storage/async-io) is what that changes.)
+
+## hit and read, in the browser
+
+the browser engine has a buffer pool too, and every block on this page starts from a fresh copy of the database with nothing in it. so the first time a query runs, everything is a read:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT name, city FROM customers WHERE id = 42;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT name, city FROM customers WHERE id = 42;
+```
+
+same as the real server: `read=3`, then `hit=3`. the `Planning:` line is the planner's own page trips (the catalog, the metapages), and it's gone the second time because the planner caches what it learned.
+
+<Predict question="Buffers: shared hit=3. what are the 3?" options={["3 rows returned", "3 pages", "3 index searches", "3 KB read"]} answer={1}>
+```text
+Index Scan using customers_pkey on customers (actual rows=1.00 loops=1)
+  Index Cond: (id = 42)
+  Index Searches: 1
+  Buffers: shared hit=3
+```
+<Explain>
+3 pages. one row came back, but to get it the index scan visited the b-tree's root page, then a leaf, then the heap page the leaf pointed at. every one of those is a buffer access, and every buffer is an 8 KB page. a query that returns one row from a 10-level index (there's no such thing, but humour me) would report 11.
+</Explain>
+</Predict>
+
+a "read" here is not necessarily a disk read. it means "not in shared buffers, so postgres asked the operating system". on a real server the OS has its own page cache underneath, and a read that hits it costs a microsecond, not a trip to the SSD ([why pages exist](/learn/storage/why-pages) has the numbers measured on one machine). EXPLAIN can't tell the two apart. in the browser, "the OS" is the engine's in-memory file system, so every read is fast.
+
+## looking inside the pool
+
+`pg_buffercache` shows every frame: which relation and block it holds, its usage count, whether it's dirty, and how many backends have it pinned. after the lookup above:
+
+```sql run db=shop session=pool ext=pg_buffercache
+SELECT name, city FROM customers WHERE id = 42;
+SELECT c.relname, b.relblocknumber AS block, b.usagecount, b.isdirty, b.pinning_backends
+FROM pg_buffercache b
+JOIN pg_class c ON c.relfilenode = b.relfilenode
+WHERE c.relname IN ('customers', 'customers_pkey', 'customers_email_key')
+  AND b.relforknumber = 0
+ORDER BY c.relname, block;
+```
+
+four pages of two indexes and one heap page, out of a pool of:
+
+```sql run session=pool
+SHOW shared_buffers;
+SELECT buffers_used, buffers_unused, buffers_dirty, buffers_pinned
+FROM pg_buffercache_summary();
+```
+
+16,384 frames, and only a few hundred in use: the catalog pages every query needs, and what the lookup brought in. a real server's pool is usually full after a while, which is when the question of what to throw out starts to matter. that's the [clock sweep](/learn/storage/clock-sweep).
+
+## the lookup, step by step
+
+every page access in postgres goes through one function, `ReadBuffer`. it does the same few steps every time:
+
+<Figure caption={<>hover a stage. the miss path is where the cost is: picking a victim, maybe writing it out, and the read.</>}>
+<Flow stages={[
+  { label: "hash the tag", sub: "(rel, fork, block)", note: "the page is named by its relation's file, the fork (main, fsm, vm), and the block number. that tag is hashed." },
+  { label: "buffer table", sub: "tag → frame", note: "a shared hash table, split into 128 partitions, each with its own lock, so lookups for different pages rarely wait for each other." },
+  { label: "hit: pin it", sub: "usage + 1", note: "found: bump the frame's pin count (nobody may evict it while it's pinned) and its usage count, up to 5. no I/O at all." },
+  { label: "miss: a victim", sub: "clock sweep", note: "not found: pick a frame to reuse. the clock sweep looks for one nobody has used lately. if that frame is dirty, it's written out first." },
+  { label: "read it in", sub: "8 KB from the OS", note: "the page is read into the frame, the buffer table is updated to point at it, and it's pinned like a hit." },
+]} />
+</Figure>
+
+<Figure caption={<>the three arrays in shared memory that make up the buffer pool, sized for the default 128 MB. a lookup goes table → descriptor → page.</>}>
+<Tree>{`
+shared buffers, 128 MB #meta
+    buffer table: (relation, fork, block) → buffer id // a hash, in 128 partitions
+    buffer descriptors: 16,384 of them // tag, pins, usage, flags
+    buffer blocks: 16,384 frames of 8 KB #ref // the pages
+`}</Tree>
+</Figure>
+
+the descriptor of each frame (its tag, pin count, usage count, dirty and valid flags) is a small struct packed into a single 32-bit state word that's updated with atomic operations, so the common case, pin and unpin, takes no lock at all.
+
+## pins
+
+a pin is a promise: "I'm looking at this frame, don't reuse it". it's held for as long as a backend has a pointer into the page, usually microseconds. a cursor that stops halfway through a scan holds one for as long as it stays open:
+
+```sql run db=events ext=pg_buffercache
+BEGIN;
+DECLARE c CURSOR FOR SELECT id FROM events;
+FETCH 1 FROM c;
+SELECT b.relblocknumber AS block, b.pinning_backends, b.usagecount
+FROM pg_buffercache b
+WHERE b.relfilenode = pg_relation_filenode('events') AND b.pinning_backends > 0;
+COMMIT;
+```
+
+block 0 of events, pinned by one backend: this one, parked on the first row. a pinned frame can't be evicted, which is also why VACUUM sometimes skips a page and says so: someone had it pinned.
+
+## dirty pages
+
+writing to a page changes the copy in shared buffers, and only that copy. the frame is now **dirty**: it differs from the file. nothing is written to the table's file at commit (the [WAL](/learn/wal/write-ahead-rule) is, which is what makes that safe):
+
+```sql run db=shop session=dirty ext=pg_buffercache
+UPDATE customers SET city = 'Paris' WHERE id = 42;
+SELECT CASE b.relforknumber WHEN 0 THEN 'main' WHEN 1 THEN 'fsm' ELSE 'vm' END AS fork,
+       b.relblocknumber AS block, b.isdirty
+FROM pg_buffercache b
+WHERE b.relfilenode = pg_relation_filenode('customers') AND b.isdirty
+ORDER BY fork, block;
+CHECKPOINT;
+SELECT count(*) FILTER (WHERE b.isdirty) AS dirty, count(*) AS frames
+FROM pg_buffercache b
+WHERE b.relfilenode = pg_relation_filenode('customers');
+```
+
+three dirty frames from one UPDATE: page 0, where ada's old version got its xmax; page 23, where the new version went (page 0 was full); and the visibility map page, because page 0 just lost its all-visible bit. the CHECKPOINT wrote all of them out, and the frames are clean again, still holding their pages. who writes dirty pages back, and when, is [its own chapter](/learn/storage/writing-pages-back).
+
+<Gotcha title="how big should shared_buffers be?">
+the default, 128 MB, is small on purpose: it has to start on any machine. the manual suggests 25% of RAM as a starting point on a dedicated server, and says more than 40% rarely helps, because postgres also relies on the operating system's page cache underneath. the pages you want cached the most should fit in shared buffers. after that, the OS cache is the second level, and the same page can be in both (more on that double caching in [writing dirty pages back](/learn/storage/writing-pages-back)). it's a server setting: changing it means a restart.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/runtime-config-resource.html#GUC-SHARED-BUFFERS" title="shared_buffers">
+the setting, its default, and the manual's sizing advice (25% of RAM to start, rarely more than 40%).
+</Docs>
+
+<Interview q="what does Buffers: shared hit=120 read=30 tell you?">
+the plan touched 150 distinct page accesses through shared buffers: 120 were already there, 30 had to be requested from the operating system. they're pages (8 KB each), not rows: 150 accesses is 1.2 MB of page traffic. a read might still have been served by the OS page cache, so it isn't proof of disk I/O; track_io_timing adds I/O timings that tell you how long the reads took. bonus point: the same query run twice usually turns reads into hits, so benchmark it warm and cold, and for a fair cold run you can empty the pool with pg_buffercache_evict_relation() (postgres 18).
+</Interview>
+
+<Keylines>
+- every page access goes through shared buffers: 8 KB frames in shared memory, 16,384 at the default 128 MB.
+- the buffer table maps (relation, fork, block) to a frame.
+- hit = the page was already in a frame. read = it had to come from the OS, which may still be its page cache.
+- a pin keeps a frame from being evicted while someone uses it.
+- a write only dirties the frame. the file catches up later.
+</Keylines>

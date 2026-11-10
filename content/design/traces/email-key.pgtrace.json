@@ -1,0 +1,137 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/email-key.scenario.sql",
+ "title": "Ada changes her email: a natural key without cascade, with cascade, and a surrogate key",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"email","type":"text"},{"name":"name","type":"text"}]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"customer_id","type":"int4"},{"name":"total","type":"numeric"}]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE customers (email text PRIMARY KEY, name text NOT NULL);\nCREATE TABLE orders (id int PRIMARY KEY, customer_email text NOT NULL REFERENCES customers, total numeric(8,2) NOT NULL);\nINSERT INTO customers VALUES ('ada@example.com', 'Ada Lovelace'), ('grace@example.com', 'Grace Okafor');\nINSERT INTO orders VALUES (101, 'ada@example.com', 22.00), (102, 'ada@example.com', 6.50), (103, 'grace@example.com', 15.00), (104, 'ada@example.com', 18.00)",
+   "note": "round 1: customers keyed by email, orders point at the email.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":4,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "UPDATE customers SET email = 'ada@lovelace.dev' WHERE email = 'ada@example.com'",
+   "note": "the key is referenced, and the foreign key says NO ACTION: three orders still point at the old email, so the update fails.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23503",
+    "message": "update or delete on table \"customers\" violates foreign key constraint \"orders_customer_email_fkey\" on table \"orders\"",
+    "detail": "Key (email)=(ada@example.com) is still referenced from table \"orders\"."
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id, customer_email, total FROM orders ORDER BY id",
+   "note": "nothing changed.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"id","type":"int4"},{"name":"customer_email","type":"text"},{"name":"total","type":"numeric"}],
+    "data": [
+     ["101","ada@example.com","22.00"],
+     ["102","ada@example.com","6.50"],
+     ["103","grace@example.com","15.00"],
+     ["104","ada@example.com","18.00"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "DROP TABLE orders, customers;\nCREATE TABLE customers (email text PRIMARY KEY, name text NOT NULL);\nCREATE TABLE orders (id int PRIMARY KEY, customer_email text NOT NULL REFERENCES customers ON UPDATE CASCADE, total numeric(8,2) NOT NULL);\nINSERT INTO customers VALUES ('ada@example.com', 'Ada Lovelace'), ('grace@example.com', 'Grace Okafor');\nINSERT INTO orders VALUES (101, 'ada@example.com', 22.00), (102, 'ada@example.com', 6.50), (103, 'grace@example.com', 15.00), (104, 'ada@example.com', 18.00)",
+   "note": "round 2: the same, with ON UPDATE CASCADE on the foreign key.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":4,"columns":[],"data":[]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "UPDATE customers SET email = 'ada@lovelace.dev' WHERE email = 'ada@example.com'",
+   "note": "one UPDATE on customers. the cascade rewrites every order that pointed at the old email.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT id, customer_email, total FROM orders ORDER BY id",
+   "note": "three orders rewritten: three new row versions, three index entries, WAL for each.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"id","type":"int4"},{"name":"customer_email","type":"text"},{"name":"total","type":"numeric"}],
+    "data": [
+     ["101","ada@lovelace.dev","22.00"],
+     ["102","ada@lovelace.dev","6.50"],
+     ["103","grace@example.com","15.00"],
+     ["104","ada@lovelace.dev","18.00"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "DROP TABLE orders, customers;\nCREATE TABLE customers (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, email text NOT NULL UNIQUE, name text NOT NULL);\nCREATE TABLE orders (id int PRIMARY KEY, customer_id int NOT NULL REFERENCES customers, total numeric(8,2) NOT NULL);\nINSERT INTO customers (email, name) VALUES ('ada@example.com', 'Ada Lovelace'), ('grace@example.com', 'Grace Okafor');\nINSERT INTO orders VALUES (101, 1, 22.00), (102, 1, 6.50), (103, 2, 15.00), (104, 1, 18.00)",
+   "note": "round 3: a surrogate id is the key, the email is just a unique column.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":4,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "UPDATE customers SET email = 'ada@lovelace.dev' WHERE email = 'ada@example.com'",
+   "note": "the email changes in one row.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT id, customer_id, total FROM orders ORDER BY id",
+   "note": "orders didn't notice: they point at id 1, which never changes.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"id","type":"int4"},{"name":"customer_id","type":"int4"},{"name":"total","type":"numeric"}],
+    "data": [["101","1","22.00"],["102","1","6.50"],["103","2","15.00"],["104","1","18.00"]]
+   }
+  }
+ ]
+}

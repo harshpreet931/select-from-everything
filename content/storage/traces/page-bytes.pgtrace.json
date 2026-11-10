@@ -1,0 +1,152 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/page-bytes.scenario.sql",
+ "title": "the first 36 bytes of the lab's accounts page: the header and three line pointers",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"}
+ },
+ "base": {"xid":753,"lsn":26051992},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT buffers_evicted FROM pg_buffercache_evict_relation('accounts')",
+   "note": "drop the page from shared buffers, so the next read comes from the file, checksum and all.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"buffers_evicted","type":"int4"}],"data":[["0"]]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT lsn, checksum, flags, lower, upper, special, pagesize, version, prune_xid\nFROM page_header(get_raw_page('accounts', 0))",
+   "note": "the header, decoded by page_header().",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"lsn","type":"pg_lsn"},
+     {"name":"checksum","type":"int2"},
+     {"name":"flags","type":"int2"},
+     {"name":"lower","type":"int4"},
+     {"name":"upper","type":"int4"},
+     {"name":"special","type":"int4"},
+     {"name":"pagesize","type":"int4"},
+     {"name":"version","type":"int2"},
+     {"name":"prune_xid","type":"xid"}
+    ],
+    "data": [["0/17C7530","11440","0","36","8072","8192","8192","4","0"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT encode(substr(get_raw_page('accounts', 0), 1, 24), 'hex') AS header,\n       encode(substr(get_raw_page('accounts', 0), 25, 12), 'hex') AS line_pointers",
+   "note": "the same 24 bytes raw, then the three 4-byte line pointers after them.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"header","type":"text"},{"name":"line_pointers","type":"text"}],
+    "data": [["0000000030757c01b02c00002400881f0020042000000000","d89f4e00b09f4a00889f4e00"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT lp, lp_off, lp_flags, lp_len FROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp",
+   "note": "what the line pointers say: where each tuple starts and how long it is.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"lp","type":"int2"},
+     {"name":"lp_off","type":"int2"},
+     {"name":"lp_flags","type":"int2"},
+     {"name":"lp_len","type":"int2"}
+    ],
+    "data": [["1","8152","1","39"],["2","8112","1","37"],["3","8072","1","39"]]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 24933680,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 752,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","owner":"carol","balance":"50.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"752":"committed"}
+  }
+ ],
+ "db": "lab"
+}

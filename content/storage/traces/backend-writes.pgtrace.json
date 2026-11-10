@@ -1,0 +1,96 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/backend-writes.scenario.sql",
+ "title": "an UPDATE bigger than a 256-frame pool, with the background writer off",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "sync"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on",
+  "shared_buffers": "2MB",
+  "io_method": "sync"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "ledger": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"amount","type":"numeric"},{"name":"memo","type":"text"}]
+  },
+  "ledger_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"ledger"}
+ },
+ "base": {"xid":759,"lsn":28292168},
+ "setup": "CREATE TABLE ledger (id int PRIMARY KEY, amount numeric(12,2) NOT NULL, memo text NOT NULL);\nINSERT INTO ledger SELECT g, 10.00, repeat('m', 100) FROM generate_series(1, 20000) AS g ORDER BY g;\nVACUUM ledger;\nCHECKPOINT;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "SELECT pg_relation_size('ledger') / 8192 AS heap_pages, current_setting('shared_buffers') AS shared_buffers",
+   "note": "the table is bigger than the whole pool.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"heap_pages","type":"int8"},{"name":"shared_buffers","type":"text"}],
+    "data": [["345","2MB"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "obs",
+   "sql": "SELECT pg_stat_reset_shared('io')",
+   "note": "zero the I/O counters.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_stat_reset_shared","type":"void"}],"data":[[""]]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE ledger SET amount = amount + 1",
+   "note": "touch every row. each page gets dirty, and once the pool is full, every new page needs a frame that is probably holding a dirty one.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":20000,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT pg_stat_force_next_flush()",
+   "note": "send this session's counters in.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_stat_force_next_flush","type":"void"}],"data":[[""]]}
+  },
+  {
+   "i": 4,
+   "session": "obs",
+   "sql": "SELECT backend_type, sum(writes) AS pages_written\nFROM pg_stat_io\nWHERE object = 'relation'\nGROUP BY backend_type\nHAVING sum(writes) > 0\nORDER BY backend_type",
+   "note": "who wrote pages, and why. nobody else was running, so the backend doing the UPDATE wrote every dirty page it pushed out.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"backend_type","type":"text"},{"name":"pages_written","type":"numeric"}],
+    "data": [["client backend","589"]]
+   }
+  }
+ ]
+}

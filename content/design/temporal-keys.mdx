@@ -1,0 +1,164 @@
+import { RangeLine } from "@/components/figures/design/RangeLine";
+import { chainRun, goldenAt } from "@/components/figures/design/runs";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/temporal.pgtrace.json";
+import golden from "./temporal-keys.golden.json";
+
+{/* the RunPick reads traces/temporal.scenario.sql, captured on PGlite with btree_gist (the same
+    engine as the run buttons). the timeline reads this chapter's own golden: the run block that
+    creates the PERIOD foreign key. dates become days after january 1; nothing else is computed. */}
+
+export const tries = {
+  "same room, overlapping": chainRun(trace, [1]),
+  "another room": chainRun(trace, [2, 3]),
+  "same room, adjacent": chainRun(trace, [4, 5]),
+  "an empty stay": chainRun(trace, [6]),
+};
+export const day = (d) => (Date.parse(d) - Date.parse("2026-01-01")) / 86400000;
+export const tl = goldenAt(golden, "the department was renamed on april 1", 4).rows;
+export const tlRows = [
+  ...tl.map((r) => ({ label: r[0], note: r[1], lo: day(r[2]), hi: day(r[3]), loInc: true, hiInc: false, tone: r[0] === "dept 7" ? "ref" : "live" })),
+  { label: "grace", note: "refused", lo: day("2026-06-01"), hi: day("2026-08-01"), loInc: true, hiInc: false, tone: "dead", dashed: true },
+];
+
+<InShort>
+a **temporal key** is a key that's unique *per moment*: room 101 can appear many times, as long as its date ranges never overlap. postgres 18 <Since v={18} /> writes it as `PRIMARY KEY (room, during WITHOUT OVERLAPS)`, enforced like an exclusion constraint by a GiST index.
+
+and a **temporal foreign key**, `FOREIGN KEY (dept_id, PERIOD valid) REFERENCES departments (id, PERIOD valid)`, checks that the parent existed for the child's *whole* range, even when that takes several parent versions together.
+</InShort>
+
+## the picture
+
+you know the double-booked meeting room? two rows, same room, overlapping times, and every one of them "unique" in the eyes of a normal key, because their times aren't *equal*. equality is the wrong question. overlap is the right one.
+
+think of a hotel's booking ledger. the rule isn't "no two lines may mention room 101"; it's "no two lines may hold room 101 on the same night". and a reservation for a conference room should only be accepted for days the room actually exists, which might span a renovation that renamed it.
+
+<Figure wide caption={<>room 101 has ada until march 5 and grace from march 5. pick a booking to try. an overlapping stay in the same room is <C k="dead">refused</C>; the same dates in another room, or a stay that starts the day the last one ends, go in. empty ranges are refused outright. all real, on the same postgres 18.6 that runs this page.</>}>
+<RunPick options={[{ key: "booking", values: ["same room, overlapping", "another room", "same room, adjacent", "an empty stay"] }]} runs={tries} file="bookings.sql" hot={["WITHOUT OVERLAPS"]} trace={prov(trace)} />
+</Figure>
+
+the overlap error is SQLSTATE 23P01, an exclusion violation, not 23505. that's the tell for how it works.
+
+## WITHOUT OVERLAPS
+
+the docs describe it plainly: `PRIMARY KEY (room, during WITHOUT OVERLAPS)` behaves like `EXCLUDE USING gist (room WITH =, during WITH &&)`, plus NOT NULL, plus being *the* primary key that foreign keys can point at. the last column must be a range or multirange, and needs at least one ordinary column before it:
+
+```sql run ext=btree_gist
+CREATE TABLE bookings (room int, during daterange, PRIMARY KEY (room, during WITHOUT OVERLAPS));
+
+SELECT conname, contype, conperiod, pg_get_constraintdef(oid) AS def
+FROM pg_constraint WHERE conrelid = 'bookings'::regclass AND contype = 'p';
+SELECT am.amname FROM pg_class AS c JOIN pg_am AS am ON am.oid = c.relam WHERE c.relname = 'bookings_pkey';
+```
+
+a primary key backed by a **gist** index, with `conperiod` true. that GiST index is also why the `btree_gist` extension is needed: GiST has no `=` for a plain integer until btree_gist adds it. without it, the same table fails (this block runs without the extension):
+
+```sql run expect=error
+CREATE TABLE bookings (room int, during daterange, PRIMARY KEY (room, during WITHOUT OVERLAPS));
+```
+
+so every other block on this page starts with `ext=btree_gist`, which creates the extension first. (with only range columns, say `PRIMARY KEY (seats int4range, during WITHOUT OVERLAPS)`, no extension is needed, but real keys are rarely ranges.)
+
+compared with writing the exclusion constraint yourself ([range types](/learn/types/ranges) shows that one), WITHOUT OVERLAPS adds three things: it is the primary key (or a UNIQUE constraint), so it can be referenced; it implies NOT NULL; and it refuses empty ranges, which an `&&` exclusion lets through because an empty range overlaps nothing.
+
+## PERIOD foreign keys
+
+a temporal foreign key says: for every moment of the child's range, some parent row with the same key was valid. the parent may have *several* versions covering it between them:
+
+```sql run ext=btree_gist
+CREATE TABLE departments (
+  id    int       NOT NULL,
+  name  text      NOT NULL,
+  valid daterange NOT NULL,
+  PRIMARY KEY (id, valid WITHOUT OVERLAPS)
+);
+CREATE TABLE assignments (
+  employee text      NOT NULL,
+  dept_id  int       NOT NULL,
+  valid    daterange NOT NULL,
+  PRIMARY KEY (employee, valid WITHOUT OVERLAPS),
+  FOREIGN KEY (dept_id, PERIOD valid) REFERENCES departments (id, PERIOD valid)
+);
+-- the department was renamed on april 1: two versions, back to back.
+INSERT INTO departments VALUES (7, 'research', '[2026-01-01,2026-04-01)'), (7, 'research and data', '[2026-04-01,2026-07-01)');
+-- ada's assignment spans the rename. no single version covers it; both together do.
+INSERT INTO assignments VALUES ('ada', 7, '[2026-02-01,2026-05-01)');
+
+SELECT 'dept 7' AS who, name AS what, lower(valid), upper(valid) FROM departments
+UNION ALL
+SELECT employee, 'in dept ' || dept_id, lower(valid), upper(valid) FROM assignments
+ORDER BY 3, 1;
+```
+
+<Figure wide caption={<>the PERIOD check, drawn from the block above. department 7 exists from january to july in two versions. ada&apos;s assignment is covered by the two together, so it&apos;s accepted. grace&apos;s, from june to august, runs past the last version: <C k="dead">refused</C>, in the next block.</>}>
+<RangeLine min={0} max={243} rows={tlRows} ticks={[{ at: 0, label: "jan" }, { at: 59, label: "mar" }, { at: 120, label: "may" }, { at: 181, label: "jul" }, { at: 243, label: "sep" }]} />
+</Figure>
+
+```sql run ext=btree_gist expect=error errors=continue
+CREATE TABLE departments (id int, name text, valid daterange, PRIMARY KEY (id, valid WITHOUT OVERLAPS));
+CREATE TABLE assignments (employee text, dept_id int, valid daterange,
+  FOREIGN KEY (dept_id, PERIOD valid) REFERENCES departments (id, PERIOD valid));
+INSERT INTO departments VALUES (7, 'research', '[2026-01-01,2026-04-01)'), (7, 'research and data', '[2026-04-01,2026-07-01)');
+INSERT INTO assignments VALUES ('grace', 7, '[2026-06-01,2026-08-01)');
+INSERT INTO assignments VALUES ('ada', 7, '[2026-02-01,2026-05-01)');
+DELETE FROM departments WHERE name = 'research';
+```
+
+grace is refused, and so is the last statement: the parent side is checked too. deleting the january-to-april version would leave part of ada's assignment uncovered.
+
+<Predict options={["accepted", "refused"]} answer={0}>
+```sql
+-- departments: (7, '[2026-01-01,2026-04-01)'), (7, '[2026-04-01,2026-07-01)')
+INSERT INTO assignments VALUES ('ada', 7, '[2026-03-15,2026-04-15)');
+```
+<Explain>
+accepted. no single department row covers march 15 to april 15, but the two versions meet exactly on april 1 (half-open ranges, no gap), and together they cover it. a PERIOD foreign key checks the combined coverage, which is what makes it useful for versioned parents.
+</Explain>
+</Predict>
+
+## what 18 doesn't do yet
+
+<Figure caption={<>temporal support in postgres 18.6: tested on this page, plus what the 18 manual leaves out. <C k="live">live</C> runs; <C k="dead">dead</C> is refused or missing.</>}>
+<Tree>{`
+postgres 18.6
+    PRIMARY KEY / UNIQUE (..., r WITHOUT OVERLAPS)    #live // GiST, 23P01 on overlap
+    FOREIGN KEY (..., PERIOD r) REFERENCES ...       #live // covered by the parent rows combined
+        ON DELETE / ON UPDATE NO ACTION              #live
+        CASCADE, SET NULL, SET DEFAULT, RESTRICT     #dead // 0A000 at CREATE
+    UPDATE / DELETE ... FOR PORTION OF               #dead // not in 18
+    FOR SYSTEM_TIME AS OF                            #dead // not in postgres
+    (r WITHOUT OVERLAPS) alone                       #dead // needs at least two columns
+`}</Tree>
+</Figure>
+
+checked on postgres 18.6:
+
+- **referential actions**: a PERIOD foreign key only supports NO ACTION. CASCADE, SET NULL, SET DEFAULT, even RESTRICT, are refused when you create it:
+
+```sql run ext=btree_gist expect=error
+CREATE TABLE departments (id int, valid daterange, PRIMARY KEY (id, valid WITHOUT OVERLAPS));
+CREATE TABLE assignments (dept_id int, valid daterange,
+  FOREIGN KEY (dept_id, PERIOD valid) REFERENCES departments (id, PERIOD valid) ON DELETE CASCADE);
+```
+
+- **UPDATE ... FOR PORTION OF**: the standard's way to change "the price from march 10 to march 20" and have the database split rows around it isn't in 18. you still split versions by hand (or in a trigger), like the history table in [history, audit and soft delete](/learn/design/history-and-soft-delete).
+- **system-versioned tables** (`FOR SYSTEM_TIME AS OF`): not in postgres at all. these keys are about *application* time, the period a fact is true in the world, which you set yourself.
+- **a key with only the range**: `PRIMARY KEY (valid WITHOUT OVERLAPS)` is refused ("needs at least two columns"); for a single global timeline, use an exclusion constraint.
+
+<Docs href="https://www.postgresql.org/docs/18/sql-createtable.html" title="CREATE TABLE: WITHOUT OVERLAPS and PERIOD">the manual's UNIQUE, PRIMARY KEY and REFERENCES sections describe the 18 behaviour: the WITHOUT OVERLAPS column is checked for overlap, is enforced like an exclusion constraint with a GiST index, can't be empty, and the PERIOD reference must be covered by the combined referenced rows.</Docs>
+
+<Gotcha title="the range bounds are the whole design">
+use half-open ranges, `[start, end)`, and keep them that way: then a stay ending march 5 and one starting march 5 don't overlap, and versions tile with no gap. mixing in a closed `[start, end]` range makes back-to-back rows collide by one day (for daterange postgres normalizes discrete bounds to `[)` for you; for tstzrange it can't, so the convention is on you). and for "currently valid", an open upper bound (`[2026-04-01,)`) reads better than a far-future sentinel date.
+</Gotcha>
+
+<Interview q="how do you prevent double bookings in postgres?">
+an exclusion constraint on (room WITH =, during WITH &&), with a range column for the stay and btree_gist for the integer equality. on postgres 18 the same constraint can be the primary key: PRIMARY KEY (room, during WITHOUT OVERLAPS), which also refuses empty ranges and can be referenced by a temporal foreign key with PERIOD. it's enforced by a GiST index inside the database, so two concurrent bookings can't both win: one waits and then fails with 23P01. bonus point: in 18 PERIOD foreign keys only support NO ACTION, and there's no FOR PORTION OF yet.
+</Interview>
+
+<Keylines>
+- a temporal key is unique per moment: same key, non-overlapping ranges.
+- PRIMARY KEY (k, r WITHOUT OVERLAPS) (18+) is an exclusion constraint you can reference, NOT NULL and no empty ranges.
+- PERIOD foreign keys check the child's range is covered by the parent's versions combined.
+- 18 supports only NO ACTION for PERIOD keys, and no FOR PORTION OF.
+- use half-open ranges so back-to-back periods meet without overlapping.
+</Keylines>

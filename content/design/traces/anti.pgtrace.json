@@ -1,0 +1,905 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/anti.scenario.sql",
+ "title": "four schema anti-patterns, the query that hurts, and the same query after the fix",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "product_attrs": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"product_id","type":"int4"},{"name":"attr","type":"text"},{"name":"value","type":"text"}]
+  },
+  "product_attrs_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"product_id","type":"int4"},{"name":"attr","type":"text"}],
+   "on": "product_attrs"
+  },
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"color","type":"text"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "posts": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"title","type":"text"}]},
+  "posts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"posts"},
+  "photos": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"caption","type":"text"}]},
+  "photos_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"photos"},
+  "comments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"target_type","type":"text"},
+    {"name":"target_id","type":"int4"},
+    {"name":"body","type":"text"}
+   ]
+  },
+  "comments_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"comments"},
+  "comments2": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"post_id","type":"int4"},
+    {"name":"photo_id","type":"int4"},
+    {"name":"body","type":"text"}
+   ]
+  },
+  "comments2_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"comments2"},
+  "articles": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"title","type":"text"},{"name":"tags","type":"text"}]
+  },
+  "articles_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"articles"},
+  "article_tags": {"kind":"table","am":"heap","columns":[{"name":"article_id","type":"int4"},{"name":"tag","type":"text"}]},
+  "article_tags_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"article_id","type":"int4"},{"name":"tag","type":"text"}],
+   "on": "article_tags"
+  },
+  "customers": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"name","type":"text"}]},
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"customer_id","type":"int4"},{"name":"total","type":"numeric"}]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "tenant_1_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_1_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_1_orders"},
+  "tenant_2_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_2_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_2_orders"},
+  "tenant_3_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_3_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_3_orders"},
+  "tenant_4_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_4_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_4_orders"},
+  "tenant_5_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_5_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_5_orders"},
+  "tenant_6_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_6_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_6_orders"},
+  "tenant_7_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_7_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_7_orders"},
+  "tenant_8_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_8_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_8_orders"},
+  "tenant_9_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_9_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_9_orders"},
+  "tenant_10_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_10_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_10_orders"},
+  "tenant_11_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_11_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_11_orders"},
+  "tenant_12_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_12_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_12_orders"},
+  "tenant_13_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_13_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_13_orders"},
+  "tenant_14_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_14_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_14_orders"},
+  "tenant_15_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_15_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_15_orders"},
+  "tenant_16_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_16_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_16_orders"},
+  "tenant_17_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_17_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_17_orders"},
+  "tenant_18_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_18_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_18_orders"},
+  "tenant_19_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_19_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_19_orders"},
+  "tenant_20_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_20_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_20_orders"},
+  "tenant_21_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_21_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_21_orders"},
+  "tenant_22_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_22_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_22_orders"},
+  "tenant_23_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_23_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_23_orders"},
+  "tenant_24_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_24_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_24_orders"},
+  "tenant_25_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_25_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_25_orders"},
+  "tenant_26_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_26_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_26_orders"},
+  "tenant_27_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_27_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_27_orders"},
+  "tenant_28_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_28_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_28_orders"},
+  "tenant_29_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_29_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_29_orders"},
+  "tenant_30_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_30_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_30_orders"},
+  "tenant_31_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_31_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_31_orders"},
+  "tenant_32_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_32_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_32_orders"},
+  "tenant_33_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_33_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_33_orders"},
+  "tenant_34_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_34_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_34_orders"},
+  "tenant_35_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_35_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_35_orders"},
+  "tenant_36_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_36_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_36_orders"},
+  "tenant_37_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_37_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_37_orders"},
+  "tenant_38_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_38_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_38_orders"},
+  "tenant_39_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_39_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_39_orders"},
+  "tenant_40_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_40_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_40_orders"},
+  "tenant_41_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_41_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_41_orders"},
+  "tenant_42_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_42_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_42_orders"},
+  "tenant_43_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_43_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_43_orders"},
+  "tenant_44_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_44_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_44_orders"},
+  "tenant_45_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_45_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_45_orders"},
+  "tenant_46_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_46_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_46_orders"},
+  "tenant_47_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_47_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_47_orders"},
+  "tenant_48_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_48_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_48_orders"},
+  "tenant_49_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_49_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_49_orders"},
+  "tenant_50_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_50_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_50_orders"},
+  "tenant_51_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_51_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_51_orders"},
+  "tenant_52_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_52_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_52_orders"},
+  "tenant_53_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_53_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_53_orders"},
+  "tenant_54_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_54_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_54_orders"},
+  "tenant_55_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_55_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_55_orders"},
+  "tenant_56_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_56_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_56_orders"},
+  "tenant_57_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_57_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_57_orders"},
+  "tenant_58_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_58_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_58_orders"},
+  "tenant_59_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_59_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_59_orders"},
+  "tenant_60_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_60_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_60_orders"},
+  "tenant_61_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_61_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_61_orders"},
+  "tenant_62_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_62_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_62_orders"},
+  "tenant_63_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_63_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_63_orders"},
+  "tenant_64_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_64_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_64_orders"},
+  "tenant_65_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_65_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_65_orders"},
+  "tenant_66_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_66_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_66_orders"},
+  "tenant_67_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_67_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_67_orders"},
+  "tenant_68_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_68_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_68_orders"},
+  "tenant_69_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_69_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_69_orders"},
+  "tenant_70_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_70_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_70_orders"},
+  "tenant_71_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_71_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_71_orders"},
+  "tenant_72_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_72_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_72_orders"},
+  "tenant_73_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_73_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_73_orders"},
+  "tenant_74_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_74_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_74_orders"},
+  "tenant_75_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_75_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_75_orders"},
+  "tenant_76_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_76_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_76_orders"},
+  "tenant_77_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_77_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_77_orders"},
+  "tenant_78_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_78_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_78_orders"},
+  "tenant_79_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_79_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_79_orders"},
+  "tenant_80_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_80_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_80_orders"},
+  "tenant_81_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_81_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_81_orders"},
+  "tenant_82_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_82_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_82_orders"},
+  "tenant_83_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_83_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_83_orders"},
+  "tenant_84_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_84_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_84_orders"},
+  "tenant_85_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_85_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_85_orders"},
+  "tenant_86_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_86_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_86_orders"},
+  "tenant_87_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_87_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_87_orders"},
+  "tenant_88_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_88_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_88_orders"},
+  "tenant_89_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_89_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_89_orders"},
+  "tenant_90_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_90_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_90_orders"},
+  "tenant_91_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_91_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_91_orders"},
+  "tenant_92_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_92_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_92_orders"},
+  "tenant_93_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_93_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_93_orders"},
+  "tenant_94_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_94_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_94_orders"},
+  "tenant_95_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_95_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_95_orders"},
+  "tenant_96_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_96_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_96_orders"},
+  "tenant_97_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_97_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_97_orders"},
+  "tenant_98_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_98_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_98_orders"},
+  "tenant_99_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_99_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_99_orders"},
+  "tenant_100_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"total","type":"numeric"},{"name":"note","type":"text"}]
+  },
+  "tenant_100_orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"tenant_100_orders"},
+  "shared_orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"tenant_id","type":"int4"},
+    {"name":"id","type":"int4"},
+    {"name":"total","type":"numeric"},
+    {"name":"note","type":"text"}
+   ]
+  },
+  "shared_orders_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"tenant_id","type":"int4"},{"name":"id","type":"int4"}],
+   "on": "shared_orders"
+  }
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE product_attrs (product_id int, attr text, value text, PRIMARY KEY (product_id, attr));\nINSERT INTO product_attrs VALUES\n  (1, 'name', 'assam tea'), (1, 'price', '6.50'), (1, 'color', 'red'),\n  (2, 'name', 'blue mug'),  (2, 'price', '12.00'), (2, 'color', 'blue'),\n  (3, 'name', 'teapot'),    (3, 'price', '45.00'), (3, 'color', 'red'),\n  (4, 'name', 'tea towel'), (4, 'price', '9.00'), (4, 'colour', 'red')",
+   "note": "EAV: every attribute is a row, every value is text.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":12,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT n.value AS name, p.value AS price\nFROM product_attrs AS n\nJOIN product_attrs AS p ON p.product_id = n.product_id AND p.attr = 'price'\nJOIN product_attrs AS c ON c.product_id = n.product_id AND c.attr = 'color'\nWHERE n.attr = 'name' AND c.value = 'red' AND p.value < '9.50'\nORDER BY n.product_id",
+   "note": "red products under 9.50: a self-join per attribute, and a text comparison. as strings '45.00' < '9.50', so the teapot sneaks in, and the tea towel is lost to a misspelled attribute name.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"name","type":"text"},{"name":"price","type":"text"}],
+    "data": [["assam tea","6.50"],["teapot","45.00"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "CREATE TABLE products (id int PRIMARY KEY, name text NOT NULL, price numeric(8,2) NOT NULL CHECK (price >= 0), color text);\nINSERT INTO products VALUES (1, 'assam tea', 6.50, 'red'), (2, 'blue mug', 12.00, 'blue'), (3, 'teapot', 45.00, 'red'), (4, 'tea towel', 9.00, 'red')",
+   "note": "the fix: real columns with real types.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":4,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT name, price FROM products WHERE color = 'red' AND price < 9.50 ORDER BY id",
+   "note": "one table, numeric comparison, no joins.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"name","type":"text"},{"name":"price","type":"numeric"}],
+    "data": [["assam tea","6.50"],["tea towel","9.00"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "CREATE TABLE posts (id int PRIMARY KEY, title text NOT NULL);\nCREATE TABLE photos (id int PRIMARY KEY, caption text NOT NULL);\nCREATE TABLE comments (id int PRIMARY KEY, target_type text NOT NULL, target_id int NOT NULL, body text NOT NULL);\nINSERT INTO posts VALUES (1, 'why pages are 8 KB');\nINSERT INTO photos VALUES (1, 'the left-handed teapot')",
+   "note": "polymorphic association: a comment points at a post or a photo, named by a type column and an id.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "INSERT INTO comments VALUES (1, 'post', 1, 'nice'), (2, 'photo', 1, 'lovely'), (3, 'post', 99, 'orphan from day one');\nSELECT c.id, c.target_type, c.target_id, coalesce(p.title, ph.caption) AS target\nFROM comments AS c\nLEFT JOIN posts AS p ON c.target_type = 'post' AND p.id = c.target_id\nLEFT JOIN photos AS ph ON c.target_type = 'photo' AND ph.id = c.target_id\nORDER BY c.id",
+   "note": "no foreign key is possible on (target_type, target_id), so a comment on post 99, which doesn't exist, goes straight in.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"target_type","type":"text"},
+     {"name":"target_id","type":"int4"},
+     {"name":"target","type":"text"}
+    ],
+    "data": [["1","post","1","why pages are 8 KB"],["2","photo","1","the left-handed teapot"],["3","post","99",null]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "CREATE TABLE comments2 (\n  id       int PRIMARY KEY,\n  post_id  int REFERENCES posts,\n  photo_id int REFERENCES photos,\n  body     text NOT NULL,\n  CHECK (num_nonnulls(post_id, photo_id) = 1)\n);\nINSERT INTO comments2 VALUES (1, 1, NULL, 'nice'), (2, NULL, 1, 'lovely')",
+   "note": "the fix: one nullable foreign key per target, and a CHECK that exactly one is set.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "INSERT INTO comments2 VALUES (3, 99, NULL, 'orphan from day one')",
+   "note": "the same orphan, refused.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23503",
+    "message": "insert or update on table \"comments2\" violates foreign key constraint \"comments2_post_id_fkey\"",
+    "detail": "Key (post_id)=(99) is not present in table \"posts\"."
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "CREATE TABLE articles (id int PRIMARY KEY, title text NOT NULL, tags text NOT NULL);\nINSERT INTO articles VALUES (1, 'roses', 'red,garden'), (2, 'thermal cameras', 'infrared,tech'), (3, 'apples', 'fruit,red')",
+   "note": "comma list: tags in a text column.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":3,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT id, title, tags FROM articles WHERE tags LIKE '%red%' ORDER BY id",
+   "note": "articles tagged red, with LIKE. infrared matches too.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"title","type":"text"},{"name":"tags","type":"text"}],
+    "data": [["1","roses","red,garden"],["2","thermal cameras","infrared,tech"],["3","apples","fruit,red"]]
+   }
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "CREATE TABLE article_tags (article_id int REFERENCES articles, tag text, PRIMARY KEY (article_id, tag));\nINSERT INTO article_tags SELECT id, t FROM articles, string_to_table(tags, ',') AS t ORDER BY 1, 2",
+   "note": "the fix: a junction table, one row per tag.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":6,"columns":[],"data":[]}
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT a.id, a.title FROM articles AS a JOIN article_tags AS t ON t.article_id = a.id WHERE t.tag = 'red' ORDER BY a.id",
+   "note": "an exact match, indexable, and a tag count is a GROUP BY.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"title","type":"text"}],
+    "data": [["1","roses"],["3","apples"]]
+   }
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "CREATE TABLE customers (id int PRIMARY KEY, name text NOT NULL);\nCREATE TABLE orders (id int PRIMARY KEY, customer_id int NOT NULL, total numeric(8,2) NOT NULL);\nINSERT INTO customers VALUES (1, 'Ada'), (2, 'Grace');\nINSERT INTO orders VALUES (10, 1, 22.00), (11, 2, 6.50), (12, 3, 15.00);\nDELETE FROM customers WHERE id = 2",
+   "note": "missing foreign keys: orders.customer_id is just an int.",
+   "status": "ok",
+   "result": {"command":"DELETE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "SELECT c.name, sum(o.total) AS revenue FROM orders AS o JOIN customers AS c ON c.id = o.customer_id GROUP BY c.name ORDER BY c.name",
+   "note": "an inner join quietly drops the orders whose customer doesn't exist. revenue by customer is short by two orders.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"name","type":"text"},{"name":"revenue","type":"numeric"}],
+    "data": [["Ada","22.00"]]
+   }
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "SELECT o.id, o.customer_id FROM orders AS o WHERE NOT EXISTS (SELECT 1 FROM customers AS c WHERE c.id = o.customer_id) ORDER BY o.id",
+   "note": "the fix starts by finding the orphans.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"customer_id","type":"int4"}],
+    "data": [["11","2"],["12","3"]]
+   }
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "ALTER TABLE orders ADD CONSTRAINT orders_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES customers",
+   "note": "then the foreign key. adding it checks every existing row and refuses while orphans exist. NOT VALID would protect new rows now and leave the old ones for later.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23503",
+    "message": "insert or update on table \"orders\" violates foreign key constraint \"orders_customer_id_fkey\"",
+    "detail": "Key (customer_id)=(2) is not present in table \"customers\"."
+   }
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "DO $$ BEGIN\n  FOR t IN 1..100 LOOP\n    EXECUTE format('CREATE TABLE tenant_%s_orders (id int PRIMARY KEY, total numeric(8,2) NOT NULL, note text)', t);\n  END LOOP;\nEND $$;\nCREATE TABLE shared_orders (tenant_id int, id int, total numeric(8,2) NOT NULL, note text, PRIMARY KEY (tenant_id, id))",
+   "note": "table per tenant: 100 tenants, each with its own orders table.",
+   "status": "ok",
+   "result": {"command":"CREATE TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "SELECT 'table per tenant' AS design, count(*) AS relations FROM pg_class WHERE relname LIKE 'tenant\\_%' OR oid IN (SELECT reltoastrelid FROM pg_class WHERE relname LIKE 'tenant\\_%') OR oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN (SELECT reltoastrelid FROM pg_class WHERE relname LIKE 'tenant\\_%'))\nUNION ALL\nSELECT 'one shared table', count(*) FROM pg_class WHERE relname LIKE 'shared\\_orders%' OR oid IN (SELECT reltoastrelid FROM pg_class WHERE relname = 'shared_orders') OR oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN (SELECT reltoastrelid FROM pg_class WHERE relname = 'shared_orders'))\nORDER BY relations DESC",
+   "note": "catalog rows each design costs: the table, its primary key index, its toast table and toast index.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"design","type":"text"},{"name":"relations","type":"int8"}],
+    "data": [["table per tenant","400"],["one shared table","4"]]
+   }
+  }
+ ]
+}

@@ -1,0 +1,191 @@
+import { ToastLadder } from "@/components/figures/storage/ToastLadder";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import toastSizes from "./traces/toast-sizes.pgtrace.json";
+
+export const toastRows = toastSizes.steps[0].result.data.map((r) => ({
+  kind: r[0],
+  bytes: Number(r[1]),
+  stored: Number(r[2]),
+  method: r[3] || null,
+  tuple: Number(r[4]),
+  chunks: Number(r[5]),
+}));
+export const source = { engine: toastSizes.engine, scenario: toastSizes.scenario };
+export const squeezed = toastRows.filter((r) => r.kind === "repetitive" && r.method);
+
+<InShort>
+a row has to fit in an 8 KB page, and postgres would like four of them to fit. so when a row grows past about **2 KB**, its big values get **compressed** first. if that's still not enough, they're sliced into chunks of just under 2 KB and stored in a hidden side table, the **TOAST table**, and the row keeps an 18-byte pointer.
+
+that's how a `text` column holds a megabyte. TOAST is "the oversized-attribute storage technique", and yes, someone was pleased with that.
+</InShort>
+
+## the picture
+
+you know how a `text` or `jsonb` value can be up to 1 GB, and a page is 8 KB? something has to give.
+
+think of a filing cabinet with thin folders, four to a drawer. a normal letter goes straight in the folder. a thick report gets vacuum-packed first (compressed) and usually fits. if it's still too thick, it goes to the archive room in numbered envelopes, and the folder keeps a slip that says "archive item 24,584, six envelopes". people who only flip through the folders never touch the archive.
+
+<Figure wide caption={<>pick a size. every number is a real row: what the value is, what it takes in the row, and how many chunks went to the toast table. repetitive text compresses to almost nothing; random hex doesn't compress at all with pglz, so it goes out of line at full size.</>}>
+<ToastLadder rows={toastRows} source={source} />
+</Figure>
+
+<Figure caption={<>repetitive text over the line, stored size against original size (log scale). pglz shrinks a run of one letter about a hundredfold.</>}>
+<Bars log unit="bytes" data={squeezed.flatMap((r) => [{ label: `${r.bytes.toLocaleString("en-US")} B, as written`, value: r.bytes }, { label: `${r.bytes.toLocaleString("en-US")} B, compressed`, value: r.stored, tone: "live" }])} />
+<Provenance trace={source} />
+</Figure>
+
+three regimes. under about 2 KB, nothing happens. above it, compression (and a megabyte of `a` becomes 11 KB). if the compressed value is still over the limit, or doesn't compress, out of line it goes, and the row shrinks to about 50 bytes however big the value was.
+
+## watch it happen
+
+five values in a `docs` table, from small to a megabyte, some compressible and some not:
+
+```sql run db=lab session=toast
+CREATE TABLE docs (id int PRIMARY KEY, title text, body text);
+INSERT INTO docs VALUES (1, 'one', repeat('a', 1000)),
+                        (2, 'two', repeat('a', 3000)),
+                        (3, 'three', repeat('a', 1000000));
+INSERT INTO docs SELECT 4, 'four', string_agg(md5(g::text), '' ORDER BY g)
+FROM generate_series(1, 100) AS g;
+INSERT INTO docs SELECT 5, 'five', string_agg(md5(g::text), '' ORDER BY g)
+FROM generate_series(1, 31250) AS g;
+SELECT d.id, octet_length(d.body) AS bytes, pg_column_size(d.body) AS stored,
+       pg_column_compression(d.body) AS method, h.lp_len AS row_bytes
+FROM docs d JOIN heap_page_items(get_raw_page('docs', 0)) h ON h.t_ctid = d.ctid
+ORDER BY d.id;
+```
+
+read it row by row. 1,000 `a`s stay as they are: a 1,036-byte row, no compression. 3,000 `a`s are over the line, so pglz squeezes them to 44 bytes, and the row is 76 bytes again. a million `a`s compress to 11,452 bytes, which is still too big for the row, so that goes out of line. 3,200 bytes of md5 hex won't compress (pglz finds no repeats worth encoding in random hex), so it goes out of line uncompressed, and the same for the megabyte of it. every out-of-line row is about the same small size, 51 or 52 bytes: the header, the int, the title, and an 18-byte **toast pointer**.
+
+## the side table
+
+every table that has a column that could need it gets a toast table when it's created. it has a name, an oid, its own file, and its own index:
+
+```sql run session=toast
+SELECT reltoastrelid::regclass AS toast_table,
+       pg_relation_size('docs') AS heap_bytes,
+       pg_relation_size(reltoastrelid) AS toast_bytes
+FROM pg_class WHERE relname = 'docs';
+```
+
+one 8 KB page for the five rows, and over a megabyte next door. the toast table is an ordinary heap table with three columns: `chunk_id` (one per toasted value), `chunk_seq` (0, 1, 2, ...) and `chunk_data`. you can read it like any table:
+
+```sql run session=toast
+SELECT chunk_id, count(*) AS chunks, sum(length(chunk_data)) AS bytes,
+       max(length(chunk_data)) AS biggest_chunk
+FROM pg_toast.pg_toast_24576
+GROUP BY chunk_id ORDER BY chunk_id;
+```
+
+<Figure caption={<>row 5 and where its megabyte went. the row holds an 18-byte <C k="ref">toast pointer</C>; the pointer names a chunk_id in the toast table, whose index finds the chunks in order.</>}>
+<Tree>{`
+docs, row 5: 51 bytes on page 0
+    id 5, title 'five'
+    body: toast pointer, 18 bytes #ref // the value lives elsewhere
+        pg_toast.pg_toast_24576, chunk_id 24586
+            chunk_seq 0: 1,996 bytes
+            chunk_seq 1: 1,996 bytes
+            ... 499 more of 1,996 bytes
+            chunk_seq 501: the last 4 bytes // 501 × 1,996 = 999,996
+`}</Tree>
+</Figure>
+
+three values went out of line: 6 chunks for the compressed megabyte of `a`, 2 for the 3,200 bytes of hex, and 502 for the million bytes of hex. no chunk is over 1,996 bytes: that size is picked so four chunk rows fit on a toast page. (the `24576` in the name is the oid of `docs`. it's what the browser engine hands out first after loading a dataset; on another server it will be some other number, so look it up with `reltoastrelid` like above.)
+
+## updates don't copy the big value
+
+a toast pointer is just a value in the row. if an UPDATE doesn't change the toasted column, the new row version gets the same pointer, and the chunks aren't touched.
+
+<Predict question="row 5 has a 1 MB body out of line. you change only its title. what happens to the toast table?" options={["it grows by 1 MB", "it stays the same", "the old chunks are deleted"]} answer={1}>
+```sql
+UPDATE docs SET title = 'five, renamed' WHERE id = 5;
+```
+<Explain>
+nothing happens to it. the new version of the row is written (an UPDATE always writes a new version), but it carries the same toast pointer, with the same chunk_id. the megabyte is shared by both versions until the old one is vacuumed away. change the body itself, and then you do write a new megabyte.
+</Explain>
+</Predict>
+
+```sql run session=toast
+SELECT ctid, pg_column_toast_chunk_id(body) AS chunk_id,
+       pg_relation_size('pg_toast.pg_toast_24576') AS toast_bytes
+FROM docs WHERE id = 5;
+UPDATE docs SET title = 'five, renamed' WHERE id = 5;
+SELECT ctid, pg_column_toast_chunk_id(body) AS chunk_id,
+       pg_relation_size('pg_toast.pg_toast_24576') AS toast_bytes
+FROM docs WHERE id = 5;
+```
+
+new ctid, same `chunk_id`, same toast table size. <Since v={17} /> `pg_column_toast_chunk_id()` is new in postgres 17; before that you had to dig the pointer out of the raw tuple.
+
+## four strategies per column
+
+each column has a storage strategy, `attstorage`, which decides what TOAST may do with it:
+
+```sql run session=toast
+SELECT attname, atttypid::regtype AS type, attstorage
+FROM pg_attribute
+WHERE attrelid = 'docs'::regclass AND attnum > 0
+ORDER BY attnum;
+```
+
+<Defs>
+<dt>p, plain</dt><dd>never compressed, never moved out. fixed-width types like <code>int</code> have no choice.</dd>
+<dt>x, extended</dt><dd>compress, then move out if still needed. the default for <code>text</code>, <code>jsonb</code>, <code>bytea</code>.</dd>
+<dt>e, external</dt><dd>move out, but never compress.</dd>
+<dt>m, main</dt><dd>compress, and move out only as a last resort.</dd>
+</Defs>
+
+`EXTERNAL` sounds pointless until you need part of a big value. `substr()` on an uncompressed out-of-line value only fetches the chunks it covers, while a compressed one has to be decompressed from the start:
+
+```sql run session=toast
+ALTER TABLE docs ALTER COLUMN body SET STORAGE EXTERNAL;
+INSERT INTO docs VALUES (6, 'six', repeat('a', 1000000));
+SELECT id, pg_column_size(body) AS stored, pg_column_compression(body) AS method,
+       pg_column_toast_chunk_id(body) IS NOT NULL AS out_of_line
+FROM docs WHERE id IN (3, 6) ORDER BY id;
+```
+
+the same million `a`s: 11,452 bytes compressed in row 3, the full 1,000,000 uncompressed in row 6. the setting only affects values written after it.
+
+<Docs href="https://www.postgresql.org/docs/18/storage-toast.html" title="TOAST">
+the manual's chapter on TOAST: the threshold (normally 2 kB), the 18-byte pointer, the four strategies, and how the chunk size is picked so four chunks fit on a page.
+</Docs>
+
+## pglz, and lz4
+
+postgres ships two compression methods. `pglz` is built in and is the default. `lz4` arrived in postgres 14 <Since v={14} /> and needs a server compiled with it (`--with-lz4`). the browser engine wasn't:
+
+```sql run db=lab
+SHOW default_toast_compression;
+SELECT enumvals FROM pg_settings WHERE name = 'default_toast_compression';
+```
+
+a native postgres 18.6 (Postgres.app here) has both, and you can pick per column:
+
+```sql native db=lab
+CREATE TABLE z (body text);
+INSERT INTO z VALUES (repeat('a', 1000000));
+ALTER TABLE z ALTER COLUMN body SET COMPRESSION lz4;
+INSERT INTO z VALUES (repeat('a', 1000000));
+SELECT pg_column_compression(body) AS method, pg_column_size(body) AS stored
+FROM z ORDER BY 1;
+```
+
+same megabyte: 11,452 bytes with pglz, 3,936 with lz4. a run of one letter is a cartoon of real data, though. which method wins for your documents, in size and in CPU, is a measurement you make on your documents.
+
+<Gotcha title="SELECT * detoasts everything">
+an out-of-line value is fetched and decompressed only when something actually needs it. `SELECT id, title FROM docs` never opens the toast table. `SELECT *` does, for every row, and decompresses every value on the way. on a table of large `jsonb` documents that's the difference between reading a few pages and reading the whole toast table. name the columns you need, especially in queries that run often.
+</Gotcha>
+
+<Interview q="how does postgres store a 10 MB text value when a page is 8 KB?">
+with TOAST. when a row would be wider than about 2 KB, postgres first compresses its largest variable-width values (pglz by default, lz4 if configured). if the row is still too wide, it moves values out of line: each one is cut into chunks of up to 1,996 bytes and stored as rows in the table's toast table (pg_toast.pg_toast_&lt;oid&gt;), and the main row keeps an 18-byte pointer. reading the column fetches and reassembles the chunks; a query that doesn't select the column never touches them. bonus point: an UPDATE that doesn't change the toasted column reuses the pointer, so the big value isn't copied, and attstorage (plain, main, external, extended) controls what TOAST may do per column.
+</Interview>
+
+<Keylines>
+- rows wider than about 2 KB get their big values compressed first, then moved out of line if still needed.
+- out of line means chunks of up to 1,996 bytes in pg_toast.pg_toast_&lt;oid&gt;, and an 18-byte pointer in the row.
+- values that don't compress (random data) go out of line at full size.
+- an UPDATE that doesn't touch the big column copies only the pointer.
+- attstorage picks the strategy per column: plain, main, external, extended.
+- don't SELECT * from tables with big values you don't need.
+</Keylines>

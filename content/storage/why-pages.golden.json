@@ -1,0 +1,132 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0ff91304e66ebc02": {
+      "db": "lab",
+      "sql": "SHOW block_size;\nSELECT pg_relation_size('notes') AS bytes, pg_relation_size('notes') / 8192 AS pages,\n       count(*) AS rows\nFROM notes;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["block_size", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7d973211cb46a875",
+          "rows": [
+            ["8192"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["bytes", "int8", 20],
+            ["pages", "int8", 20],
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "f4cd7cd6947f2aef",
+          "rows": [
+            ["40960", "5", "400"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2b1536dea49f4f12": {
+      "db": "lab",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM notes;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2a313b14da1ee8c5",
+          "rows": [
+            ["Seq Scan on notes (actual rows=400.00 loops=1)"],
+            ["  Buffers: shared read=5 dirtied=5"],
+            ["Planning:"],
+            ["  Buffers: shared hit=18 read=2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e70b9797d407ab79": {
+      "db": "lab",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM notes WHERE id = 200;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "85420023575aa9b3",
+          "rows": [
+            ["Index Scan using notes_pkey on notes (actual rows=1.00 loops=1)"],
+            ["  Index Cond: (id = 200)"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared read=2 dirtied=1"],
+            ["Planning:"],
+            ["  Buffers: shared hit=23 read=2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "58ca05e411ab4d4e": {
+      "db": "lab",
+      "sql": "SHOW block_size;\nSHOW wal_block_size;\nSHOW segment_size;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["block_size", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7d973211cb46a875",
+          "rows": [
+            ["8192"]
+          ]
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["wal_block_size", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "abb92b75e88113fd",
+          "rows": [
+            ["8192"]
+          ]
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["segment_size", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c43028231688ccb3",
+          "rows": [
+            ["1GB"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

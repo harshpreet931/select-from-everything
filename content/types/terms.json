@@ -1,0 +1,22 @@
+[
+  { "term": "cast", "short": "turning a value of one type into another, written CAST(x AS t) or x::t. a cast from text is a parse and can fail.", "chapter": "types-and-casts", "aka": ["::", "CAST"] },
+  { "term": "implicit cast", "short": "a cast pg_cast lets postgres add on its own, anywhere it helps, like integer to bigint. assignment casts only happen when storing into a column.", "chapter": "types-and-casts", "aka": ["assignment cast", "pg_cast"] },
+  { "term": "unknown literal", "short": "a quoted string with no type yet. it takes the type the operator or column next to it wants, which is why '1' + 1 is 2.", "chapter": "types-and-casts", "aka": ["unknown type"] },
+  { "term": "numeric", "short": "exact decimal arithmetic at any size, numeric(p, s) to fix the scale. slower and bigger than integers or floats, right for money.", "chapter": "numbers", "aka": ["decimal"] },
+  { "term": "float8", "short": "double precision: an IEEE 754 binary float, fast and approximate. it can't hold 0.1 exactly, so never compare it with =.", "chapter": "numbers", "aka": ["double precision", "float", "real", "float4"] },
+  { "term": "collation", "short": "the rules a database uses to order and compare text. C is byte order; ICU collations sort like a dictionary in a given language.", "chapter": "text-and-collation", "aka": ["ICU", "COLLATE"] },
+  { "term": "nondeterministic collation", "short": "an ICU collation that can call different strings equal, like Zoë and ZOË under und-u-ks-level2. postgres's way to compare without case.", "chapter": "text-and-collation", "aka": ["case-insensitive collation", "citext"] },
+  { "term": "interval", "short": "a span of time stored as three separate counts: months, days and microseconds. + 1 month clamps to the month's end.", "chapter": "dates-and-intervals", "aka": ["justify_interval"] },
+  { "term": "timestamptz", "short": "timestamp with time zone: an instant, stored as UTC, read and printed in the session's TimeZone. it stores no zone.", "chapter": "timestamptz", "aka": ["timestamp with time zone", "TimeZone", "AT TIME ZONE"] },
+  { "term": "enum", "short": "a type whose values are a fixed list of labels, sorted in the order they were declared. you can add labels but never drop one.", "chapter": "booleans-enums-domains", "aka": ["enumerated type"] },
+  { "term": "domain", "short": "an existing type with constraints attached under a new name, checked whenever a value becomes that type.", "chapter": "booleans-enums-domains", "aka": ["CREATE DOMAIN"] },
+  { "term": "identity column", "short": "a column numbered by its own sequence: GENERATED ALWAYS (or BY DEFAULT) AS IDENTITY. the standard form of serial.", "chapter": "identity-and-uuids", "aka": ["GENERATED AS IDENTITY", "serial", "OVERRIDING SYSTEM VALUE"] },
+  { "term": "uuidv7", "short": "a uuid whose first 48 bits are unix milliseconds, so new values sort last. postgres 18 generates them with uuidv7().", "chapter": "identity-and-uuids", "aka": ["uuid", "gen_random_uuid"] },
+  { "term": "array", "short": "a typed list in one column, like text[]. subscripts start at 1; = ANY, @>, && and unnest work with it.", "chapter": "arrays", "aka": ["unnest", "ANY"] },
+  { "term": "jsonb", "short": "json parsed into a binary form: keys sorted and deduplicated, indexable with GIN. json keeps the original text instead.", "chapter": "jsonb", "aka": ["json"] },
+  { "term": "jsonpath", "short": "a small query language for json values, used by @?, @@ and the jsonb_path_* functions.", "chapter": "jsonb" },
+  { "term": "JSON_TABLE", "short": "turns a json document into rows and typed columns using paths. postgres 17 and later.", "chapter": "jsonb" },
+  { "term": "range type", "short": "a start and an end as one value, each bound inclusive or exclusive: int4range, daterange, tstzrange. && asks whether two overlap.", "chapter": "ranges", "aka": ["range", "daterange", "tstzrange"] },
+  { "term": "multirange", "short": "an ordered set of non-overlapping ranges in one value, like {[1,3),[5,8)}. postgres 14 and later; range_agg builds one.", "chapter": "ranges", "aka": ["range_agg"] },
+  { "term": "generated column", "short": "a read-only column computed from its own row. STORED keeps the value on disk; VIRTUAL, the default since 18, computes it on read.", "chapter": "generated-columns", "aka": ["virtual generated column", "stored generated column"] }
+]

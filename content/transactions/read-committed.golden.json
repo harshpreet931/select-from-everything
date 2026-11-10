@@ -1,0 +1,63 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "a44bd59a6e104a2d": {
+      "db": "bank",
+      "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 50.00 WHERE id = 1;\nSELECT owner, balance FROM accounts WHERE id IN (1, 2) ORDER BY id;\nROLLBACK;\nSELECT owner, balance FROM accounts WHERE id IN (1, 2) ORDER BY id;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "0bf8a673c59447cc",
+          "rows": [
+            ["alice", "50.00"],
+            ["bob", "100.00"]
+          ]
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8948f71c140383d6"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "8bac0334f90f200e",
+          "rows": [
+            ["alice", "100.00"],
+            ["bob", "100.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

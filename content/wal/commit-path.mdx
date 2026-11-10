@@ -1,0 +1,142 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* the timings are from pgbench on a throwaway postgres 18.6 cluster on this mac, recorded by a
+    script in the writer's scratchpad: three 10-second runs per setting, the median shown. see the
+    deep at the end for the method. */}
+
+<InShort>
+COMMIT writes a small **commit record** to the WAL, **flushes** the WAL up to it (XLogFlush, an fsync), marks the transaction committed in **pg_xact**, and only then says COMMIT. the flush is the expensive part, so backends that commit at the same moment share one: **group commit**. `synchronous_commit = off` skips waiting for the flush. it can lose the last few acknowledged commits in a crash, but never leaves the data half-applied.
+</InShort>
+
+## the picture
+
+you know how COMMIT is the one statement that's slow even when it does nothing? `COMMIT` on a transaction that changed one row can take longer than the UPDATE did. that's because it's the only moment postgres has to wait for the disk.
+
+think of a courier office. clerks write delivery slips all day (WAL records, in memory). a van takes everything written so far to the depot (a flush), and only when the van is back can the clerk tell the customer "it's on its way" (COMMIT returns). if five customers are waiting at once, one van trip serves all five (group commit). or you can tell customers "it's on its way" before the van leaves, and hope it doesn't crash on the way (`synchronous_commit = off`).
+
+<Figure caption={<>what COMMIT does, in order (CommitTransaction in xact.c). hover a stage. only the second one waits for the disk.</>}>
+<Flow
+  stages={[
+    { label: "commit record", sub: "Transaction COMMIT", note: "about 34 bytes: the commit time, plus any subtransactions, dropped files or invalidations. appended to wal_buffers." },
+    { label: "XLogFlush", sub: "write + fsync", note: "the WAL up to the end of the commit record is written to pg_wal and fsynced. if another backend already flushed past it, there's nothing to do." },
+    { label: "pg_xact", sub: "two bits", note: "the xid is marked committed in the commit log. from here, new snapshots see its rows." },
+    { label: "release", sub: "locks, snapshot", note: "row and table locks are released, waiters wake up." },
+    { label: "COMMIT", sub: "back to the client", note: "the transaction is durable: a crash after this point replays it." },
+  ]}
+/>
+</Figure>
+
+## watch the flush pointer
+
+the browser engine has no WAL writer and no other sessions, so the flush pointer only moves when you make it:
+
+```sql run db=lab session=commit
+SELECT count(*) FROM accounts;
+SELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+SELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;
+```
+
+before the UPDATE, the flushed position trails the inserted one (the first query's catalog reads wrote WAL, and nothing has committed since the dataset was loaded). the UPDATE runs in its own transaction, commits, and after it the two are equal: COMMIT flushed everything inserted so far, not just its own record. you can't flush the middle of a log.
+
+now the same with `synchronous_commit = off`:
+
+```sql run session=commit
+SET synchronous_commit = off;
+UPDATE accounts SET balance = balance + 1 WHERE id = 2;
+SELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;
+SELECT xmin, pg_xact_status(xmin::text::xid8) AS status FROM accounts WHERE id = 2;
+```
+
+COMMIT returned, the transaction is `committed` in pg_xact and visible to everyone, and its WAL is still not on disk. on a server, the WAL writer flushes it within moments. in the browser nobody does until the next synchronous commit. that window is the risk: if the server crashes inside it, a transaction whose client was told "committed" is simply gone after recovery. [crash recovery](/learn/wal/crash-recovery) has a capture of exactly that.
+
+<Predict question="a transaction does an UPDATE and then ROLLBACK. does the ROLLBACK flush the WAL?" options={["yes, like a COMMIT", "no", "only if it wrote WAL"]} answer={1}>
+```sql
+BEGIN;
+UPDATE accounts SET balance = 0 WHERE id = 3;
+ROLLBACK;
+SELECT pg_current_wal_flush_lsn();   -- moved?
+```
+<Explain>
+no. an abort record is written, but nothing waits for it to reach disk. losing it in a crash changes nothing: a transaction with no commit record counts as aborted after recovery anyway. only commits have to be durable.
+</Explain>
+</Predict>
+
+```sql run session=commit
+SET synchronous_commit = on;
+SELECT pg_current_wal_flush_lsn() AS flushed_before;
+BEGIN;
+UPDATE accounts SET balance = 0 WHERE id = 3;
+ROLLBACK;
+SELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;
+```
+
+## what a flush costs
+
+the flush is the whole price of a commit, and it depends entirely on the disk. here is the same one-row INSERT per transaction, run by pgbench for 10 seconds, on a postgres 18.6 cluster on this mac with `wal_sync_method = fsync_writethrough`, which makes macOS flush the drive's cache for real (more on that in the deep below):
+
+<Figure caption={<>commits per second, one client, one-row INSERT per transaction. log scale: the gap is about 250x.</>}>
+<Bars
+  log
+  unit=" tps"
+  data={[
+    { label: "synchronous_commit on", value: 253, tone: "live" },
+    { label: "synchronous_commit off", value: 63695, tone: "dead" },
+  ]}
+/>
+<Provenance measured="on this mac (m4 pro), postgres 18.6, pgbench -c 1 -T 10, wal_sync_method = fsync_writethrough, median of 3 runs. see the deep below" />
+</Figure>
+
+253 commits a second is about 4 ms each, which is what `pg_test_fsync` says one real flush costs on this machine (3,942 µs per fsync_writethrough). with synchronous_commit off, the same backend never waits for it, and does 63,695. that's the temptation, in one picture. (the dead colour is on purpose: it's the setting that can lose committed data.)
+
+## group commit
+
+one client pays for one flush per commit. sixteen clients don't pay sixteen times: when a backend gets to XLogFlush, it flushes everything inserted so far, including other backends' commit records that arrived while the last flush was in progress. those backends find their record already on disk and return without flushing at all.
+
+<Figure caption={<>commits per WAL flush, from pg_stat_io's WAL fsyncs and pg_stat_database's commits, same machine and settings.</>}>
+<Bars
+  data={[
+    { label: "1 client", value: 1.0 },
+    { label: "16 clients", value: 8.0, tone: "live" },
+    { label: "16, commit_delay 1ms", value: 11.8, tone: "live" },
+  ]}
+/>
+<Provenance measured="on this mac (m4 pro), postgres 18.6, pgbench 10 s, fsync_writethrough. 16 clients: 21,207 commits on 2,656 fsyncs. with commit_delay = 1000: 24,931 on 2,115. see the deep below" />
+</Figure>
+
+sixteen clients got 2,121 commits a second through a disk that does about 250 flushes, 8 commits per flush, with no setting changed. `commit_delay` (in microseconds, 0 by default) makes the flushing backend wait a little first, if at least `commit_siblings` (5) other transactions are active, so more commit records can pile into the same flush: about 12 per flush and 2,474 commits a second here. but on this mac's default `open_datasync`, where a "flush" doesn't reach the drive's media and costs tens of microseconds, the same 1 ms delay cut throughput from 85,831 to 12,355 commits a second. a delay only pays when a flush costs more than the delay. measure before you set it.
+
+## synchronous_commit, all five levels
+
+| level | COMMIT waits for | a crash of this server can lose | notes |
+| --- | --- | --- | --- |
+| `off` | nothing | the last few commits (up to 3x `wal_writer_delay`) | never inconsistent, just missing the tail |
+| `local` | the local flush | nothing | ignores synchronous standbys |
+| `remote_write` | local flush + the standby has written it (OS cache) | nothing | a standby crash plus its OS crash can lose it there |
+| `on` (default) | local flush + the standby has flushed it | nothing | with no synchronous standby, same as local |
+| `remote_apply` | local flush + the standby has replayed it | nothing | reads on the standby see the commit right away |
+
+the three remote levels only mean something when `synchronous_standby_names` lists a standby ([streaming replication](/learn/wal/streaming-replication)). and it's per transaction: `SET LOCAL synchronous_commit = off` inside a transaction that logs a page view, and keep money on `on`.
+
+<Gotcha title="synchronous_commit = off is not fsync = off">
+they sound alike and are nothing alike. `synchronous_commit = off` can lose the last few hundred milliseconds of commits in a crash, and the database is still consistent: every transaction is either there or cleanly absent. `fsync = off` lets the operating system reorder and drop writes, so after a power cut the WAL and the pages can disagree in ways recovery can't fix, and you restore from backup. the first is a reasonable trade for some data. the second is for scratch clusters only.
+</Gotcha>
+
+<Deep title="how these were measured">
+a bash script in the scratchpad started a throwaway postgres 18.6 cluster (Postgres.app's binaries, `initdb --no-locale`, unix socket only, `shared_buffers = 256MB`, autovacuum off), created `t (id bigserial PRIMARY KEY, v int)`, and ran `pgbench -n -f ins.sql -c N -j N -T 10` where ins.sql is `INSERT INTO t (v) VALUES (1);`. before each run it set synchronous_commit and commit_delay with ALTER SYSTEM and pg_reload_conf(), and reset pg_stat_io and pg_stat_database; after it, it read `sum(fsyncs)` and `sum(writes)` from pg_stat_io where `object = 'wal'`, and `xact_commit`. three runs per setting, medians shown.
+
+macOS's default `wal_sync_method` is `open_datasync`, which doesn't make the drive flush its own cache, so a "flush" costs tens of microseconds (pg_test_fsync: 47 µs per 8 kB write) and one client did 23,373 synchronous commits a second. that's fast because it isn't fully durable against power loss. `fsync_writethrough` uses `F_FULLFSYNC`, which does flush it: 3,942 µs per write, which is the figure used above. a linux server with fdatasync on a datacenter SSD with power-loss protection usually lands in between. your numbers will differ; the shape won't.
+</Deep>
+
+<Interview q="what happens when you call COMMIT in postgres, and how would you make commits faster?">
+the backend writes a commit record into the WAL buffers, then calls XLogFlush to write and fsync the WAL up to that record (unless another backend's flush already covered it), then marks the xid committed in pg_xact, releases its locks and returns. the fsync dominates. to go faster: batch more work per transaction; let concurrency do group commit (many backends committing together share one flush); use faster storage for pg_wal; consider commit_delay if flushes are slow and concurrency is high; and for data that can tolerate losing the last moment of commits, synchronous_commit = off per transaction, which can lose acknowledged commits in a crash but never corrupts. never fsync = off. bonus point: with a synchronous standby, the commit also waits for the standby, at the level synchronous_commit names.
+</Interview>
+
+<Keylines>
+- COMMIT: append the commit record, flush the WAL up to it, mark pg_xact, release locks, return.
+- the flush is the cost. on a disk that really flushes, about one per few milliseconds.
+- group commit: concurrent commits share one flush. 8 per flush here with 16 clients, for free.
+- synchronous_commit = off returns before the flush. a crash can lose the tail, never consistency.
+- ROLLBACK doesn't wait for anything.
+- commit_delay helps only when flushes are slow. measure.
+</Keylines>

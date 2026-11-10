@@ -1,0 +1,97 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f8c577bdde688482": {
+      "db": "shop",
+      "sql": "SELECT oid, oprname, oprleft::regtype AS left_type, oprright::regtype AS right_type\nFROM pg_operator\nWHERE oid IN (96, 98)\nORDER BY oid;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["oprname", "name", 19],
+            ["left_type", "regtype", 2206],
+            ["right_type", "regtype", 2206]
+          ],
+          "rowCount": 2,
+          "digest": "4f9a8f894ec6d1d0",
+          "rows": [
+            ["96", "=", "integer", "integer"],
+            ["98", "=", "text", "text"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "642fa4cb04d892a7": {
+      "db": "shop",
+      "sql": "SELECT word, catdesc\nFROM pg_get_keywords()\nWHERE word IN ('select', 'from', 'where', 'name', 'form')\nORDER BY word;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["word", "text", 25],
+            ["catdesc", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "102bebde9b95cc46",
+          "rows": [
+            ["from", "reserved"],
+            ["name", "unreserved"],
+            ["select", "reserved"],
+            ["where", "reserved"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6bcca3f1f57b9d22": {
+      "db": "shop",
+      "sql": "CREATE VIEW londoners AS SELECT id, name FROM customers WHERE city = 'London';\n\nSELECT rulename, ev_type, is_instead\nFROM pg_rewrite\nWHERE ev_class = 'londoners'::regclass;\n\nEXPLAIN (COSTS OFF) SELECT name FROM londoners WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "CREATE VIEW",
+          "command": "CREATE VIEW",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9b07abe7a60de54c"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rulename", "name", 19],
+            ["ev_type", "char", 18],
+            ["is_instead", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "9d3bedbd1f099cc7",
+          "rows": [
+            ["_RETURN", "1", "t"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "373e8f0b87cc56ae",
+          "rows": [
+            ["Index Scan using customers_pkey on customers"],
+            ["  Index Cond: (id = 42)"],
+            ["  Filter: (city = 'London'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

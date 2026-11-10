@@ -1,0 +1,312 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/generated-columns.scenario.sql",
+ "title": "one row with a stored and a virtual generated column on the page, adding each kind to a 25,000-row table, five refused expressions, and an index for a virtual column",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"},
+    {"name":"page","type":"text"},
+    {"name":"page_stored","type":"text"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"},
+  "line_v": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"price","type":"numeric"},
+    {"name":"total","type":"numeric"}
+   ]
+  },
+  "line_s": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"price","type":"numeric"},
+    {"name":"total","type":"numeric"}
+   ]
+  },
+  "events_page": {"kind":"index","am":"btree","columns":[{"name":"expr","type":"text"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE line_v (id int, qty int, price numeric, total numeric GENERATED ALWAYS AS (qty * price) VIRTUAL);\nCREATE TABLE line_s (id int, qty int, price numeric, total numeric GENERATED ALWAYS AS (qty * price) STORED);\nINSERT INTO line_v (id, qty, price) VALUES (1, 3, 2.50);\nINSERT INTO line_s (id, qty, price) VALUES (1, 3, 2.50)",
+   "note": "two tables, the same three columns and a total computed from them: VIRTUAL in one, STORED in the other.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT lp, lp_len, t_bits AS null_bitmap, t_data FROM heap_page_items(get_raw_page('line_s', 0)) ORDER BY lp",
+   "note": "the stored row on its page: four columns of data, total included, and no null bitmap.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"lp","type":"int2"},
+     {"name":"lp_len","type":"int2"},
+     {"name":"null_bitmap","type":"text"},
+     {"name":"t_data","type":"bytea"}
+    ],
+    "data": [["1","46",null,"\\x01000000030000000f0081020088130f008107008813"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT lp, lp_len, t_bits AS null_bitmap, t_data FROM heap_page_items(get_raw_page('line_v', 0)) ORDER BY lp",
+   "note": "the virtual row: 7 bytes shorter. the null bitmap's fourth bit is 0: total is stored as a NULL and computed on every read.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"lp","type":"int2"},
+     {"name":"lp_len","type":"int2"},
+     {"name":"null_bitmap","type":"text"},
+     {"name":"t_data","type":"bytea"}
+    ],
+    "data": [["1","39","11100000","\\x01000000030000000f008102008813"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT pg_relation_filenode('events') AS file, pg_relation_size('events') / 8192 AS pages",
+   "note": "events before: its file number and size.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"file","type":"oid"},{"name":"pages","type":"int8"}],
+    "data": [["16385","335"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "ALTER TABLE events ADD COLUMN page text GENERATED ALWAYS AS (props ->> 'page') VIRTUAL;\nSELECT pg_relation_filenode('events') AS file, pg_relation_size('events') / 8192 AS pages",
+   "note": "a VIRTUAL column added: same file, same size. nothing was written.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"file","type":"oid"},{"name":"pages","type":"int8"}],
+    "data": [["16385","335"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "ALTER TABLE events ADD COLUMN page_stored text GENERATED ALWAYS AS (props ->> 'page') STORED;\nSELECT pg_relation_filenode('events') AS file, pg_relation_size('events') / 8192 AS pages",
+   "note": "a STORED column added: a new file, and bigger. every row was rewritten with the value in it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"file","type":"oid"},{"name":"pages","type":"int8"}],
+    "data": [["24590","370"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "CREATE TABLE g1 (a int, b timestamptz GENERATED ALWAYS AS (now()))",
+   "note": "now() changes every time it's called, so it's not immutable.",
+   "status": "error",
+   "error": {"sqlstate":"42P17","message":"generation expression is not immutable"}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "CREATE TABLE g2 (a timestamptz, b text GENERATED ALWAYS AS (a::text) STORED)",
+   "note": "timestamptz to text depends on the TimeZone setting, so it isn't immutable either.",
+   "status": "error",
+   "error": {"sqlstate":"42P17","message":"generation expression is not immutable"}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "CREATE TABLE g3 (a int, b int GENERATED ALWAYS AS (a + 1), c int GENERATED ALWAYS AS (b * 2))",
+   "note": "a generated column can't use another generated column.",
+   "status": "error",
+   "error": {
+    "sqlstate": "42P17",
+    "message": "cannot use generated column \"b\" in column generation expression",
+    "detail": "A generated column cannot reference another generated column."
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "CREATE TABLE g4 (a int, b int GENERATED ALWAYS AS ((SELECT max(id) FROM events)) STORED)",
+   "note": "no subqueries: only the row itself.",
+   "status": "error",
+   "error": {"sqlstate":"0A000","message":"cannot use subquery in column generation expression"}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "CREATE FUNCTION twice(x int) RETURNS int LANGUAGE sql IMMUTABLE RETURN x * 2;\nCREATE TABLE g5 (a int, b int GENERATED ALWAYS AS (twice(a)) VIRTUAL)",
+   "note": "a virtual column can't call a function you wrote, even an immutable one. a stored one can.",
+   "status": "error",
+   "error": {
+    "sqlstate": "0A000",
+    "message": "generation expression uses user-defined function",
+    "detail": "Virtual generated columns that make use of user-defined functions are not yet supported."
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "CREATE INDEX ON events (page)",
+   "note": "a virtual column can't be indexed.",
+   "status": "error",
+   "error": {"sqlstate":"0A000","message":"indexes on virtual generated columns are not supported"}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "CREATE INDEX events_page ON events ((props ->> 'page'));\nANALYZE events",
+   "note": "but its expression can, and a query on the virtual column is rewritten to the expression.",
+   "status": "ok",
+   "result": {"command":"ANALYZE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events WHERE page = '/p/17'",
+   "note": "the expression index serves a WHERE on the virtual column.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Aggregate",
+     "Strategy": "Plain",
+     "Partial Mode": "Simple",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 267.61,
+     "Total Cost": 267.62,
+     "Plan Rows": 1,
+     "Plan Width": 8,
+     "Actual Rows": 1,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 115,
+     "Shared Read Blocks": 2,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Bitmap Heap Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Relation Name": "events",
+       "Alias": "events",
+       "Startup Cost": 5.29,
+       "Total Cost": 267.29,
+       "Plan Rows": 129,
+       "Plan Width": 0,
+       "Actual Rows": 129,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Recheck Cond": "((props ->> 'page'::text) = '/p/17'::text)",
+       "Rows Removed by Index Recheck": 0,
+       "Exact Heap Blocks": 115,
+       "Lossy Heap Blocks": 0,
+       "Shared Hit Blocks": 115,
+       "Shared Read Blocks": 2,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "events_page",
+         "Startup Cost": 0,
+         "Total Cost": 5.25,
+         "Plan Rows": 129,
+         "Plan Width": 0,
+         "Actual Rows": 129,
+         "Actual Loops": 1,
+         "Disabled": false,
+         "Index Cond": "((props ->> 'page'::text) = '/p/17'::text)",
+         "Index Searches": 1,
+         "Shared Hit Blocks": 0,
+         "Shared Read Blocks": 2,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 15,
+     "Shared Read Blocks": 3,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  }
+ ],
+ "db": "events"
+}

@@ -1,0 +1,160 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "07901e4157092036": {
+      "db": "lab",
+      "sql": "BEGIN;\nINSERT INTO accounts VALUES (4, 'dave', 10.00);\nDELETE FROM accounts WHERE id = 3;\nSELECT ctid, xmin, xmax, owner FROM accounts ORDER BY id;\nSELECT lp, t_xmin, t_xmax FROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "7328e1e8c2a48461"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27],
+            ["xmin", "xid", 28],
+            ["xmax", "xid", 28],
+            ["owner", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "795ebb97311a10a5",
+          "rows": [
+            ["(0,1)", "752", "0", "alice"],
+            ["(0,2)", "752", "0", "bob"],
+            ["(0,4)", "753", "0", "dave"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["t_xmax", "xid", 28]
+          ],
+          "rowCount": 4,
+          "digest": "ca995ba0c22eb3ff",
+          "rows": [
+            ["1", "752", "0"],
+            ["2", "752", "0"],
+            ["3", "752", "753"],
+            ["4", "753", "0"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a9a261271328ed1"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "02ac9009dbf6d32a": {
+      "db": "lab",
+      "sql": "CREATE TABLE nums (n int);\nINSERT INTO nums VALUES (1), (2), (3);\nINSERT INTO nums SELECT n + 10 FROM nums;\nSELECT count(*) FROM nums;\nBEGIN;\nINSERT INTO nums VALUES (100);\nINSERT INTO nums VALUES (200);\nSELECT cmin, xmin, n FROM nums WHERE n >= 100 ORDER BY n;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "456642ddbdad5c7c"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "9bac3e1aed2851fd"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "88e192f35918107a",
+          "rows": [
+            ["6"]
+          ]
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cfd0128a2357d680"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e50818625cce39de"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "999fdcf4a850ea03"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["cmin", "cid", 29],
+            ["xmin", "xid", 28],
+            ["n", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "adea8621206f5eac",
+          "rows": [
+            ["0", "756", "100"],
+            ["1", "756", "200"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fc9d9243895d559a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

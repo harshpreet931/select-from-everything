@@ -1,0 +1,176 @@
+import { CatalogMap } from "@/components/figures/execution/CatalogMap";
+import { goldenAt } from "@/components/figures/execution/source";
+import golden from "./system-catalog.golden.json";
+
+{/* the catalog map draws the rows this page's run blocks return, read from this chapter's own
+    golden (the same output the run buttons print): 16385 for customers. a pgtrace capture on
+    PGlite with @db shop gives the same oids now. */}
+
+export const ns = goldenAt(golden, "FROM pg_namespace");
+export const cls = goldenAt(golden, "WHERE relname LIKE 'customers%'");
+export const allAttrs = goldenAt(golden, "FROM pg_attribute");
+export const attrs = { columns: allAttrs.columns, rows: allAttrs.rows.filter((r) => Number(r[1]) > 0) };
+export const types = goldenAt(golden, "FROM pg_type");
+export const custOid = cls.rows.find((r) => r[1] === "customers")[0];
+export const perSchema = goldenAt(golden, "GROUP BY relnamespace").rows.map((r) => ({ label: r[0], value: Number(r[1]), ...(r[0] === "public" ? { tone: "hot" } : {}) }));
+
+<InShort>
+postgres describes your tables in tables. **pg_class** has a row for every table, index and sequence, **pg_attribute** a row for every column, **pg_type** a row for every type, **pg_namespace** a row for every schema. together they're the **system catalog**.
+
+every object in them has a number, its **OID**. the analyzer turns the names in your query into those numbers, and from then on postgres only uses the numbers. `'customers'::regclass` does that lookup for you.
+</InShort>
+
+## the picture
+
+you know how `\d customers` in psql knows every column, type and index of a table? it isn't magic, it's a query. psql asks the catalog, which is a set of ordinary tables you can SELECT from too.
+
+think of a library. the books are your tables. the card catalogue at the door is a drawer of cards describing the books: one card per book (pg_class), one line on it per chapter (pg_attribute), a code for what kind of chapter it is (pg_type), which room the book is in (pg_namespace). and every card has a number on it, so the rest of the library can say "book 16385" instead of spelling out the title.
+
+<Figure wide caption={<>the catalog rows that describe shop's customers table. pick a column: its pg_attribute row lights up, and its numbers lead to the rest: <C k="ref">attrelid</C> to the table's pg_class row, <C k="ref">atttypid</C> to its type, and the table's <C k="ref">relnamespace</C> to its schema.</>}>
+<CatalogMap ns={ns} cls={cls} attrs={attrs} types={types} />
+</Figure>
+
+## the four tables
+
+the schemas first. `public` is where shop's tables live, and `pg_catalog` is where the catalog itself lives:
+
+```sql run db=shop
+SELECT oid, nspname FROM pg_namespace WHERE nspname IN ('pg_catalog', 'public') ORDER BY oid;
+```
+
+every relation, with its schema as a number:
+
+```sql run db=shop
+SELECT oid, relname, relnamespace, relkind
+FROM pg_class
+WHERE relname LIKE 'customers%'
+ORDER BY oid;
+```
+
+four relations for one CREATE TABLE: the table (`relkind` r), the sequence behind its identity column (S), and two indexes (i), one for the primary key and one for the UNIQUE email. pg_class is also where the planner finds `relpages` and `reltuples` ([reading EXPLAIN](/learn/execution/reading-explain) priced a scan with them).
+
+the columns, keyed by the table's oid and a column number:
+
+```sql run db=shop
+SELECT attrelid, attnum, attname, atttypid
+FROM pg_attribute
+WHERE attrelid = 16385
+ORDER BY attnum;
+```
+
+six columns you declared, numbered 1 to 6, and six you didn't, with negative numbers: `ctid`, `xmin`, `xmax`, `cmin`, `cmax` and `tableoid`. those are the system columns every table has, the ones [MVCC](/learn/mvcc/transaction-ids) runs on and [ctid](/learn/storage/the-page) points at. you can select them by name; `SELECT *` just leaves them out.
+
+and the types, by oid:
+
+```sql run db=shop
+SELECT oid, typname, typlen
+FROM pg_type
+WHERE oid IN (23, 25, 1042, 1184)
+ORDER BY oid;
+```
+
+`typlen` -1 means variable length (text and char(n) both store a length header); 4 and 8 are fixed sizes in bytes, which is what [tuple layout](/learn/storage/tuple-layout) aligns.
+
+the catalog describes itself, too. pg_class has a row for pg_class:
+
+```sql run db=shop
+SELECT oid, relname, relkind
+FROM pg_class
+WHERE relname IN ('pg_class', 'pg_attribute', 'pg_type', 'pg_namespace')
+ORDER BY oid;
+```
+
+oids under 10,000 are fixed when postgres is built, so pg_class is 1259 on every postgres there is. the oids of your objects are handed out as they're created. and most of what pg_class describes isn't yours:
+
+```sql run db=shop
+SELECT relnamespace::regnamespace AS schema, count(*) AS relations
+FROM pg_class
+GROUP BY relnamespace
+ORDER BY relations DESC, schema;
+```
+
+<Figure caption={<>rows in pg_class on the shop database, by schema. shop's four tables, their indexes and sequences are the short bar; the rest is postgres describing itself, plus the toast tables that hold long values.</>}>
+<Bars data={perSchema} unit="relations" />
+</Figure>
+
+## names become numbers
+
+when you write `SELECT name FROM customers`, the parser only sees words. the analyzer is the step that looks them up ([the life of a query](/learn/execution/query-lifecycle)):
+
+<Figure caption={<>how <code>customers.name</code> becomes numbers, with this page's real values. hover a stage.</>}>
+<Flow stages={[
+  { label: "search_path", sub: "public", note: "an unqualified name is looked for in each schema on the search_path, in order. here the path is just public: oid 2200." },
+  { label: "pg_class", sub: `customers → ${custOid}`, note: `the row with relname = 'customers' and relnamespace = 2200. its oid, ${custOid}, is the table from now on.` },
+  { label: "pg_attribute", sub: "name → attnum 2", note: `the row with attrelid = ${custOid} and attname = 'name': column 2, of type 25.` },
+  { label: "pg_type", sub: "25 → text", note: "type 25 is text, which decides which = and which functions apply to it." },
+]} />
+</Figure>
+
+`regclass` is that first lookup as a cast. text to regclass resolves a name through the search_path; an oid cast to regclass prints the name:
+
+```sql run db=shop
+SELECT 'customers'::regclass::oid AS oid, 16385::regclass AS name;
+```
+
+and a name that doesn't resolve fails right there, which is exactly the error the analyzer gives you for a typo in FROM:
+
+```sql run db=shop expect=error
+SELECT 'custmers'::regclass;
+```
+
+`regtype`, `regproc`, `regnamespace` and friends do the same for other catalogs. `attrelid = 'customers'::regclass` is the idiom you'll see everywhere instead of a raw oid.
+
+a table you create gets the next free oid. in this page's engine the first one is 24576, because the database you're running on was restored from a snapshot:
+
+```sql run db=shop
+CREATE TABLE notes (body text);
+SELECT 'notes'::regclass::oid AS oid;
+```
+
+<Predict question="a view uses customers. you rename the table to clients. what happens to the view?" options={["it breaks", "it still works", "it gets dropped"]} answer={1}>
+```sql
+CREATE VIEW paris AS SELECT name FROM customers WHERE city = 'Paris';
+ALTER TABLE customers RENAME TO clients;
+SELECT count(*) FROM paris;
+```
+<Explain>
+it still works. the view was stored after analysis, as a query tree that says "relation 16385", not "customers". renaming changes the relname in pg_class and nothing else, so the view finds the same table by number. ask for its definition and postgres prints the new name, because it turns the numbers back into names when it prints.
+</Explain>
+</Predict>
+
+```sql run db=shop
+CREATE VIEW paris AS SELECT name FROM customers WHERE city = 'Paris';
+ALTER TABLE customers RENAME TO clients;
+
+SELECT count(*) FROM paris;
+SELECT pg_get_viewdef('paris');
+```
+
+## the standard's version
+
+pg_catalog is postgres's own, and its layout changes between versions. the SQL standard defines `information_schema`, a set of views with the same information in a portable shape, which postgres builds on top of the catalog:
+
+```sql run db=shop
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'customers'
+ORDER BY ordinal_position;
+```
+
+the standard's names are longer and its types are spelled out (`timestamp with time zone`, not `timestamptz`). tools that talk to many databases use information_schema; anything postgres-specific (relpages, oids, system columns) is only in pg_catalog.
+
+<Gotcha title="the catalog is a cache, too">
+looking things up in tables on every query would be slow, so each backend keeps caches of the catalog rows it has used (the relcache and syscache), and postgres sends invalidation messages when they change. that's why the first query in a fresh session reads more pages while planning (`Planning: Buffers` in [EXPLAIN ANALYZE](/learn/execution/explain-analyze)) than the second one does. it's also why you should change the catalog with DDL, never with UPDATE on pg_class: the caches wouldn't know.
+</Gotcha>
+
+<Interview q="what is an OID, and where does postgres use it?">
+an object identifier: a 32-bit number every catalog row gets (tables, indexes, types, functions, schemas). the analyzer resolves the names in a query to oids through the catalog and the search_path, and everything after that, plans, view definitions, dependencies, foreign keys, refers to objects by oid. that's why renaming a table doesn't break views over it. regclass and friends convert between names and oids. bonus point: a table's oid isn't its file name; the file is named by relfilenode, which changes on TRUNCATE or VACUUM FULL while the oid stays ([the files behind a table](/learn/storage/files-and-forks)).
+</Interview>
+
+<Keylines>
+- the catalog is ordinary tables: pg_class, pg_attribute, pg_type, pg_namespace and many more.
+- every object has an oid; columns are (table oid, attnum).
+- the analyzer turns names into oids; after that, postgres only uses numbers.
+- regclass casts a name to an oid through the search_path, and back.
+- information_schema is the standard's portable view of the same facts.
+</Keylines>

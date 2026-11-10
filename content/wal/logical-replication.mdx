@@ -1,0 +1,176 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { resultOf, prov } from "@/lib/db/captured";
+import dec from "./traces/logical-decoding.pgtrace.json";
+
+{/* the decoding output and the slots read traces/logical-decoding, a real postgres 18.6 server
+    with wal_level = logical (the browser engine runs at replica, so it can't decode). the
+    publication / subscription session is recorded: two throwaway 18.6 clusters on this mac, a
+    bash script in the writer's scratchpad, psql 18.6 with input echoed. */}
+
+export const decoded = (i) => dec.steps[i].result.data.map((r) => r[0]).join("\n");
+export const slots = resultOf(dec, 9);
+
+<InShort>
+streaming replication ships **pages**: a byte-for-byte copy of the whole cluster. **logical replication** ships **row changes**: "insert this row into accounts", decoded from the WAL by **logical decoding**, sent per table, applied by a subscriber that can be a different major version, have different indexes, or hold only some tables. a **publication** says what to send, a **subscription** pulls it, a **logical replication slot** remembers how far it got. it needs `wal_level = logical`, and each table needs a **replica identity** to find rows for UPDATE and DELETE.
+</InShort>
+
+## the picture
+
+you know how a streaming standby has to be the same postgres major version, the same everything, and read-only? that's because it replays physical changes: "at offset 120 of block 0 of file 16430, write these bytes". you can't apply that to a table that's laid out differently.
+
+think of two ways to keep a second office's ledger in sync. you can photocopy every page of yours whenever it changes and mail the copies (physical: exact, but their ledger has to be the same book). or you can mail a list of transactions, "credit alice 25.00", and let them write it into their own books however they keep them (logical: they can use a different book, keep only some accounts, even add their own notes).
+
+<Figure caption={<>one row change on its way from a publisher to a subscriber. hover a stage. the decoding happens on the publisher, from the WAL it already writes.</>}>
+<Flow
+  stages={[
+    { label: "WAL", sub: "wal_level = logical", note: "the same WAL as always, with a little extra: enough to reconstruct rows (old key values, catalog info) without reading the table." },
+    { label: "logical decoding", sub: "walsender + plugin", note: "reads WAL from the slot's position, reassembles each transaction, and only once it commits, hands its row changes to an output plugin." },
+    { label: "pgoutput", sub: "the built-in plugin", note: "filters by publication (which tables, which operations, which rows and columns) and encodes the changes for the wire." },
+    { label: "apply worker", sub: "on the subscriber", note: "a background worker turns each change back into an insert, update or delete on its own table, in commit order." },
+    { label: "subscriber's table", sub: "its own WAL, its own indexes", note: "a normal, writable table. it can have extra columns, other indexes, and its own replicas." },
+  ]}
+/>
+</Figure>
+
+## decoding, by hand
+
+the browser engine runs with `wal_level = replica`, which writes too little to decode (creating a logical slot there fails with `logical decoding requires "wal_level" >= "logical"`), and wal_level only changes with a server restart:
+
+```sql run db=lab
+SELECT name, setting, context FROM pg_settings
+WHERE name IN ('wal_level', 'max_replication_slots', 'max_wal_senders')
+ORDER BY name;
+```
+
+so here's a real server with `wal_level = logical` and the `test_decoding` plugin, which prints changes as text. a slot is created, a transfer runs as one transaction, an account is opened and another closed, and then the slot is read:
+
+<Figure caption={<>pg_logical_slot_get_changes on a real server. one row per change, grouped by transaction, in commit order. switch to replica identity full to see what the WAL carries then.</>}>
+<Tabs>
+<Tab label="replica identity default">
+<SqlPanel code={decoded(3)} lang="text" wrap file="SELECT data FROM pg_logical_slot_get_changes('cdc', NULL, NULL);" />
+</Tab>
+<Tab label="replica identity full">
+<SqlPanel code={decoded(6)} lang="text" wrap file="after ALTER TABLE accounts REPLICA IDENTITY FULL, an UPDATE and a DELETE" />
+</Tab>
+</Tabs>
+<Provenance trace={prov(dec)} />
+</Figure>
+
+notice what's there and what isn't. **every change is a row**, with column names and types: logical decoding turned page-level WAL records back into the statements' effects. **only committed transactions appear**, in commit order: the trace also ran a transaction that rolled back, and the slot never mentions it. and **the DELETE says only `id[integer]:2`**: with the default replica identity, a DELETE (and an UPDATE's old row) is logged by primary key only, because that's all a subscriber needs to find the row. with `REPLICA IDENTITY FULL`, the WAL carries the whole old row, which works on tables with no key and costs more WAL. (the empty `BEGIN 762 / COMMIT 762` is the ALTER TABLE: DDL produces a transaction with no row changes.)
+
+`pg_logical_slot_get_changes` **consumes**: read it twice and the second read is empty, because the slot's position moved past what it returned. `pg_logical_slot_peek_changes` reads without moving it. that position is the whole point of a slot: the server keeps every WAL segment the slot hasn't consumed yet, so a consumer that disconnects for an hour picks up exactly where it left off. (and a consumer that disappears forever fills the disk: see [streaming replication](/learn/wal/streaming-replication).)
+
+this is **change data capture**: Debezium and friends sit on a logical slot and turn it into a stream of events, without a trigger on any table.
+
+## publications and subscriptions
+
+built-in logical replication is the same decoding with the `pgoutput` plugin, set up in two statements. a recorded session with two throwaway clusters on this mac: the publisher with `wal_level = logical`, the subscriber with the same tables created by hand (DDL is not replicated):
+
+```psql
+-- publisher
+CREATE PUBLICATION bank FOR TABLE accounts, audit_log;
+CREATE PUBLICATION
+
+-- subscriber
+CREATE SUBSCRIPTION bank_copy CONNECTION 'host=/tmp/w17pub port=5497 dbname=postgres user=postgres' PUBLICATION bank;
+NOTICE:  created replication slot "bank_copy" on publisher
+CREATE SUBSCRIPTION
+SELECT id, owner, balance FROM accounts ORDER BY id;
+ id | owner | balance
+----+-------+---------
+  1 | alice |  100.00
+  2 | bob   |  100.00
+(2 rows)
+```
+
+<Provenance recorded="psql 18.6 on two throwaway postgres 18.6 clusters on this mac; the CREATE TABLEs and a pg_sleep are left out, the -- lines are mine" />
+
+CREATE SUBSCRIPTION made a slot on the publisher, copied the existing rows (a table synchronization worker per table), and then started streaming. writes on the publisher arrive on the subscriber a moment later, and the subscriber's table stays writable:
+
+```psql
+-- publisher
+UPDATE accounts SET balance = balance - 25.00 WHERE id = 1;
+UPDATE 1
+INSERT INTO accounts VALUES (3, 'carol', 50.00);
+INSERT 0 1
+INSERT INTO audit_log (what) VALUES ('opened account 3');
+INSERT 0 1
+UPDATE audit_log SET what = 'opened account 3 for carol';
+ERROR:  cannot update table "audit_log" because it does not have a replica identity and publishes updates
+HINT:  To enable updating the table, set REPLICA IDENTITY using ALTER TABLE.
+
+-- subscriber, a second later
+SELECT id, owner, balance FROM accounts ORDER BY id;
+ id | owner | balance
+----+-------+---------
+  1 | alice |   75.00
+  2 | bob   |  100.00
+  3 | carol |   50.00
+(3 rows)
+
+INSERT INTO accounts VALUES (100, 'local only', 0.00);
+INSERT 0 1
+```
+
+<Provenance recorded="psql 18.6, same run (the -- lines are mine)" />
+
+<Predict question="audit_log has no primary key and is in a publication that publishes updates. what happens to an UPDATE on it, on the publisher?" options={["it replicates fine", "it fails on the publisher", "it fails on the subscriber"]} answer={1}>
+```sql
+CREATE TABLE audit_log (at timestamptz NOT NULL DEFAULT now(), what text);
+CREATE PUBLICATION bank FOR TABLE accounts, audit_log;
+UPDATE audit_log SET what = 'opened account 3 for carol';
+```
+<Explain>
+it fails on the publisher, before anything is sent: "cannot update table ... because it does not have a replica identity and publishes updates". the subscriber would have no way to find which row to change. inserts still work. fix it with a primary key (the default replica identity), `REPLICA IDENTITY USING INDEX` on a unique index, or `REPLICA IDENTITY FULL`. so publishing a table can break writes to it on the source, which is a surprising place for an error.
+</Explain>
+</Predict>
+
+## what doesn't come across
+
+DDL. a column added on the publisher isn't added on the subscriber, and the next change that includes it stops the stream. the publisher added `opened date`, inserted a row, and the subscriber's log said:
+
+```text
+ERROR:  logical replication target relation "public.accounts" is missing replicated column: "opened"
+LOG:  background worker "logical replication apply worker" (PID 43946) exited with exit code 1
+```
+
+<Provenance recorded="the subscriber's server log, same run" />
+
+the apply worker retries every few seconds and fails again until someone adds the column on the subscriber; then it catches up, row 4 included. sequences don't replicate either (their current values, that is), and neither do large objects. that's the deal: logical replication carries data, not schema.
+
+| | streaming (physical) | logical |
+| --- | --- | --- |
+| ships | WAL bytes, every page change | decoded row changes, per table |
+| target | a byte-for-byte copy, read-only | any postgres tables, writable |
+| versions | same major version | can differ: the usual way to upgrade with little downtime |
+| scope | the whole cluster | chosen tables (and rows, columns) |
+| DDL, sequences | yes, everything | no |
+| needs | wal_level = replica | wal_level = logical, a replica identity |
+
+## failover slots
+
+a logical slot lives on one server. if the publisher fails over to a streaming standby, the slot used to stay behind, and every subscriber had to be resynchronized from scratch. postgres 17 added **failover slots**: create the slot with `failover => true` (or a subscription with `failover = true`), set `sync_replication_slots = on` on the standby, and the standby keeps a synced copy it can carry on from after promotion:
+
+<Figure caption={<>pg_replication_slots after creating a second slot with <code>failover =&gt; true</code>, on the decoding trace's server.</>}>
+<ResultTable columns={slots.columns} rows={slots.rows} />
+<Provenance trace={prov(dec)} />
+</Figure>
+
+postgres 17 also added `pg_createsubscriber`, which turns a physical standby into a logical subscriber without copying the data again, and 18 lets publications send stored generated columns (`publish_generated_columns`).
+
+<Gotcha title="a slot nobody reads is a disk-full waiting to happen">
+the publisher keeps all WAL a logical slot hasn't confirmed, and on top of that VACUUM can't remove dead catalog rows the slot might still need. a CDC consumer that's been off for a week, or a subscription dropped on the subscriber while its slot stayed on the publisher, quietly grows pg_wal. check `pg_replication_slots` for inactive slots, set `max_slot_wal_keep_size`, and since postgres 18, `idle_replication_slot_timeout` can invalidate slots nobody has used.
+</Gotcha>
+
+<Interview q="what's the difference between physical and logical replication in postgres, and when would you use logical?">
+physical (streaming) replication sends the WAL itself; the standby replays page changes and is an identical, read-only copy of the whole cluster, same major version. logical replication decodes the WAL into row changes on the publisher (wal_level = logical, an output plugin, a logical slot), filters them by publication, and a subscriber applies them as ordinary inserts, updates and deletes into its own tables. use logical to replicate a subset of tables, to consolidate or fan out data, to feed CDC pipelines, or to upgrade across major versions with minimal downtime. its limits: no DDL or sequence replication, tables need a replica identity for UPDATE and DELETE, and slots retain WAL if the subscriber lags. bonus point: postgres 17's failover slots let a logical slot survive a primary failover to a standby.
+</Interview>
+
+<Keylines>
+- logical decoding turns WAL back into committed row changes, per table, in commit order.
+- a logical slot remembers its position. the server keeps every segment it hasn't consumed.
+- CREATE PUBLICATION on one side, CREATE SUBSCRIPTION on the other. DDL is your job.
+- UPDATE and DELETE need a replica identity: a primary key, a unique index, or FULL.
+- logical works across major versions and on writable targets. physical doesn't.
+- postgres 17+: failover slots survive a promotion.
+</Keylines>

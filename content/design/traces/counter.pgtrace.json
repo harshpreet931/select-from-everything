@@ -1,0 +1,165 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/counter.scenario.sql",
+ "title": "a cached comment count, first kept by hand and drifting, then kept by a trigger",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "posts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"title","type":"text"},{"name":"comment_count","type":"int4"}]
+  },
+  "posts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"posts"},
+  "comments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"post_id","type":"int4"},{"name":"body","type":"text"}]
+  },
+  "comments_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"comments"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE posts (id int PRIMARY KEY, title text NOT NULL, comment_count int NOT NULL DEFAULT 0);\nCREATE TABLE comments (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, post_id int NOT NULL REFERENCES posts, body text NOT NULL);\nINSERT INTO posts (id, title) VALUES (1, 'why pages are 8 KB'), (2, 'the left-handed teapot')",
+   "note": "posts carry a comment_count, so the front page doesn't count comments on every view.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT p.id, p.title, p.comment_count, (SELECT count(*) FROM comments AS c WHERE c.post_id = p.id) AS real_count FROM posts AS p ORDER BY p.id",
+   "note": "the stored count and the real count, side by side.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"title","type":"text"},
+     {"name":"comment_count","type":"int4"},
+     {"name":"real_count","type":"int8"}
+    ],
+    "data": [["1","why pages are 8 KB","0","0"],["2","the left-handed teapot","0","0"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "BEGIN;\nINSERT INTO comments (post_id, body) VALUES (1, 'great post');\nUPDATE posts SET comment_count = comment_count + 1 WHERE id = 1;\nCOMMIT",
+   "note": "the app adds a comment and bumps the counter, in one transaction. fine.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT p.id, p.title, p.comment_count, (SELECT count(*) FROM comments AS c WHERE c.post_id = p.id) AS real_count FROM posts AS p ORDER BY p.id",
+   "note": "after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"title","type":"text"},
+     {"name":"comment_count","type":"int4"},
+     {"name":"real_count","type":"int8"}
+    ],
+    "data": [["1","why pages are 8 KB","1","1"],["2","the left-handed teapot","0","0"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "DELETE FROM comments WHERE post_id = 1;\nINSERT INTO comments (post_id, body) VALUES (2, 'i am left-handed'), (2, 'me too')",
+   "note": "a moderation script deletes a comment, and nobody told it about the counter.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT p.id, p.title, p.comment_count, (SELECT count(*) FROM comments AS c WHERE c.post_id = p.id) AS real_count FROM posts AS p ORDER BY p.id",
+   "note": "post 1 says one comment and has none; post 2 says none and has two. the copy drifted.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"title","type":"text"},
+     {"name":"comment_count","type":"int4"},
+     {"name":"real_count","type":"int8"}
+    ],
+    "data": [["1","why pages are 8 KB","1","0"],["2","the left-handed teapot","0","2"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "CREATE FUNCTION bump_comment_count() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  IF TG_OP = 'INSERT' THEN\n    UPDATE posts SET comment_count = comment_count + 1 WHERE id = NEW.post_id;\n  ELSE\n    UPDATE posts SET comment_count = comment_count - 1 WHERE id = OLD.post_id;\n  END IF;\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER comments_count AFTER INSERT OR DELETE ON comments\nFOR EACH ROW EXECUTE FUNCTION bump_comment_count();\nUPDATE posts AS p SET comment_count = (SELECT count(*) FROM comments AS c WHERE c.post_id = p.id)",
+   "note": "a trigger keeps the counter: every insert or delete on comments adjusts it, in the same transaction. then a one-time fix of the drift.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT p.id, p.title, p.comment_count, (SELECT count(*) FROM comments AS c WHERE c.post_id = p.id) AS real_count FROM posts AS p ORDER BY p.id",
+   "note": "fixed.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"title","type":"text"},
+     {"name":"comment_count","type":"int4"},
+     {"name":"real_count","type":"int8"}
+    ],
+    "data": [["1","why pages are 8 KB","0","0"],["2","the left-handed teapot","2","2"]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "INSERT INTO comments (post_id, body) VALUES (1, 'first!'), (1, 'second');\nDELETE FROM comments WHERE body = 'me too'",
+   "note": "the same careless script again: two inserts, one delete, no counter code anywhere.",
+   "status": "ok",
+   "result": {"command":"DELETE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT p.id, p.title, p.comment_count, (SELECT count(*) FROM comments AS c WHERE c.post_id = p.id) AS real_count FROM posts AS p ORDER BY p.id",
+   "note": "the trigger fired once per row. the counts agree.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"title","type":"text"},
+     {"name":"comment_count","type":"int4"},
+     {"name":"real_count","type":"int8"}
+    ],
+    "data": [["1","why pages are 8 KB","2","2"],["2","the left-handed teapot","1","1"]]
+   }
+  }
+ ]
+}

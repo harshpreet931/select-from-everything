@@ -1,0 +1,116 @@
+import { FrameMap } from "@/components/figures/storage/FrameMap";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import ring from "./traces/ring.pgtrace.json";
+
+export const count = (i, rel) => ring.steps[i].buffers.frames.filter((f) => f.rel === rel && f.fork === "main").length;
+
+<InShort>
+a big sequential scan doesn't get to use the whole buffer pool. when a table is bigger than a quarter of shared_buffers, its scan gets a **ring buffer**: 256 KB, 32 frames of its own, reused round and round. the scan reads the whole table through those 32 frames, and everybody else's pages stay where they were.
+
+VACUUM gets a ring too (2 MB by default), and so do bulk writes like COPY (16 MB). they're all the same idea: work that touches every page once shouldn't get to evict pages that are used all the time.
+</InShort>
+
+## the picture
+
+you know how one big report query can make the whole app slower for a while, even after it's finished? that's what a cache flush feels like: the report read so much that it pushed everything useful out, and every other query now pays to read its pages back in.
+
+think of the reading room again. a researcher wants to look at every book in the archive, once each. if they're allowed to take any desk, they'll eventually clear every desk in the room, and the regulars come back to find their books gone. so the librarian gives them a cart with 32 slots instead: every new book goes onto the cart, replacing the one they're done with. the researcher gets through the whole archive, and the desks never notice.
+
+here's that as a model: a few hot pages used over and over, then one long scan, then the hot pages again. turn the ring on and off:
+
+<Figure wide caption={<>step to the end with the ring off, then on. with lru, the scan's pages push the hot ones out and the last three requests miss; with the ring, the scan recycles its own two frames and those requests are <C k="live">hits</C>. switch to clock sweep: a scan this short can't get through the hot pages' usage counts, ring or not.</>}>
+<BufferPool lab={{ frames: 9, policy: "lru", workload: "hot+scan" }} />
+</Figure>
+
+the model starts on lru on purpose, because a scan barely longer than the pool is the case clock sweep already handles: the hot pages' usage counts outlast it ([clock sweep](/learn/storage/clock-sweep) steps through why). a scan many times the size of the pool is a different story, and that needs a real server.
+
+## on a real server
+
+the same thing on a real postgres 18.6, with the pool made tiny on purpose (`shared_buffers = 2MB`, 256 frames) so it fits on screen. a small table, `hot`, is read twice. then all of events (335 pages, more than the whole pool) is read two ways: a seq scan, then an index scan of every row:
+
+<Figure wide caption={<>switch between the three moments. each square is one of the 256 frames, filled if it holds a page of <code>hot</code> or of <code>events</code>, by its real buffer id. the seq scan of events leaves exactly 32 frames behind it, in one ring. the index scan, which gets no ring, takes 171 frames and leaves nothing of hot.</>}>
+<FrameMap trace={ring} steps={[1, 2, 3]} labels={["reading hot", "a seq scan of events", "an index scan of events"]} rels={["hot", "events"]} size={256} />
+</Figure>
+
+<Predict question="the seq scan read all 335 pages of events through the pool. how many of them are still in it afterwards?" options={["335", "256", "32", "0"]} answer={2}>
+```sql
+-- shared_buffers = 2MB: 256 frames
+SELECT sum(length(kind)) FROM events;   -- 335 pages
+SELECT count(*) FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('events');
+```
+<Explain>
+32: the last 32 pages the scan read, sitting in its ring. the scan read 335 pages through 32 frames, reusing each frame about ten times, and hot's 20 pages weren't touched. it can't be 335 anyway: the whole pool is 256 frames.
+</Explain>
+</Predict>
+
+the index scan reads the same table page by page in index order, and an index scan gets no ring. so its pages fight for frames through the clock sweep like everything else, and they win: hot's pages had usage 2, and after enough laps of the hand every one of them was evicted. 171 frames of events and 33 of its index are left when it's done.
+
+<Figure caption={<>frames left holding each table, on the 256-frame server. the same 335 pages of events, read two ways.</>}>
+<Bars data={[
+  { label: "after the seq scan: events", value: count(2, "events") },
+  { label: "after the seq scan: hot", value: count(2, "hot"), tone: "live" },
+  { label: "after the index scan: events", value: count(3, "events") },
+  { label: "after the index scan: hot", value: count(3, "hot"), tone: "dead" },
+]} />
+<Provenance trace={{ engine: ring.engine, scenario: ring.scenario }} />
+</Figure>
+
+## the rules
+
+| who | ring | when |
+| --- | --- | --- |
+| sequential scan | 256 KB (32 frames) | the table is bigger than a quarter of shared_buffers |
+| VACUUM, ANALYZE | `vacuum_buffer_usage_limit`, 2 MB by default | always |
+| COPY FROM, CREATE TABLE AS | 16 MB, at most an eighth of shared_buffers | always |
+| everything else | none: the clock sweep, the whole pool | |
+
+the 256 KB is picked to fit in the CPU's L2 cache, and the quarter is what the heap scan code checks before asking for a ring. the browser engine runs a 128 MB pool, so its quarter is 4,096 pages, and nothing in these datasets comes close. the same seq scan of events there keeps every page:
+
+```sql run db=events ext=pg_buffercache
+SHOW shared_buffers;
+SELECT sum(length(kind)) FROM events;
+SELECT count(*) AS frames FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('events') AND relforknumber = 0;
+```
+
+all 335, because 335 is nowhere near 4,096. VACUUM's ring is a setting you can see and change, per command or per session <Since v={16} />:
+
+```sql run db=lab
+SHOW vacuum_buffer_usage_limit;
+VACUUM (BUFFER_USAGE_LIMIT '256kB') notes;
+VACUUM (BUFFER_USAGE_LIMIT 0) notes;
+```
+
+`0` turns the ring off and lets VACUUM use the whole pool: useful when you're vacuuming in a maintenance window and want it done fast, harmful on a busy server. postgres 17 raised the default to 2 MB.
+
+## dirty pages in a ring
+
+a ring of 32 frames has a problem when the scan writes. a seq scan that sets hint bits, or an UPDATE driven by one, dirties pages, and a dirty frame can't be reused until its WAL is flushed and the page is written out. the two kinds of ring handle that differently:
+
+- a **scan's ring** gives up the frame: the dirty page is dropped from the ring and left in the pool for the normal machinery to write, and the ring takes a fresh frame from the clock sweep. so a scan that dirties pages leaks out of its ring a bit.
+- **VACUUM's ring** keeps its dirty frames: it flushes WAL as needed and writes the page itself, then reuses the frame. that's exactly why its ring is bigger, so it doesn't have to wait on WAL flushes all the time.
+
+<Deep title="synchronized scans">
+the same quarter-of-shared_buffers rule switches on one more trick. if a second seq scan of a big table starts while another is already halfway through, it starts reading where the first one is, rides along to the end, then wraps round and reads the part it missed. two scans, one pass of reads. that's `synchronize_seqscans`, on by default. it's why a seq scan of a big table without ORDER BY can return rows in a different order from run to run, one more reason the [order of a result is never guaranteed](/learn/basics/order-by) without ORDER BY. (the captures here turn it off, so they come out the same every time.)
+</Deep>
+
+<Gotcha title="a big table never gets cached by scanning it">
+the flip side of the ring: if a table is bigger than a quarter of shared_buffers, reading it with seq scans never makes it stay in shared buffers. every full scan reads it again, from the OS page cache if you're lucky. if you really want a big table in shared buffers (say, after a restart), the `pg_prewarm` extension reads it in through the normal path. and an index scan, as the capture showed, gets no ring at all: a query that walks a whole big table through an index can still flush the cache.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/runtime-config-resource.html#GUC-VACUUM-BUFFER-USAGE-LIMIT" title="vacuum_buffer_usage_limit">
+the VACUUM and ANALYZE ring size setting, its range, and the BUFFER_USAGE_LIMIT option.
+</Docs>
+
+<Interview q="why doesn't a full table scan push all the hot data out of the buffer cache?">
+because large sequential scans use a buffer ring. if the table is bigger than a quarter of shared_buffers, the scan gets a small ring of buffers (256 KB) and recycles them as it goes, instead of taking victims from the whole pool through the clock sweep. VACUUM uses a ring sized by vacuum_buffer_usage_limit, and COPY and CREATE TABLE AS use a 16 MB one. bonus points: an index scan over a big range gets no ring and can still flush the cache, and the ring means a big table read by seq scans stays uncached in shared buffers, relying on the OS page cache instead.
+</Interview>
+
+<Keylines>
+- a seq scan of a table bigger than a quarter of shared_buffers gets a 256 KB ring of its own.
+- VACUUM gets a ring of vacuum_buffer_usage_limit (2 MB), bulk writes 16 MB.
+- the ring keeps one-pass work from evicting the pages everyone else uses.
+- index scans get no ring.
+- the browser's pool is 128 MB, so no dataset here is big enough to trigger one.
+</Keylines>

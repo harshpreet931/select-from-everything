@@ -1,0 +1,120 @@
+import { ErDiagram } from "@/components/figures/design/ErDiagram";
+import { chainRun } from "@/components/figures/design/runs";
+import { prov } from "@/lib/db/captured";
+import anti from "./traces/anti.pgtrace.json";
+
+{/* the RunPick and the bars read traces/anti.scenario.sql (PGlite, one session): each pattern's
+    painful query, then the same question after the fix. the bars count pg_class rows. */}
+
+export const runs = {
+  "EAV | the pain": chainRun(anti, [1]),
+  "EAV | the fix": chainRun(anti, [3]),
+  "polymorphic | the pain": chainRun(anti, [5]),
+  "polymorphic | the fix": chainRun(anti, [7]),
+  "comma list | the pain": chainRun(anti, [9]),
+  "comma list | the fix": chainRun(anti, [11]),
+  "no foreign key | the pain": chainRun(anti, [13]),
+  "no foreign key | the fix": chainRun(anti, [14, 15]),
+};
+export const catalog = anti.steps[17].result.data.map((r) => ({ label: r[0], value: Number(r[1]), tone: r[0] === "table per tenant" ? "dead" : "live" }));
+export const tenants = "100";
+
+<InShort>
+most schema anti-patterns are the same mistake in different clothes: data the database could check is stored where it **can't**. an **EAV** table turns columns into rows and every value into text. a **polymorphic** reference names its target table in a string, so no foreign key can follow it. a **comma list** hides a relationship inside one value. a **missing foreign key** lets orphans in quietly.
+
+and the **table per tenant** multiplies the catalog instead of the rows. each one has a real query that goes wrong, and a fix that's ordinary SQL.
+</InShort>
+
+## the picture
+
+you know the schema that started "flexible"? an attributes table so nobody needs a migration, a `type` column so one comments table serves everything, tags in a string because a join table felt heavy. each saved ten minutes on day one, and each turned a database error into a silent wrong answer later.
+
+think of a filing cabinet where, to save buying folders (tables and columns), everything goes into one big drawer, with a sticky note on each sheet saying what it is (a type column, an attribute name). it's flexible. it's also the drawer where a sheet labelled "colour" is never found by someone looking for "color".
+
+<Figure wide caption={<>pick an anti-pattern, then flip between the pain and the fix. every result is real. in the pain runs the database answered exactly what was asked, and the answer is <C k="dead">wrong</C> anyway: a teapot that costs 45.00 under 9.50, an orphan comment, infrared tagged red, revenue missing two orders.</>}>
+<RunPick options={[{ key: "pattern", values: ["EAV", "polymorphic", "comma list", "no foreign key"] }, { key: "version", values: ["the pain", "the fix"] }]} runs={runs} file="antipattern.sql" trace={prov(anti)} />
+</Figure>
+
+## entity-attribute-value
+
+EAV stores `(entity, attribute, value)` triples: one row per cell. every value is text, so comparisons are string comparisons (`'45.00' < '9.50'` is true), every attribute you filter on is another self-join, a misspelled attribute name is just another row, and nothing can be NOT NULL, CHECKed or a foreign key. the planner can't estimate any of it, because every attribute shares one value column's statistics.
+
+the fix is columns. if the attributes really vary per row (product specs from a hundred suppliers), use real columns for what you query and constrain, and a [jsonb](/learn/types/jsonb) column for the long tail: it keeps types (a number stays a number), can be indexed with GIN, and lives in the row instead of in N joins.
+
+```sql run
+CREATE TABLE products (id int PRIMARY KEY, name text NOT NULL, price numeric(8,2) NOT NULL, specs jsonb NOT NULL DEFAULT '{}');
+INSERT INTO products VALUES
+  (1, 'assam tea', 6.50, '{"color": "red", "caffeine_mg": 40}'),
+  (2, 'teapot', 45.00, '{"color": "red", "litres": 1.2}');
+SELECT name, price FROM products WHERE specs ->> 'color' = 'red' AND price < 9.50 ORDER BY id;
+```
+
+## polymorphic associations
+
+`(target_type, target_id)` is a foreign key that postgres can't see: the table it points into depends on a string. so a comment on post 99, which never existed, is accepted, and deleting a post leaves its comments behind. a CHECK can't help, because it can't look at other tables.
+
+<Figure wide caption={<>the polymorphic version (dashed): one pair of columns that means a different table depending on a string, which no foreign key can express. the fix: one nullable <C k="ref">foreign key</C> per target, and a CHECK that exactly one is set.</>}>
+<ErDiagram
+  height={190}
+  provenance="from the CREATE TABLEs in this chapter's capture"
+  entities={[
+    { name: "posts", at: [0, 10], cols: [{ name: "id", pk: true }, { name: "title" }] },
+    { name: "photos", at: [0, 110], cols: [{ name: "id", pk: true }, { name: "caption" }] },
+    { name: "comments", at: [270, 50], note: "the fix", cols: [{ name: "id", pk: true }, { name: "post_id", fk: true }, { name: "photo_id", fk: true }, { name: "body" }] },
+    { name: "comments (old)", at: [540, 50], dashed: true, tone: "dead", cols: [{ name: "target_type", tone: "dead" }, { name: "target_id", tone: "dead" }, { name: "body" }] },
+  ]}
+  links={[
+    { from: "comments", fromCol: "post_id", to: "posts", fromEnd: "zero-many", toEnd: "zero-one" },
+    { from: "comments", fromCol: "photo_id", to: "photos", fromEnd: "zero-many", toEnd: "zero-one" },
+  ]}
+  legend={[["ref", "foreign key", "line"], ["dead", "a reference postgres can't check", "dashed"]]}
+/>
+</Figure>
+
+`num_nonnulls(post_id, photo_id) = 1` keeps "exactly one target" true. with many target types, the other fixes are a junction table per target (post_comments, photo_comments) or a shared parent table ("commentables") that every target gets a row in, so the comment has one ordinary foreign key.
+
+## comma-separated lists
+
+a list in a string is a relationship you can't join on. `LIKE '%red%'` finds infrared. `'red, garden'` with a space is a different tag. counting articles per tag means splitting every row first, and no index helps. the fix is the junction table from [from requirements to tables](/learn/design/er-modeling): one row per (article, tag), with a primary key that stops duplicates.
+
+<Predict options={["2 articles", "3 articles", "an error"]} answer={1}>
+```sql
+-- tags: 'red,garden' / 'infrared,tech' / 'fruit,red'
+SELECT count(*) FROM articles WHERE tags LIKE '%red%';
+```
+<Explain>
+3. LIKE matches a substring, and 'infrared' contains 'red'. you can patch it with `',' || tags || ',' LIKE '%,red,%'`, which breaks again the day someone writes 'red, fruit'. a junction table makes "tagged red" an exact match on one column.
+</Explain>
+</Predict>
+
+an array column (`tags text[]`) is the middle ground: `'red' = ANY(tags)` is exact, and a GIN index serves `tags @> '{red}'`. it still can't have a foreign key to a tags table, so it suits free-form labels better than references ([arrays](/learn/types/arrays)).
+
+## missing foreign keys
+
+"we enforce it in the app" lasts until a script, a second service or a manual DELETE disagrees. then orphan rows sit there, and every inner join drops them without a word: the revenue report in the figure is short by two orders and nobody gets an error. finding them is an anti join; fixing them is a decision (delete, reassign, or restore the parent); then add the constraint. on a big table, add it `NOT VALID` first so new orphans stop immediately, and `VALIDATE` once the old ones are gone ([foreign keys](/learn/design/foreign-keys)).
+
+## a table per tenant
+
+giving every customer of a SaaS app its own copy of every table feels like isolation. it's a catalog explosion: each table brings its primary key index, a TOAST table and its index, statistics, and an entry in every planner lookup and every `pg_dump`. here's {tenants} tenants with one small orders table each:
+
+<Figure caption={<>relations in pg_class for one orders table, as one shared table with a tenant_id column, and as one table per tenant. every schema change is 100 ALTERs, and adding the 101st customer is DDL.</>}>
+<Bars data={catalog} unit="pg_class rows" />
+</Figure>
+
+thousands of tenants means hundreds of thousands of relations, slow backups, autovacuum spread thin across tiny tables, and migrations that can half-apply. the usual design is one set of tables with a `tenant_id` column leading every key and index, with [row-level security](/learn/design/schemas-roles-and-rls) so a missing `WHERE tenant_id = ...` can't leak data. schema-per-tenant sits between the two and has the same catalog cost; a database per tenant makes sense only for a few large, contractually separated customers.
+
+<Gotcha title="the table called data">
+the last anti-pattern has no name: the `data` or `items` table with columns `type, field1, field2, field3, json_blob`, holding five kinds of things depending on `type`. it's EAV and the polymorphic association at once. if a column means different things on different rows, those rows are different entities, and they want different tables.
+</Gotcha>
+
+<Interview q="what's wrong with an entity-attribute-value schema, and what would you use instead?">
+values lose their types (everything is text, so comparisons and sorting are wrong), every filtered attribute costs a self-join, nothing can be constrained (NOT NULL, CHECK, foreign keys), attribute names aren't validated, and the planner can't estimate selectivity. use real columns for attributes you query or constrain, and a jsonb column for genuinely open-ended ones, with GIN or expression indexes on the keys you filter. bonus point: polymorphic foreign keys have the same root problem, a reference the database can't see, fixed by one nullable foreign key per target plus a CHECK on num_nonnulls.
+</Interview>
+
+<Keylines>
+- every anti-pattern here hides from the database something it could have checked.
+- EAV: text values, a join per attribute, no constraints. use columns, plus jsonb for the long tail.
+- polymorphic references can't have foreign keys: one nullable FK per target, CHECK exactly one.
+- comma lists and missing FKs give wrong answers silently, not errors.
+- table per tenant multiplies the catalog; use tenant_id and row-level security.
+</Keylines>

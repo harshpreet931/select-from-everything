@@ -1,0 +1,91 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/window-frames-days.scenario.sql",
+ "title": "a three-day moving sum of purchases across the day the events table is missing",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "WITH daily AS (\n  SELECT occurred_at::date AS day, count(*) FILTER (WHERE kind = 'purchase') AS purchases\n  FROM events\n  WHERE occurred_at >= '2026-04-10' AND occurred_at < '2026-04-19'\n  GROUP BY 1\n)\nSELECT day, purchases,\n       array_agg(day) OVER w AS frame,\n       sum(purchases) OVER w AS three_days\nFROM daily\nWINDOW w AS (ORDER BY day ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)\nORDER BY day",
+   "note": "ROWS 2 PRECEDING counts rows. after the missing day, the two rows before the 15th are the 12th and the 13th: a three-row frame four days wide.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"day","type":"date"},
+     {"name":"purchases","type":"int8"},
+     {"name":"frame","type":"_date"},
+     {"name":"three_days","type":"numeric"}
+    ],
+    "data": [
+     ["2026-04-10","31","{2026-04-10}","31"],
+     ["2026-04-11","16","{2026-04-10,2026-04-11}","47"],
+     ["2026-04-12","17","{2026-04-10,2026-04-11,2026-04-12}","64"],
+     ["2026-04-13","24","{2026-04-11,2026-04-12,2026-04-13}","57"],
+     ["2026-04-15","22","{2026-04-12,2026-04-13,2026-04-15}","63"],
+     ["2026-04-16","16","{2026-04-13,2026-04-15,2026-04-16}","62"],
+     ["2026-04-17","16","{2026-04-15,2026-04-16,2026-04-17}","54"],
+     ["2026-04-18","20","{2026-04-16,2026-04-17,2026-04-18}","52"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "WITH daily AS (\n  SELECT occurred_at::date AS day, count(*) FILTER (WHERE kind = 'purchase') AS purchases\n  FROM events\n  WHERE occurred_at >= '2026-04-10' AND occurred_at < '2026-04-19'\n  GROUP BY 1\n)\nSELECT day, purchases,\n       array_agg(day) OVER w AS frame,\n       sum(purchases) OVER w AS three_days\nFROM daily\nWINDOW w AS (ORDER BY day RANGE BETWEEN interval '2 days' PRECEDING AND CURRENT ROW)\nORDER BY day",
+   "note": "RANGE interval '2 days' PRECEDING measures the day itself. for the 15th that reaches back to the 13th, and the missing 14th just contributes nothing.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"day","type":"date"},
+     {"name":"purchases","type":"int8"},
+     {"name":"frame","type":"_date"},
+     {"name":"three_days","type":"numeric"}
+    ],
+    "data": [
+     ["2026-04-10","31","{2026-04-10}","31"],
+     ["2026-04-11","16","{2026-04-10,2026-04-11}","47"],
+     ["2026-04-12","17","{2026-04-10,2026-04-11,2026-04-12}","64"],
+     ["2026-04-13","24","{2026-04-11,2026-04-12,2026-04-13}","57"],
+     ["2026-04-15","22","{2026-04-13,2026-04-15}","46"],
+     ["2026-04-16","16","{2026-04-15,2026-04-16}","38"],
+     ["2026-04-17","16","{2026-04-15,2026-04-16,2026-04-17}","54"],
+     ["2026-04-18","20","{2026-04-16,2026-04-17,2026-04-18}","52"]
+    ]
+   }
+  }
+ ],
+ "db": "events"
+}

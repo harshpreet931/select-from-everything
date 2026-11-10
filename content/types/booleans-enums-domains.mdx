@@ -1,0 +1,157 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf, runsOf } from "@/lib/db/captured";
+import trace from "./traces/booleans-enums-domains.pgtrace.json";
+
+{/* the truth table, the enum switch and the domain switch read
+    traces/booleans-enums-domains.scenario.sql, captured on PGlite. the enum's sort positions
+    are pg_enum's own enumsortorder values. */}
+
+export const truth = resultOf(trace, 0);
+export const truthTones = truth.rows.map((r) => (r[0] === null ? "hot" : null));
+export const enums = runsOf(trace, ["as created", "after three ADD VALUEs"], 1);
+export const enumTones = { "as created": [null, null, null, null], "after three ADD VALUEs": enums["after three ADD VALUEs"].rows.map((r) => (["packed", "returned", "cancelled"].includes(r[0]) ? "hot" : null)) };
+export const domain = runsOf(trace, ["a cast", "INSERT", "UPDATE", "a function argument", "a NULL"], 4);
+export const source = prov(trace);
+
+<InShort>
+a **boolean** has three values: true, false and NULL. `WHERE flag = true` and `WHERE flag IS TRUE` agree, but their opposites don't: `IS NOT TRUE` keeps the NULLs, `<> true` drops them.
+
+an **enum** is a fixed list of labels that sorts in the order you wrote it. you can add labels, even in the middle, but never drop one. a **domain** is a type plus rules, checked every time a value becomes that type.
+</InShort>
+
+## the picture
+
+you know how a checkbox on a form is either ticked or not? a boolean column isn't a checkbox. it's a checkbox that can also be missing, and the missing one answers "unknown" to every question you ask with `=`.
+
+think of a light switch with a third position: no switch at all (NULL). "is it on?" gets yes, no, or a shrug. only questions phrased with IS get a straight answer out of the empty wall plate.
+
+<Figure caption={<>a boolean's three values under five tests, each answer postgres's own. the <C k="hot">NULL row</C> is the one to read: comparisons pass the unknown along, IS turns it into a definite true or false.</>}>
+<ResultTable columns={truth.columns.map((c) => c.name)} rows={truth.rows} rowTones={truthTones} />
+<Provenance trace={source} />
+</Figure>
+
+## booleans
+
+a boolean is one byte, and postgres accepts a few spellings of it on the way in: `true`/`false`, `'t'`/`'f'`, `'yes'`/`'no'`, `'on'`/`'off'`, `'1'`/`'0'`. it always prints `t` or `f`:
+
+```sql run
+SELECT 'yes'::boolean AS yes, 'off'::boolean AS off, '1'::boolean AS one, pg_column_size(true) AS bytes;
+```
+
+anything else is an error, not a guess:
+
+```sql run expect=error
+SELECT 'maybe'::boolean;
+```
+
+in WHERE, write the column alone: `WHERE paid`, `WHERE NOT paid`. `= true` adds nothing. the trouble starts with the negative, because WHERE keeps only true, and NOT unknown is still unknown ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) has the whole story):
+
+<Predict options={["1", "2", "3"]} answer={1}>
+```sql
+SELECT count(*)
+FROM (VALUES (true), (false), (NULL)) AS t (paid)
+WHERE paid IS NOT TRUE;
+```
+<Explain>
+2: false and NULL. IS NOT TRUE never answers unknown, so the NULL row gets a definite true and is kept. `WHERE NOT paid` would keep only the false row, 1, and quietly lose every order whose paid flag nobody set.
+</Explain>
+</Predict>
+
+```sql run
+SELECT count(*) FILTER (WHERE NOT paid)         AS not_paid,
+       count(*) FILTER (WHERE paid IS NOT TRUE) AS is_not_true
+FROM (VALUES (true), (false), (NULL)) AS t (paid);
+```
+
+the cleanest fix is upstream: `paid boolean NOT NULL DEFAULT false`. a flag that can't be NULL has two values, like you meant.
+
+## enums
+
+an enum is a type whose values are a list of labels:
+
+```sql run
+CREATE TYPE order_status AS ENUM ('placed', 'paid', 'shipped', 'delivered');
+SELECT 'paid'::order_status < 'shipped'::order_status AS in_order,
+       'paid' < 'shipped' AS as_text,
+       enum_range(NULL::order_status) AS all_labels;
+```
+
+the enum compares by its list order: paid before shipped. as text, `'paid' < 'shipped'` happens to agree, but `'delivered'` would sort first alphabetically and last as a status. a label that isn't on the list is refused, and each value takes 4 bytes however long its label is.
+
+you grow an enum with `ALTER TYPE ... ADD VALUE`, at the end or `BEFORE`/`AFTER` an existing label. postgres doesn't renumber anything; the new label gets a sort position between its neighbours:
+
+<Figure caption={<>pg_enum for the type, before and after three ADD VALUEs. switch between them. a label added in the middle gets a <C k="hot">fractional position</C>, 2.5, so no existing value has to change.</>}>
+<RunPick options={[{ key: "order_status", values: ["as created", "after three ADD VALUEs"] }]} runs={{ "as created": { ...enums["as created"], tones: enumTones["as created"] }, "after three ADD VALUEs": { ...enums["after three ADD VALUEs"], tones: enumTones["after three ADD VALUEs"] } }} file="enum.sql" trace={source} />
+</Figure>
+
+what you can't do is take one away. there's no syntax for it that works:
+
+```sql run expect=error
+CREATE TYPE mood AS ENUM ('happy', 'meh', 'grumpy');
+ALTER TYPE mood DROP VALUE 'meh';
+```
+
+"not implemented", and the manual says it plainly: removing a label, or reordering labels, means dropping and recreating the type. you *can* rename one (`RENAME VALUE`). and a value added inside a transaction can't be used until that transaction commits:
+
+```sql run expect=error
+CREATE TYPE mood AS ENUM ('happy', 'grumpy');
+BEGIN;
+ALTER TYPE mood ADD VALUE 'meh';
+SELECT 'meh'::mood;
+```
+
+<Gotcha title="an enum is a schema change per new value">
+every new status is a migration. if the list changes often, or needs more than a label (a description, an "is final" flag, a sort order you edit), it's a table: `statuses (code text PRIMARY KEY, ...)` with a [foreign key](/learn/design/foreign-keys) pointing at it. shop's `orders.status` takes a third road, a plain text column with `CHECK (status IN (...))`: easy to widen by replacing the constraint, but it sorts as text.
+</Gotcha>
+
+## domains
+
+a domain is an existing type with constraints attached, given a name, so the rule lives in one place instead of on every column:
+
+```sql run
+CREATE DOMAIN email AS text CHECK (VALUE ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$');
+CREATE DOMAIN qty AS int NOT NULL CHECK (VALUE > 0);
+SELECT 'ada@example.com'::email AS ok, pg_typeof('ada@example.com'::email) AS type;
+```
+
+the check runs whenever a value *becomes* the domain type, wherever that happens:
+
+<Figure caption={<>five ways to hand a domain the string <code>'not an email'</code> (and one NULL). pick one. every path into the type runs the CHECK; a NULL passes, because a CHECK only refuses false.</>}>
+<RunPick options={[{ key: "via", values: ["a cast", "INSERT", "UPDATE", "a function argument", "a NULL"] }]} runs={domain} file="domain.sql" trace={source} />
+</Figure>
+
+arithmetic or functions on a domain value give you the base type back (`address || '!'` is plain text), so the rule is checked on the way in, not carried along. add a constraint later and postgres checks every existing column of that domain first, unless you say `NOT VALID`:
+
+```sql run expect=error
+CREATE DOMAIN email AS text CHECK (VALUE ~ '@');
+CREATE TABLE subscribers (address email);
+INSERT INTO subscribers VALUES ('Ada@Example.com');
+ALTER DOMAIN email ADD CONSTRAINT lowercase CHECK (VALUE = lower(VALUE));
+```
+
+<Gotcha title="a NOT NULL domain can still hold a NULL">
+the manual warns about this, and it's real. a scalar subquery that finds no row produces a NULL *of the domain type*, which never went through the domain's input check, and storing it doesn't check again:
+
+```sql run
+CREATE DOMAIN qty AS int NOT NULL CHECK (VALUE > 0);
+CREATE TABLE lines (q qty);
+INSERT INTO lines (q) SELECT (SELECT q FROM lines WHERE false);
+SELECT q, q IS NULL AS is_null FROM lines;
+```
+
+outer joins can do the same. put `NOT NULL` on the column, where it's always enforced, and keep the domain for CHECKs.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/sql-createdomain.html" title="CREATE DOMAIN">the notes section explains the NOT NULL hole above, and why domain constraints should be immutable. the enum page (datatype-enum) covers ADD VALUE's limits and the missing DROP VALUE.</Docs>
+
+<Interview q="enum, CHECK constraint, or lookup table for a status column?">
+an enum is compact (4 bytes), sorts in a meaningful order and rejects typos, but every new value is a schema change and values can never be removed. a text column with CHECK (status IN (...)) is easy to change by swapping the constraint, but sorts alphabetically. a lookup table with a foreign key is the most flexible: values are rows, they can carry extra columns, and adding one is an INSERT. bonus point: with booleans, a nullable flag has three states, and `NOT flag` silently drops the NULL rows; make flags NOT NULL.
+</Interview>
+
+<Keylines>
+- a boolean is true, false or NULL. IS TRUE and IS NOT TRUE always answer; = and NOT pass NULL along.
+- make flags NOT NULL with a default, and the third value goes away.
+- an enum sorts in declaration order. you can add labels anywhere, never drop them.
+- a domain is a type plus constraints, checked whenever a value becomes that type.
+- a CHECK lets NULL through, and a NOT NULL domain can be bypassed; NOT NULL belongs on the column.
+</Keylines>

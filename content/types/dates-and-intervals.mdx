@@ -1,0 +1,149 @@
+import { MonthEnd } from "@/components/figures/types/MonthEnd";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/dates-and-intervals.pgtrace.json";
+
+{/* the month-end figure, the interval fields table and the week table read
+    traces/dates-and-intervals.scenario.sql, captured on PGlite. */}
+
+export const ends = resultOf(trace, 0);
+export const fields = resultOf(trace, 1);
+export const weeks = resultOf(trace, 2);
+export const source = prov(trace);
+
+<InShort>
+a **date** is a day, and date ± integer moves it by days. an **interval** is three separate counters (**months, days and microseconds**), so adding one month means "the same day number, next month", clamped to the month's end. that's why january 31 + 1 month is february 28, and + 1 month again is march 28, not 31.
+
+**date_trunc('week', ...)** starts weeks on monday, the ISO way.
+</InShort>
+
+## the picture
+
+you know how a subscription that started on january 31 renews on february 28, and then on march 28 forever after? somebody wrote `next_renewal = last_renewal + interval '1 month'`, and every month the 31st got a little further away.
+
+think of an interval as a kitchen timer with three dials: months, days and seconds. adding it to a date turns each dial separately. the month dial says "same day number, next month". there's no february 31, so postgres lands on the last day there is, and the original 31 is forgotten. the next month starts from the 28th.
+
+<Figure wide caption={<>the last four days of january, pushed forward. one month at a time, all four <C k="hot">collapse</C> onto february 28, and stay together on march 28. two months in one go, each keeps its own day.</>}>
+<MonthEnd
+  res={ends}
+  sql={{
+    twice: "SELECT d::date, (d + interval '1 month')::date,\n       (d + interval '1 month' + interval '1 month')::date\nFROM generate_series(date '2026-01-28', date '2026-01-31', interval '1 day') AS d;",
+    once: "SELECT d::date, (d + interval '2 months')::date\nFROM generate_series(date '2026-01-28', date '2026-01-31', interval '1 day') AS d;",
+  }}
+  notes={{
+    twice: "january 28 to 31 all become february 28: the month dial moves, and february has no 29th, 30th or 31st. adding another month starts from the 28th, so all four land on march 28. three days of information, gone in the first step.",
+    once: "the two-month dial goes straight to march, which has all four days. 28, 29, 30 and 31 each stay themselves. the order you add intervals in changes the answer.",
+  }}
+  trace={source}
+/>
+</Figure>
+
+the fix for a renewal date is to compute every date from the start, never from the previous one: `start + n * interval '1 month'`. the clamping then happens once per date, and the 31st comes back whenever the month has one.
+
+```sql run
+SELECT n, (date '2026-01-31' + n * interval '1 month')::date AS renews_on
+FROM generate_series(0, 4) AS n
+ORDER BY n;
+```
+
+february 28, then march 31 again.
+
+## dates are days
+
+a `date` is a calendar day, with no time and no time zone (4 bytes). plus or minus an integer moves it by days, and one date minus another is a number of days:
+
+```sql run
+SELECT date '2026-01-31' + 1                  AS next_day,
+       date '2026-03-01' - date '2026-02-01'  AS days_in_february,
+       pg_typeof(date '2026-01-31' + 1)       AS type;
+```
+
+add an *interval* instead and you leave dates behind:
+
+<Predict options={["2026-03-03", "2026-02-28 00:00:00", "an error"]} answer={1}>
+```sql
+SELECT date '2026-01-31' + interval '1 month';
+```
+<Explain>
+date + interval has no date result: postgres turns the date into a timestamp at midnight and adds the interval to that, so you get a timestamp back, 2026-02-28 00:00:00. the day is clamped to february's last, it doesn't spill over into march. cast with `::date` to get a date again.
+</Explain>
+</Predict>
+
+```sql run
+SELECT date '2026-01-31' + interval '1 month' AS plus_month,
+       pg_typeof(date '2026-01-31' + interval '1 month') AS type;
+```
+
+the same idea gives you a month's last day: truncate to the first of the month, add a month, step back a day.
+
+```sql run
+SELECT (date_trunc('month', date '2026-02-17') + interval '1 month - 1 day')::date AS last_of_feb;
+```
+
+## an interval is three numbers
+
+postgres stores an interval as months, days and microseconds, kept apart on purpose: a month isn't a fixed number of days, and (across a clock change) a day isn't a fixed number of hours. what you type goes into the field it names:
+
+<Figure caption={<>six intervals and the three fields postgres keeps for each. <code>36 hours</code> stays 36 hours, it's never quietly turned into a day. <code>justify_interval</code> does the conversion on request, assuming 24-hour days and 30-day months.</>}>
+<ResultTable columns={fields.columns.map((c) => c.name)} rows={fields.rows} />
+<Provenance trace={source} />
+</Figure>
+
+comparison makes the same 30-day, 24-hour assumption, so `interval '1 month' = interval '30 days'` is true. adding them to a date isn't the same at all:
+
+```sql run
+SELECT interval '1 month' = interval '30 days'            AS equal,
+       timestamp '2026-02-01' + interval '1 month'        AS plus_a_month,
+       timestamp '2026-02-01' + interval '30 days'        AS plus_30_days;
+```
+
+equal intervals, dates two days apart, because february has 28 days. when the length matters, decide which you mean: a calendar month, or 30 days.
+
+## age() and subtraction
+
+there are two ways to ask how far apart two days are. subtraction counts days. `age()` counts in calendar units, years and months first, then whatever days are left:
+
+```sql run
+SELECT date '2026-03-31' - date '2026-02-28'      AS days,
+       age(date '2026-03-31', date '2026-02-28')  AS age;
+```
+
+31 days, or 1 month and 3 days: from february 28, one month on is march 28, and three more days reach the 31st. age() is what you want for "how old is this customer", subtraction for "how many days did shipping take". (age() with one argument counts from today, so its answer changes every day.)
+
+## weeks start on monday
+
+`date_trunc('week', x)` rounds down to the monday of x's week, because ISO 8601 weeks start on monday. `extract(week ...)` gives the ISO week number, and the ISO year it belongs to can be the year before:
+
+<Figure caption={<>nine days around new year 2027, one shade per week. january 1 2027 is a friday, so it belongs to the week that started monday december 28: ISO week 53 of 2026. <code>year</code> and <code>iso_year</code> disagree for three days.</>}>
+<ResultTable columns={weeks.columns.map((c) => c.name)} rows={weeks.rows} group="week_start" />
+<Provenance trace={source} />
+</Figure>
+
+so a weekly report keyed on `extract(year ...)` and `extract(week ...)` puts january 1 2027 in "week 53 of 2027", a week that doesn't exist. use `isoyear` with `week`, or just group on `date_trunc('week', ...)`, which gives the monday itself:
+
+```sql run db=events
+SET TimeZone = 'UTC';
+SELECT date_trunc('week', occurred_at)::date AS week, count(*) AS events
+FROM events
+WHERE occurred_at < '2026-03-30'
+GROUP BY 1
+ORDER BY 1;
+```
+
+`occurred_at` is a timestamptz, so where a week starts depends on the session's time zone, which is why that block sets it. [timestamptz](/learn/types/timestamptz) is about that. a week starting on sunday is `date_trunc('week', x + interval '1 day') - interval '1 day'`.
+
+<Gotcha title="date_trunc of a date isn't a date">
+there's no date version of date_trunc. a date goes in as a timestamptz (midnight, in the session's time zone) and a timestamptz comes out, so `date_trunc('month', current_date)` prints a midnight with a time zone on it. cast it back with `::date`. generate_series does the same thing with dates, for the same reason: [generate_series and calendars](/learn/analytics/generate-series) builds whole calendars that way.
+</Gotcha>
+
+<Interview q="what is january 31 plus one month in postgres?">
+february 28 (or 29 in a leap year), as a timestamp at midnight. an interval keeps months, days and microseconds apart, and adding a month means "same day number, next month", clamped to the end of the month. bonus point: that makes interval addition depend on order, so jan 31 + 1 month + 1 month is march 28 while jan 31 + 2 months is march 31. schedule recurring dates as `start + n * interval '1 month'`, never from the previous date.
+</Interview>
+
+<Keylines>
+- date ± integer moves by days; date − date is a number of days.
+- an interval is months, days and microseconds, kept apart.
+- + 1 month clamps to the month's end, so recurring dates should be computed from the start.
+- age() counts calendar months and days; subtraction counts days.
+- date_trunc('week') gives the monday. group by it, or use isoyear with week.
+</Keylines>

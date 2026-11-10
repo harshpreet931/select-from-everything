@@ -1,0 +1,321 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "4650bad930adcbca": {
+      "db": "empty",
+      "sql": "SELECT name, setting FROM pg_settings WHERE name LIKE 'enable%' ORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 24",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25]
+          ],
+          "rowCount": 24,
+          "digest": "c7ada493ba02a51f",
+          "rows": [
+            ["enable_async_append", "on"],
+            ["enable_bitmapscan", "on"],
+            ["enable_distinct_reordering", "on"],
+            ["enable_gathermerge", "on"],
+            ["enable_group_by_reordering", "on"],
+            ["enable_hashagg", "on"],
+            ["enable_hashjoin", "on"],
+            ["enable_incremental_sort", "on"],
+            ["enable_indexonlyscan", "on"],
+            ["enable_indexscan", "on"],
+            ["enable_material", "on"],
+            ["enable_memoize", "on"],
+            ["enable_mergejoin", "on"],
+            ["enable_nestloop", "on"],
+            ["enable_parallel_append", "on"],
+            ["enable_parallel_hash", "on"],
+            ["enable_partition_pruning", "on"],
+            ["enable_partitionwise_aggregate", "off"],
+            ["enable_partitionwise_join", "off"],
+            ["enable_presorted_aggregate", "on"],
+            ["enable_self_join_elimination", "on"],
+            ["enable_seqscan", "on"],
+            ["enable_sort", "on"],
+            ["enable_tidscan", "on"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4807827a1690333c": {
+      "db": "shop",
+      "sql": "SET enable_seqscan = off;\nEXPLAIN SELECT * FROM products WHERE name = 'left-handed teapot';\nRESET enable_seqscan;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ff1a303d37996b99",
+          "rows": [
+            ["Seq Scan on products  (cost=0.00..7.50 rows=1 width=156)"],
+            ["  Disabled: true"],
+            ["  Filter: (name = 'left-handed teapot'::text)"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f8b479a4f4b9c024"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "13b6d1f2a60ed744": {
+      "db": "shop",
+      "sql": "SET enable_indexscan = off;\nEXPLAIN SELECT * FROM orders WHERE id = 42;\nRESET enable_indexscan;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "82498979163c9e6e",
+          "rows": [
+            ["Bitmap Heap Scan on orders  (cost=4.29..8.31 rows=1 width=33)"],
+            ["  Recheck Cond: (id = 42)"],
+            ["  ->  Bitmap Index Scan on orders_pkey  (cost=0.00..4.29 rows=1 width=0)"],
+            ["        Index Cond: (id = 42)"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f8b479a4f4b9c024"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "170e42b26c90d775": {
+      "db": "shop",
+      "sql": "ALTER TABLESPACE pg_default SET (random_page_cost = 1.1);\nCREATE ROLE reporting;\nALTER ROLE reporting SET work_mem = '64MB';\nALTER ROLE reporting SET plan_cache_mode = force_custom_plan;\nSELECT spcname, spcoptions FROM pg_tablespace ORDER BY spcname;\nSELECT r.rolname, s.setconfig\nFROM pg_db_role_setting AS s JOIN pg_roles AS r ON r.oid = s.setrole\nORDER BY r.rolname;\nALTER TABLESPACE pg_default RESET (random_page_cost);\nDROP ROLE reporting;",
+      "statements": [
+        {
+          "tag": "ALTER TABLESPACE",
+          "command": "ALTER TABLESPACE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "20da4124f582dbb5"
+        },
+        {
+          "tag": "CREATE ROLE",
+          "command": "CREATE ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b95570a1fabd8274"
+        },
+        {
+          "tag": "ALTER ROLE",
+          "command": "ALTER ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "0a4188cc831bc3f1"
+        },
+        {
+          "tag": "ALTER ROLE",
+          "command": "ALTER ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "773c612215b3a2ea"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["spcname", "name", 19],
+            ["spcoptions", "text[]", 1009]
+          ],
+          "rowCount": 2,
+          "digest": "83ecd1eb283e4df9",
+          "rows": [
+            ["pg_default", "{random_page_cost=1.1}"],
+            ["pg_global", null]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rolname", "name", 19],
+            ["setconfig", "text[]", 1009]
+          ],
+          "rowCount": 1,
+          "digest": "91c34506ecc64699",
+          "rows": [
+            ["reporting", "{work_mem=64MB,plan_cache_mode=force_custom_plan}"]
+          ]
+        },
+        {
+          "tag": "ALTER TABLESPACE",
+          "command": "ALTER TABLESPACE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cdaa3b2b728040ef"
+        },
+        {
+          "tag": "DROP ROLE",
+          "command": "DROP ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "092aae7d4ed20ae1"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8035c8fb70a4dc1d": {
+      "db": "shop",
+      "sql": "BEGIN;\nSET LOCAL enable_hashjoin = off;\nSHOW enable_hashjoin;\nCOMMIT;\nSHOW enable_hashjoin;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["enable_hashjoin", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2773c2d408be5273",
+          "rows": [
+            ["off"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7f3480ce95d80d83"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["enable_hashjoin", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "33ecbc22b839efbd",
+          "rows": [
+            ["on"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "28cda03ca97fec9a": {
+      "db": "shop",
+      "sql": "ALTER TABLE orders ALTER COLUMN customer_id SET (n_distinct = 500);\nANALYZE orders;\nSELECT n_distinct FROM pg_stats WHERE tablename = 'orders' AND attname = 'customer_id';",
+      "statements": [
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "629b316cd6a106b5"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_distinct", "float4", 700]
+          ],
+          "rowCount": 1,
+          "digest": "ca1fa767ed96c005",
+          "rows": [
+            ["500"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d8bdc9f1337ba0c4": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT * FROM customers WHERE id = 42;\nEXPLAIN SELECT * FROM customers WHERE id + 0 = 42;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "8fd9c0872e896b55",
+          "rows": [
+            ["Index Scan using customers_pkey on customers  (cost=0.28..8.29 rows=1 width=61)"],
+            ["  Index Cond: (id = 42)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "dce1b730254a192e",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..54.00 rows=10 width=61)"],
+            ["  Filter: ((id + 0) = 42)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

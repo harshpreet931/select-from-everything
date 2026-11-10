@@ -1,0 +1,216 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { pickRun } from "@/components/figures/writes/frames";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/plpgsql.pgtrace.json";
+
+{/* the switches read traces/plpgsql.scenario.sql, captured on PGlite. the round-trip timings are
+    measured on a native postgres 18.6 (see the deep near the end). */}
+
+export const errs = {
+  "none": pickRun(trace, [1, 2], { ignoreErrors: true, note: trace.steps[1].note }),
+  "EXCEPTION around each insert": pickRun(trace, [3, 4], { note: trace.steps[3].note }),
+};
+export const batches = {
+  "no COMMIT": pickRun(trace, [6, 7, 8], { ignoreErrors: true, note: trace.steps[7].note }),
+  "COMMIT after each batch": pickRun(trace, [9, 10, 11], { ignoreErrors: true, note: trace.steps[10].note }),
+};
+export const source = prov(trace);
+
+<InShort>
+**PL/pgSQL** is postgres's built-in procedural language: variables, IF, loops and exception handling, running inside the server, next to the data. a **DO** block runs some once; a function or a **procedure** keeps it under a name.
+
+a procedure, run with **CALL**, can COMMIT partway through, so a long job keeps what it finished. an **EXCEPTION** clause is a savepoint in disguise, and each entry into one costs a subtransaction.
+</InShort>
+
+## the picture
+
+you know the script that loops over ten thousand ids and sends an UPDATE for each? every one of those is a trip to the database and back: send, parse, plan, run, reply. the database is fast. the trips aren't.
+
+think of giving instructions over the phone, one item at a time ("now the next one... now the next one"), versus handing over a written list and waiting for "done". PL/pgSQL is the written list. and a single set-based statement is better still: "do all of them", in one line.
+
+<Figure caption={<>10,000 single-row UPDATEs on a 10,000-row table, three ways: each one sent from the client (all inside one transaction), the same loop in a DO block on the server, and one UPDATE for all the rows. every bar includes about 7 ms of starting psql.</>}>
+<Bars
+  unit="ms"
+  data={[
+    { label: "from the client", value: 221, tone: "dead" },
+    { label: "in a DO block", value: 40 },
+    { label: "one UPDATE", value: 22, tone: "live" },
+  ]}
+/>
+<Provenance measured="on this mac (m4 pro), postgres 18.6 from Postgres.app over a unix socket, psql -f, median of 7 runs. see the deep near the end" />
+</Figure>
+
+the loop on the server is 5x faster than the loop in the client, over a socket on the same machine. over a network it's the difference between seconds and milliseconds. and the set-based UPDATE still beats the server-side loop, because postgres can do one statement's worth of work in one pass. so: SQL first, PL/pgSQL when SQL can't say it, the client loop last.
+
+everything below runs on a fresh database each time, so nothing you create sticks.
+
+## a DO block
+
+a DO block is an anonymous chunk of PL/pgSQL: it runs once and returns nothing. RAISE NOTICE is how it talks back, and the notices show up under the result:
+
+```sql run
+DO $$
+DECLARE
+  total int := 0;
+BEGIN
+  FOR i IN 1..10 LOOP
+    IF i % 2 = 0 THEN
+      total := total + i;
+    END IF;
+  END LOOP;
+  RAISE NOTICE 'the even numbers up to 10 add up to %', total;
+END $$;
+```
+
+the shape is always the same: an optional `DECLARE` section for variables, then `BEGIN ... END`. the `$$` quotes are a string delimiter, because the body is a string, handed to the PL/pgSQL interpreter at run time. assignment is `:=`, and every SQL expression works as a PL/pgSQL expression.
+
+queries go straight in. `SELECT ... INTO` puts one row into variables, and `FOR row IN query LOOP` walks a result:
+
+```sql run db=shop
+DO $$
+DECLARE
+  c record;
+  n bigint;
+BEGIN
+  FOR c IN SELECT id, name FROM customers WHERE id IN (1, 7, 42) ORDER BY id LOOP
+    SELECT count(*) INTO n FROM orders WHERE customer_id = c.id;
+    IF n = 0 THEN
+      RAISE NOTICE '% has never ordered', c.name;
+    ELSE
+      RAISE NOTICE '% has % orders', c.name, n;
+    END IF;
+  END LOOP;
+END $$;
+```
+
+(that's three queries inside a loop, which is the N+1 pattern from [ORMs and the N+1 problem](/learn/scale/orms-and-n-plus-one), just with no network in between. one GROUP BY would have done it. PL/pgSQL makes loops easy, which is not the same as making them a good idea.)
+
+## functions that return rows
+
+wrap PL/pgSQL in `CREATE FUNCTION` and it gets a name, parameters and a return type. `RETURN QUERY` appends a query's rows to the result, and you can call it more than once:
+
+```sql run db=shop session=fn
+CREATE FUNCTION order_summary(cust int)
+RETURNS TABLE (status text, n bigint)
+LANGUAGE plpgsql STABLE
+AS $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM customers WHERE id = cust) THEN
+    RAISE EXCEPTION 'no customer %', cust
+      USING ERRCODE = 'no_data_found', HINT = 'ids go from 1 to 2000';
+  END IF;
+  RETURN QUERY
+    SELECT o.status, count(*) FROM orders AS o
+    WHERE o.customer_id = cust GROUP BY o.status;
+END $$;
+
+SELECT * FROM order_summary(42) ORDER BY status;
+```
+
+`RAISE EXCEPTION` stops everything with an error of your choosing, SQLSTATE and hint included, like any error postgres raises itself:
+
+```sql run session=fn expect=error
+SELECT * FROM order_summary(5000);
+```
+
+(a PL/pgSQL function is never [inlined](/learn/writes/sql-functions) the way a simple SQL function can be. to the planner it's a black box with a cost estimate.)
+
+## exceptions are savepoints
+
+an error inside a DO block or a function aborts the statement that called it, and the transaction with it. an `EXCEPTION` clause on a `BEGIN ... END` block catches errors raised inside that block: postgres rolls back to where the block started, runs your handler, and carries on after the block.
+
+<Figure wide caption={<>ten inserts in a loop, and the seventh breaks a CHECK. switch the error handling. without an exception block the error ends the whole DO block, and the six good rows go with it. with one around each insert, only the bad row is rolled back.</>}>
+<RunPick options={[{ key: "error handling", values: ["none", "EXCEPTION around each insert"] }]} runs={errs} hot={["EXCEPTION WHEN check_violation THEN"]} file="loop.sql" trace={source} />
+</Figure>
+
+"rolls back to where the block started" is a savepoint, and that's literally how it works: entering a block with an EXCEPTION clause starts a **subtransaction**. the manual's tip says such a block is "significantly more expensive to enter and exit" than one without. and a subtransaction that writes gets a transaction id of its own:
+
+```sql run
+CREATE TABLE t (id int PRIMARY KEY);
+
+SELECT pg_current_xact_id() AS xid;
+DO $$ BEGIN
+  FOR i IN 1..1000 LOOP
+    INSERT INTO t VALUES (i);
+  END LOOP;
+END $$;
+SELECT pg_current_xact_id() AS xid;
+
+DO $$ BEGIN
+  FOR i IN 1001..2000 LOOP
+    BEGIN
+      INSERT INTO t VALUES (i);
+    EXCEPTION WHEN unique_violation THEN NULL;
+    END;
+  END LOOP;
+END $$;
+SELECT pg_current_xact_id() AS xid;
+```
+
+each `SELECT pg_current_xact_id()` runs in its own transaction and takes the next id. between the first two, the plain loop used one: 753, then 755. between the last two, the loop with an exception block used 1,001: one for the DO block and one per subtransaction, 755 to 1757. (those are this page's numbers. a server that has done other work starts higher, with the same gaps.) [transaction ids](/learn/mvcc/transaction-ids) are a finite resource that VACUUM has to keep [freezing](/learn/mvcc/freezing-and-wraparound), so burning a thousand for a thousand rows isn't free.
+
+<Predict options={["1,000 rows", "999 rows", "no rows, and an error"]} answer={1}>
+```sql
+-- t already has ids 1 to 1000. this inserts 1000 to 1999,
+-- skipping duplicates. how many rows does it add?
+DO $$ BEGIN
+  FOR i IN 1000..1999 LOOP
+    BEGIN
+      INSERT INTO t VALUES (i);
+    EXCEPTION WHEN unique_violation THEN NULL;
+    END;
+  END LOOP;
+END $$;
+```
+<Explain>
+999. id 1000 already exists, so its insert raises unique_violation, the handler swallows it (`NULL` is PL/pgSQL for "do nothing"), and the loop moves on. the other 999 go in. it works, and it's the slow way: an `INSERT ... SELECT ... ON CONFLICT DO NOTHING` does the same in one statement, with no subtransactions at all ([INSERT ... ON CONFLICT](/learn/writes/upsert)).
+</Explain>
+</Predict>
+
+<Gotcha title="catch what you mean">
+`EXCEPTION WHEN others THEN NULL` catches everything, including the bug you haven't found yet, and makes it silent. catch the conditions you expect by name (`unique_violation`, `check_violation`, `no_data_found`), and if you must catch broadly, log what you caught: `GET STACKED DIAGNOSTICS` gives you the SQLSTATE, message and context.
+</Gotcha>
+
+## procedures and COMMIT
+
+a function always runs inside the caller's transaction: it can't commit, because the statement that called it hasn't finished. a **procedure** (`CREATE PROCEDURE`, run with `CALL`) can, as long as the CALL isn't itself inside an explicit transaction block. that's what makes long batch jobs survivable:
+
+<Figure wide caption={<>a job that archives 5,000 orders in batches of 1,000 and fails at order 3,500. switch between no COMMIT and a COMMIT after each batch. both CALLs end in the same error. without commits, all the work rolls back. with them, the three batches that finished stay archived.</>}>
+<RunPick options={[{ key: "inside the loop", values: ["no COMMIT", "COMMIT after each batch"] }]} runs={batches} hot={["COMMIT;"]} file="archive_all.sql" trace={source} />
+</Figure>
+
+the commit also matters while the job is running: each batch's row locks are released and its dead row versions become cleanable as soon as it commits, instead of everything being held until the end ([the xmin horizon](/learn/mvcc/xmin-horizon) is what a long transaction holds back). the catch is the first rule above. CALL a procedure that commits from inside BEGIN, and it can't:
+
+```sql run expect=error
+CREATE PROCEDURE tidy() LANGUAGE plpgsql AS $$
+BEGIN
+  COMMIT;
+END $$;
+
+BEGIN;
+CALL tidy();
+```
+
+`invalid transaction termination`. many drivers and ORMs open a transaction for you, so a procedure that commits may need to be called on a connection in autocommit mode.
+
+## when to keep logic in the app
+
+PL/pgSQL is good at work that's mostly data: loops over rows with decisions in between, multi-step changes that must be atomic, batch jobs that should run where the data is, and [triggers](/learn/writes/triggers). it saves the round trips, as the first figure shows.
+
+it's worse at almost everything else. it's harder to test, debug, version and review than application code. it runs on the database server, which is the one machine you can't add more of easily. and logic split between the app and the database is logic nobody can read in one place. a reasonable rule: if it's a rule about the data (an invariant, an audit trail), it can live in the database. if it's a rule about the business (pricing, emails, workflows), keep it in the app and send the database set-based SQL.
+
+<Deep title="how the timings were measured">
+a throwaway postgres 18.6 cluster (Postgres.app binaries, fsync on, autovacuum off), a 10,000-row `accounts (id int PRIMARY KEY, balance numeric)` table recreated and vacuumed before every run, and each variant run as a file through `psql -X -q -f` over a unix socket, timing the whole process. the client version is 10,000 `UPDATE accounts SET balance = balance * 1.01 WHERE id = n;` lines between BEGIN and COMMIT; the DO version is the same UPDATE in `FOR i IN 1..10000 LOOP`; the set-based version is one UPDATE with no WHERE. 7 runs each, medians 221, 40 and 22 ms; `SELECT 1` alone took 7 ms. the same loop with an exception block around each UPDATE took 43 ms against 38 without, about 13% more, before counting the xids.
+</Deep>
+
+<Interview q="what's the difference between a function and a procedure in postgres?">
+a function returns a value (or a set of rows), is called from inside a query, and always runs within the caller's transaction, so it can't COMMIT or ROLLBACK. a procedure is invoked on its own with CALL, returns nothing in the usual sense (OUT parameters aside), and can commit or roll back partway through, which suits long batch jobs, but only when the CALL isn't inside an explicit transaction block. bonus point: in PL/pgSQL, every block with an EXCEPTION clause is a subtransaction, which costs time and, if it writes, a transaction id per entry.
+</Interview>
+
+<Keylines>
+- PL/pgSQL adds variables, IF, loops and exception handling, running next to the data.
+- a loop in the server beats a loop in the client. one set-based statement beats both.
+- an EXCEPTION clause is a savepoint: each entry is a subtransaction, with an xid if it writes.
+- procedures run with CALL and can COMMIT between batches, unless called inside BEGIN.
+- keep data rules near the data, and business logic in the app.
+</Keylines>

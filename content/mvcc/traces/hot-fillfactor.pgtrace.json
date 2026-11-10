@@ -1,0 +1,90 @@
+{
+ "v": 1,
+ "scenario": "content/mvcc/traces/hot-fillfactor.scenario.sql",
+ "title": "one row updated 1,000 times, each update its own transaction, in three tables: packed, fillfactor 90, and with the updated column indexed",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "ff100": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"hits","type":"int4"}]},
+  "ff100_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"ff100"},
+  "ff90": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"hits","type":"int4"}]},
+  "ff90_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"ff90"},
+  "idx100": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"hits","type":"int4"}]},
+  "idx100_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"idx100"},
+  "idx100_hits": {"kind":"index","am":"btree","columns":[{"name":"hits","type":"int4"}],"on":"idx100"}
+ },
+ "base": {"xid":765,"lsn":23337648},
+ "setup": "CREATE TABLE ff100 (id int PRIMARY KEY, hits int NOT NULL);\nCREATE TABLE ff90 (id int PRIMARY KEY, hits int NOT NULL) WITH (fillfactor = 90);\nCREATE TABLE idx100 (id int PRIMARY KEY, hits int NOT NULL);\nCREATE INDEX idx100_hits ON idx100 (hits);\nINSERT INTO ff100 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;\nINSERT INTO ff90 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;\nINSERT INTO idx100 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;\nCREATE PROCEDURE bump(t regclass, n int) LANGUAGE plpgsql AS $$\nBEGIN\n  FOR i IN 1..n LOOP\n    EXECUTE format('UPDATE %s SET hits = hits + 1 WHERE id = 1', t);\n    COMMIT;\n  END LOOP;\nEND $$;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT c.relname AS rel, pg_relation_size(c.oid) AS heap_bytes, pg_indexes_size(c.oid) AS index_bytes\nFROM pg_class AS c WHERE c.relname IN ('ff100', 'ff90', 'idx100') ORDER BY c.relname",
+   "note": "the three tables as loaded, heap and index sizes in bytes.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"rel","type":"name"},{"name":"heap_bytes","type":"int8"},{"name":"index_bytes","type":"int8"}],
+    "data": [["ff100","8192","16384"],["ff90","16384","16384"],["idx100","8192","32768"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "CALL bump('ff100', 1000);\nCALL bump('ff90', 1000);\nCALL bump('idx100', 1000)",
+   "note": "a thousand single-row updates in each, one transaction apiece.",
+   "status": "ok",
+   "result": {"command":"CALL","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT pg_stat_force_next_flush();\nSELECT s.relname AS rel, s.n_tup_upd AS updates, s.n_tup_hot_upd AS hot, s.n_tup_newpage_upd AS new_page,\n       pg_relation_size(s.relid) AS heap_bytes, pg_indexes_size(s.relid) AS index_bytes\nFROM pg_stat_user_tables AS s WHERE s.relname IN ('ff100', 'ff90', 'idx100') ORDER BY s.relname",
+   "note": "how many were HOT, how many had to move the row to another page, and what it did to the sizes.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"rel","type":"name"},
+     {"name":"updates","type":"int8"},
+     {"name":"hot","type":"int8"},
+     {"name":"new_page","type":"int8"},
+     {"name":"heap_bytes","type":"int8"},
+     {"name":"index_bytes","type":"int8"}
+    ],
+    "data": [
+     ["ff100","1000","999","1","16384","16384"],
+     ["ff90","1000","1000","0","16384","16384"],
+     ["idx100","1000","0","4","40960","57344"]
+    ]
+   }
+  }
+ ]
+}

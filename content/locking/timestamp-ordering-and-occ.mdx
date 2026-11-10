@@ -1,0 +1,110 @@
+import { ToLab } from "@/components/figures/locking/ToLab";
+import { OccPhases } from "@/components/figures/locking/OccPhases";
+import { VersionSaves } from "@/components/figures/locking/VersionSaves";
+import golden from "./timestamp-ordering-and-occ.golden.json";
+
+{/* a theory chapter: the TO lab and the OCC timeline are the textbook models, drawn by hand,
+    and say so. the version-column block at the end runs on the browser's postgres, and the
+    two-writer figure under it is drawn from that block's golden. */}
+
+export const versionBlock = Object.values(golden.blocks).find((b) => b.sql.includes("version = version + 1"));
+
+<InShort>
+two ways to get serializability without making anyone wait for a lock. **timestamp ordering** fixes the serial order up front: every transaction gets a timestamp at start, every item remembers the newest timestamp that read it and wrote it, and an operation that arrives too late for its timestamp aborts. **optimistic concurrency control** lets everyone run on private copies and checks at the end, in a **validation** phase, whether anything they read changed underneath them. both trade waiting for **aborts**.
+</InShort>
+
+## the picture
+
+you know how [two-phase locking](/learn/locking/two-phase-locking) makes conflicting transactions wait, and then needs a [deadlock detector](/learn/locking/deadlock-detection) for when the waiting goes in circles? the alternative is to never wait at all. if two transactions conflict in a way that could break serializability, abort one and restart it.
+
+think of a deli counter with numbered tickets. timestamp ordering is "serve strictly in ticket order": if number 12 tries to grab the last loaf after number 15 already touched it, number 12 is sent back to take a new ticket. optimistic control is self-checkout: everyone fills their basket freely, and at the till you check nothing in your basket was changed by someone who paid in the meantime. if it was, put it all back and start again.
+
+## timestamp ordering
+
+each transaction T gets a timestamp ts(T) when it starts, and the rule is that the result must equal the serial order *by timestamp*. each item x keeps two numbers: **RTS(x)**, the largest timestamp that read it, and **WTS(x)**, the largest that wrote it.
+
+- **read** x by T: if ts(T) < WTS(x), a younger transaction already overwrote the value T should see. abort T. otherwise read, and raise RTS(x) to ts(T).
+- **write** x by T: if ts(T) < RTS(x), a younger transaction already read x and should have seen this write. abort T. if ts(T) < WTS(x), a younger write is already there. abort T. otherwise write, and set WTS(x) to ts(T).
+
+<Figure wide caption={<>pick a schedule and step through. RTS and WTS change in <C k="hot">hot</C>. an operation that arrives too late <C k="dead">aborts</C> its transaction; with the Thomas write rule on, an obsolete write is <C k="hot">skipped</C> instead. try "blind writes" with the rule off, then on.</>}>
+<ToLab />
+</Figure>
+
+every precedence-graph edge then goes from an older transaction to a younger one, because any operation that would make an edge point backwards is refused. timestamps only go up, so no cycles. it's the same argument as 2PL with timestamps in place of lock points, but decided at start instead of discovered during the run.
+
+### the Thomas write rule
+
+in "blind writes", T2 writes A, then T1 (older) writes A. in timestamp order T1's write comes first and T2's overwrites it, so T1's value would never be seen by anyone, provided nobody younger read A in between (that case is caught by the RTS check). Thomas's observation (1979): just skip the obsolete write instead of aborting. the result is still view serializable, though no longer conflict serializable: the schedule's ww pair is in the "wrong" order, it just doesn't matter.
+
+<Quiz question="T1 (ts 1) and T2 (ts 2). schedule: R2(A), W1(A). what does basic timestamp ordering do with W1(A)?" options={["writes it: T1 is older", "skips it (Thomas)", "aborts T1"]} answer={2}>
+<Explain>
+aborts T1. RTS(A) = 2 after T2's read. T1's write has ts 1 < RTS(A): in timestamp order, T2's read should have seen T1's write, and it didn't. there's no fixing that except restarting T1 with a new, larger timestamp. the Thomas rule doesn't apply: it only skips writes that nobody younger has read.
+</Explain>
+</Quiz>
+
+the weak spots: long transactions are old by the time they write, so they're the ones that keep losing. a reader has to write (RTS) to shared state on every read. and basic TO allows reading uncommitted data, so real implementations add commit bits or buffering. MVCC systems keep the idea but store several versions, so a late reader can be handed the version that matches its timestamp instead of being aborted. that's **multiversion timestamp ordering**, and a snapshot is a close cousin of "the versions as of my timestamp".
+
+## optimistic concurrency control
+
+Kung and Robinson (1981) split each transaction into three phases:
+
+1. **read**: run the transaction against private copies. record the read set (what you read) and the write set (what you'd write). no locks.
+2. **validate**: at the end, check against every transaction that committed after you started. if any of them wrote something in your read set, you may have read a stale value: abort.
+3. **write**: if valid, install the write set. validation and write happen as one step, so nobody slips in between.
+
+<Figure wide caption={<>three transactions under OCC. T1 commits A while T2 is still reading, and T2 read A, so T2's validation <C k="dead">fails</C>: it may have seen the old A. T3 started after T1 finished writing, so there's nothing to check and it <C k="live">commits</C>.</>}>
+<OccPhases />
+</Figure>
+
+OCC is cheap when conflicts are rare: no lock manager, no waiting, no deadlocks. when conflicts are common it's expensive: work is thrown away at the very end, after all of it was done, and the same transaction can lose again and again. in-memory databases like it (Hekaton in SQL Server uses an optimistic multiversion scheme), and so do most application caches.
+
+<Predict question="under OCC, which transaction pays for a conflict?" options={["the one that started first", "the one that validates second", "whichever holds fewer locks"]} answer={1}>
+```text
+T1: read ..... validate ✓ write
+T2:    read ............... validate ?
+```
+<Explain>
+the one that validates second (the "first committer wins" rule). T1 validated and committed first, so T2's read set is checked against T1's write set. if they overlap, T2 aborts and restarts. nobody waited, but T2's whole read phase was wasted.
+</Explain>
+</Predict>
+
+## the app-level version: a version column
+
+you've probably written OCC already. read a row with its version number, let the user think for a minute (no transaction open, no lock held), then write it back only if the version hasn't moved. the validate-and-write step is a single UPDATE, which postgres runs atomically:
+
+```sql run
+CREATE TABLE accounts (id int PRIMARY KEY, balance numeric(12,2) NOT NULL, version int NOT NULL);
+INSERT INTO accounts VALUES (1, 100.00, 1);
+SELECT balance, version FROM accounts WHERE id = 1;     -- the app reads version 1
+UPDATE accounts SET balance = 130.00, version = version + 1
+WHERE id = 1 AND version = 1;                           -- someone else saves first
+UPDATE accounts SET balance = 110.00, version = version + 1
+WHERE id = 1 AND version = 1;                           -- our save: validation fails
+SELECT balance, version FROM accounts WHERE id = 1;
+```
+
+<Figure caption={<>the same block as two writers. both hold version 1. the first save matches and <C k="live">bumps the version</C>; the second checks version = 1 against a row that says 2, matches nothing and gets <C k="dead">UPDATE 0</C>. step through and watch the version column.</>}>
+<VersionSaves block={versionBlock} />
+</Figure>
+
+`UPDATE 1`, then `UPDATE 0`. the second save matched no row because the version moved: that's a failed validation, and the app re-reads and retries (or shows the user the newer data). with two real sessions, the second UPDATE waits for the first one's row lock, then re-checks the WHERE on the new version and finds nothing ([lost updates](/learn/transactions/lost-updates) has that capture). so even the "lock-free" version relies on a row lock for the moment of validation.
+
+<Gotcha title="optimistic isn't free under contention">
+optimistic schemes trade waiting for retries. if ten workers keep updating the same hot row, nine of them fail validation every round and redo their work; a lock would have made them wait their turn and finish. measure the retry rate. above a few percent, a pessimistic lock (`SELECT ... FOR UPDATE`) or an atomic update (`SET balance = balance + 30`) is usually cheaper.
+</Gotcha>
+
+<Deep title="where postgres sits">
+postgres uses no textbook timestamp ordering and no pure OCC. writes take row locks held until commit (strict 2PL for writes). reads use snapshots, which is multiversioning: each transaction effectively reads "as of" its snapshot, like multiversion TO without the read timestamps. its SERIALIZABLE ([SSI](/learn/locking/ssi)) is optimistic in spirit: nothing waits for a read, conflicts are recorded as they happen, and a transaction is aborted with 40001 when a dangerous pattern appears, sometimes not until COMMIT, which is exactly where OCC would validate.
+</Deep>
+
+<Interview q="compare pessimistic and optimistic concurrency control.">
+pessimistic (2PL): take locks before accessing data, make conflicting transactions wait; costs lock management, blocking and deadlocks, but no wasted work, so it suits high contention. optimistic (OCC): run without locks on private copies, validate at commit that nothing read was changed by a transaction that committed in the meantime, abort and restart if so; no blocking or deadlocks, but conflicts waste whole transactions, so it suits low contention. timestamp ordering sits in between: no waiting, the serial order is fixed by start timestamps and out-of-order operations abort immediately rather than at commit. bonus point: in apps, OCC is usually a version column checked in the UPDATE's WHERE clause; UPDATE 0 is the failed validation.
+</Interview>
+
+<Keylines>
+- timestamp ordering: serial order = start order. RTS and WTS per item, late operations abort.
+- the Thomas write rule skips an obsolete write instead of aborting.
+- OCC: read on private copies, validate at the end, then write. first committer wins.
+- both trade waiting for aborts: great when conflicts are rare, bad when they're common.
+- a version column checked in UPDATE ... WHERE is OCC in your app. UPDATE 0 means retry.
+</Keylines>

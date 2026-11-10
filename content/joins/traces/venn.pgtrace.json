@@ -1,0 +1,148 @@
+{
+ "v": 1,
+ "scenario": "content/joins/traces/venn.scenario.sql",
+ "title": "the shop's products and order lines, counted every way a venn diagram draws them",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM products",
+   "note": "how many products.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["200"]]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM order_items",
+   "note": "how many order lines.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["24942"]]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM products AS p JOIN order_items AS oi ON oi.product_id = p.id",
+   "note": "INNER JOIN: one row per (product, order line) pair that matches. every line has a product.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["24942"]]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM products AS p LEFT JOIN order_items AS oi ON oi.product_id = p.id",
+   "note": "LEFT JOIN: every matching pair, plus each product that matched nothing (the teapot), padded with NULLs.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["24943"]]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM products AS p FULL JOIN order_items AS oi ON oi.product_id = p.id",
+   "note": "FULL JOIN: the same here. a foreign key means no order line is ever without its product.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["24943"]]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM (SELECT id FROM products INTERSECT SELECT product_id FROM order_items) AS x",
+   "note": "INTERSECT: the product ids that appear on both sides, once each. this is what the overlap actually draws.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["199"]]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM (SELECT id FROM products EXCEPT SELECT product_id FROM order_items) AS x",
+   "note": "EXCEPT: product ids with no order line at all. just one: the left-handed teapot.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["1"]]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM (SELECT id FROM products UNION SELECT product_id FROM order_items) AS x",
+   "note": "UNION: every product id from either side, once. order lines can't add a new one.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["200"]]}
+  }
+ ],
+ "db": "shop"
+}

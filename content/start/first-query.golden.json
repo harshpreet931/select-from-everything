@@ -1,0 +1,310 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "01e83ff2495c48be": {
+      "db": "shop",
+      "sql": "SELECT name, city\nFROM customers\nWHERE id = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "09c4ee8b535ce504",
+          "rows": [
+            ["Ada Lovelace", "London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0f202e9f77661b84": {
+      "db": "empty",
+      "sql": "SELECT 1;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "a701aa18abebcbaf",
+          "rows": [
+            ["1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8866d9fa1c624acd": {
+      "db": "empty",
+      "sql": "SELECT 'hello' AS greeting, 6 * 7 AS answer, upper('ada') AS shouting;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["greeting", "text", 25],
+            ["answer", "int4", 23],
+            ["shouting", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "96bd6c08d7c8e5c4",
+          "rows": [
+            ["hello", "42", "ADA"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5b5969252acc4383": {
+      "db": "shop",
+      "sql": "SELECT *\nFROM customers\nORDER BY id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["email", "text", 25],
+            ["city", "text", 25],
+            ["country", "bpchar", 1042],
+            ["created_at", "timestamptz", 1184]
+          ],
+          "rowCount": 5,
+          "digest": "b46827aa959f9577",
+          "rows": [
+            ["1", "Maya Chen", "maya.chen@example.com", "San Francisco", "US", "2024-01-01 09:12:00+00"],
+            ["2", "Grace Okafor", null, "Lagos", "NG", "2024-01-02 14:40:00+00"],
+            ["3", "Sam Lee", "sam.lee@example.com", "Toronto", "CA", "2024-01-03 08:05:00+00"],
+            ["4", "Zoë Martin", "Zoe.Martin@Example.com", "Paris", "FR", "2024-01-03 19:30:00+00"],
+            ["5", "Zoe Martin", "zoe.martin@example.com", "Lyon", "FR", "2024-01-04 11:11:00+00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c68d26c5aa5fb66b": {
+      "db": "shop",
+      "sql": "SELECT id, name, email, city\nFROM customers\nWHERE id IN (2, 10, 11, 42)\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["email", "text", 25],
+            ["city", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "5295cacc5e4b7b78",
+          "rows": [
+            ["2", "Grace Okafor", null, "Lagos"],
+            ["10", "Null", "null@example.com", "Berlin"],
+            ["11", "Ana Lima", null, ""],
+            ["42", "Ada Lovelace", "ada@example.com", "London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "15212e8600260dd0": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS customers FROM customers;\nSELECT count(*) AS orders FROM orders;\nSELECT name FROM products WHERE id = 200;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customers", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "f2d3d983a0e6f929",
+          "rows": [
+            ["2000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["orders", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "780d8c33238d14ef",
+          "rows": [
+            ["10000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "04665e0bc5f25724",
+          "rows": [
+            ["left-handed teapot"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c64e194bc7237819": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT name, city FROM customers WHERE id = 42;\nEXPLAIN SELECT name, city FROM customers WHERE city = 'London';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "6cd10b15dcdacda8",
+          "rows": [
+            ["Index Scan using customers_pkey on customers  (cost=0.28..8.29 rows=1 width=19)"],
+            ["  Index Cond: (id = 42)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d3bb69124327ac24",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..49.00 rows=159 width=19)"],
+            ["  Filter: (city = 'London'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2b271baaacb1cc67": {
+      "db": "shop",
+      "sql": "select NAME from CUSTOMERS where ID = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "7005fd1e1427f8d0",
+          "rows": [
+            ["Ada Lovelace"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5a1847b973f941d2": {
+      "db": "shop",
+      "sql": "SELECT name FROM \"Customers\";",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P01",
+            "message": "relation \"Customers\" does not exist",
+            "position": 18
+          },
+          "digest": "eb828179d52c4575"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P01",
+        "message": "relation \"Customers\" does not exist",
+        "position": 18,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "95fea9f60f05a0b5": {
+      "db": "shop",
+      "sql": "SELECT id, name FROM customers WHERE name = \"Null\";",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42703",
+            "message": "column \"Null\" does not exist",
+            "position": 45
+          },
+          "digest": "1e6853b680ae1c04"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42703",
+        "message": "column \"Null\" does not exist",
+        "position": 45,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "df2ae47bca918d78": {
+      "db": "shop",
+      "sql": "SELECT id, name FROM customers WHERE name = 'Null';\nSELECT id, name FROM customers WHERE name = 'Sean O''Neil';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "333bd790b7982f73",
+          "rows": [
+            ["10", "Null"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "3ecec594bd660e79",
+          "rows": [
+            ["8", "Sean O'Neil"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,227 @@
+import { PageSteps } from "@/components/figures/mvcc/PageSteps";
+import { WhoSeesWhich } from "@/components/figures/mvcc/WhoSeesWhich";
+import labUpdate from "./traces/lab-update.pgtrace.json";
+import updateTwice from "./traces/update-twice.pgtrace.json";
+
+<InShort>
+postgres never changes a row in place. an **UPDATE** writes a whole **new version** of the row and stamps the old one with its transaction id in **xmax**. the old version stays right where it was until **VACUUM** clears it away.
+
+that's MVCC, postgres style. the rest is watching it happen.
+</InShort>
+
+## the picture
+
+you know how an UPDATE feels like editing a cell in a spreadsheet? find the row, change the number, done. postgres doesn't do that. not for any row, not ever.
+
+think of a bank ledger written in pen. you never erase a line. to change alice's balance you strike her line through (the **xmax** stamp) and write a fresh line wherever there's room (a new **tuple**, at a new address). anyone halfway through reading the old line can keep reading it. the struck lines get cleared out later, by someone else (that's VACUUM).
+
+here's the real thing on bank, where alice is account 1. three system columns tell the story: `ctid` is a version's address (page, slot), `xmin` is the transaction that wrote it, `xmax` the one that replaced it (0 means nobody yet).
+
+```sql run db=bank session=ledger ext=pageinspect
+SELECT ctid, xmin, xmax, owner, balance FROM accounts WHERE id = 1;
+UPDATE accounts SET balance = balance + 10 WHERE id = 1
+RETURNING ctid, xmin, xmax, owner, balance;
+```
+
+same alice, different everything else. the ctid went from (0,1) to (9,46), a different page. and xmin went from 752 to 797, because a different transaction wrote this tuple. it isn't the old row with a new number. it's a new row. (xids are just a counter. on a server that has done other work you'd see bigger numbers, but the addresses and sizes in this chapter come out the same.)
+
+so where's the old one? a SELECT can't show it (it only returns versions your snapshot can see), but the page still has it. [pageinspect](/learn/storage/the-page) reads raw pages, every slot, visible or not:
+
+```sql run session=ledger
+SELECT lp, lp_len, t_xmin, t_xmax, t_ctid
+FROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 1;
+SELECT lp, lp_len, t_xmin, t_xmax, t_ctid
+FROM heap_page_items(get_raw_page('accounts', 9)) WHERE lp = 46;
+```
+
+there's the struck line. page 0, slot 1 is still alice's old tuple, data untouched, but its header now says `t_xmax` 797 and its `t_ctid` points at (9,46), the version that replaced it. the new tuple's t_ctid points at itself: nothing has replaced it yet.
+
+and why page 9? the new version goes wherever there's room. ask every page of the table how much it has left:
+
+```sql run session=ledger
+SELECT blkno AS page, upper - lower AS free_bytes
+FROM generate_series(0, 9) AS blkno,
+     page_header(get_raw_page('accounts', blkno))
+ORDER BY blkno;
+```
+
+bank's rows went in all at once, so pages 0 to 8 are packed: 16 to 56 bytes free each, and alice's tuple is 64 bytes. only the last page had room. a ledger written in pen, new lines at the end.
+
+## two versions, one page
+
+bank's page 0 was full. usually there's room on the same page, and then both versions sit side by side. the lab database has a three-row `accounts` table on one mostly empty page:
+
+```sql run db=lab
+UPDATE accounts SET balance = balance + 10 WHERE id = 1;
+SELECT lp, lp_off, lp_len, t_xmin, t_xmax, t_ctid
+FROM heap_page_items(get_raw_page('accounts', 0))
+ORDER BY lp;
+```
+
+four tuples for three rows. slot 4 is the new alice, written by 753. slot 1 is the old alice, stamped with xmax 753, and its t_ctid points at slot 4. the page fills from both ends: line pointers from the front (one per slot, 4 bytes each), tuples from the back (`lp_off` going down from 8152 to 8032).
+
+<Figure wide caption={<>switch between before and after. what changed is <C k="hot">hot</C>: a new slot, and slot 1's header. the card on the right is that header, with a <C k="ref">t_ctid</C> that now points at the next version.</>}>
+<PageSteps trace={labUpdate} rel="accounts" labels={["before", "after the UPDATE"]} focus={1} />
+</Figure>
+
+notice what didn't change in slot 1: its 39 bytes of data. an UPDATE only touches the old tuple's header (`t_xmax`, `t_ctid`, a few flag bits). and notice the new tuple is a full copy of the row, all 39 bytes, even though only `balance` changed. there's no "patch" format. every version is a whole row.
+
+## who sees which
+
+two versions of one row is the whole trick. it means a reader never waits for a writer: it reads whichever version was current for it. "current for it" comes from the reader's **snapshot**: a note of which transactions had committed when it was taken, and which hadn't. READ COMMITTED takes a fresh one for every statement, REPEATABLE READ takes one at the transaction's first statement and keeps it ([snapshots](/learn/mvcc/snapshots) has the details).
+
+the browser engine runs one session at a time, so it can't show two transactions overlapping. this one is captured from a real postgres 18.6 server with two sessions. T2 opens a REPEATABLE READ transaction and reads alice. then T1 adds 10, twice, and commits.
+
+<Predict question="T2 reads alice's balance again, in the same transaction, after T1 has committed. what does it get?" options={["100.00", "110.00", "120.00", "an error: the row changed"]} answer={0}>
+```sql
+/* T2 */ BEGIN ISOLATION LEVEL REPEATABLE READ;
+/* T2 */ SELECT balance FROM accounts WHERE id = 1;   -- 100.00
+/* T1 */ BEGIN;
+/* T1 */ UPDATE accounts SET balance = balance + 10 WHERE id = 1;
+/* T1 */ UPDATE accounts SET balance = balance + 10 WHERE id = 1;
+/* T1 */ COMMIT;
+/* T2 */ SELECT balance FROM accounts WHERE id = 1;   -- ?
+```
+<Explain>
+100.00. T2's snapshot was taken at its first SELECT, before T1 even had a transaction id. T1's xid (759) is at or past the snapshot's upper bound, so for T2 that transaction is in the future, committed or not: both of its versions are invisible, and the stamp it put on the old version doesn't count either. the old version is still on the page, so T2 reads it. no error, because T2 only reads. if it tried to update alice it would get a [serialization failure](/learn/transactions/lost-updates) instead.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>step through, and switch who is looking. <C k="live">green</C> is the version that reader sees, and the line under the chain says which rule decided it. versions no snapshot can see anymore turn into <C k="dead">dead</C> ghosts.</>}>
+<WhoSeesWhich trace={updateTwice} rel="accounts" select="id=1" who="T2" field="balance" />
+</Figure>
+
+see? nobody waited. T2 kept reading 100.00 while T1 wrote two new versions and committed, because the old version never moved and never changed. from step 9 on, with T2 gone, the two old versions are dead to every snapshot, and the VACUUM in the last step removes them.
+
+## the price
+
+nothing is ever overwritten, so the old versions pile up until something removes them. a DELETE is the same stamp without the new version: it sets xmax and leaves the tuple where it is.
+
+<Predict question="notes has 400 rows. you delete all of them. how big is the table's file afterwards?" options={["0 bytes", "exactly as big as before", "about half"]} answer={1}>
+```sql
+SELECT pg_relation_size('notes');  -- 40960
+DELETE FROM notes;
+SELECT pg_relation_size('notes');  -- ?
+```
+<Explain>
+the same 40,960 bytes. DELETE stamps xmax on all 400 tuples and frees nothing: every one of them stays on its page, dead, until VACUUM.
+</Explain>
+</Predict>
+
+```sql run db=lab
+SELECT pg_relation_size('notes') AS bytes;
+DELETE FROM notes;
+SELECT pg_relation_size('notes') AS bytes;
+SELECT count(*) AS tuples, count(*) FILTER (WHERE t_xmax <> 0) AS stamped
+FROM heap_page_items(get_raw_page('notes', 0));
+VACUUM notes;
+SELECT pg_relation_size('notes') AS bytes;
+```
+
+every tuple on page 0 is still there after the DELETE, each one stamped. then VACUUM did shrink the file, but only because every page ended up empty. it can cut empty pages off the end of the file, and that's it. keep one row on the last page and the file doesn't shrink at all:
+
+```sql run db=lab
+DELETE FROM notes WHERE id < 400;
+VACUUM notes;
+SELECT pg_relation_size('notes') AS bytes, count(*) AS rows_left FROM notes;
+```
+
+the space inside is free for new rows now, it just isn't given back. more in [VACUUM](/learn/mvcc/vacuum). one thing that's different here: the lab engine has no autovacuum, so no VACUUM runs unless you type it. a real server runs [autovacuum](/learn/mvcc/autovacuum) in the background and gets there on its own, eventually.
+
+<Gotcha title="SET balance = balance still writes a row">
+an UPDATE that changes nothing still writes a new version. postgres doesn't compare old and new values for you. postgres 18 can return both sides of an update <Since v={18} />, which makes it easy to see:
+
+```sql run db=lab session=noop
+UPDATE accounts SET balance = balance WHERE id = 2
+RETURNING old.ctid AS old_ctid, new.ctid AS new_ctid,
+          old.balance AS old_balance, new.balance AS new_balance;
+EXPLAIN (ANALYZE, WAL, BUFFERS OFF, COSTS OFF,
+         TIMING OFF, SUMMARY OFF)
+UPDATE accounts SET balance = balance WHERE id = 2;
+```
+
+same balance, new tuple. and EXPLAIN ANALYZE really runs the statement, so that's a third version of bob, at (0,5), with a 68-byte WAL record of its own. two dead versions for VACUUM, zero changed values. an app that saves every column of a form back, changed or not, does this all day. postgres ships a trigger function for exactly this, `suppress_redundant_updates_trigger()`:
+
+```sql run session=noop
+CREATE TRIGGER skip_no_op_updates
+  BEFORE UPDATE ON accounts
+  FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger();
+UPDATE accounts SET balance = balance WHERE id = 2;
+SELECT ctid, xmin, xmax, balance FROM accounts WHERE id = 2;
+```
+
+`UPDATE 0`, and bob stays at (0,5). the xmax 756 that shows up isn't a delete. it's that UPDATE's own xid: it locked the row before the trigger said no, and a row lock is stored in xmax too. see [how row locks are stored](/learn/locking/row-lock-internals).
+</Gotcha>
+
+## why not just overwrite?
+
+InnoDB and oracle do overwrite. the row is changed in place, and the old values go into an **undo log** off to the side. a reader that needs the old version rebuilds it from the undo, by rolling the change back in its own copy ([mysql 8.4 manual](https://dev.mysql.com/doc/refman/8.4/en/innodb-multi-versioning.html), [oracle concepts](https://docs.oracle.com/en/database/oracle/oracle-database/23/cncpt/data-concurrency-and-consistency.html)). postgres keeps every version in the table itself. both designs let readers skip waiting for writers. they pay in different places:
+
+| | postgres | undo log (InnoDB, oracle) |
+| --- | --- | --- |
+| old versions live | in the table, next to the new one | in the undo log |
+| an UPDATE writes | a whole new tuple, plus index entries if it can't stay HOT | the changed values in place, plus an undo record |
+| ROLLBACK | marks the xid aborted. the table isn't touched | applies the undo to put the row back |
+| cleanup | VACUUM, later | purge (InnoDB) or undo reuse, later |
+| when cleanup falls behind | bloat: dead tuples in tables and indexes | the undo grows, or a long query gets "snapshot too old" (oracle) |
+
+that ROLLBACK row is real. watch one in the lab:
+
+```sql run db=lab
+BEGIN;
+UPDATE accounts SET balance = 0 WHERE id = 3;
+ROLLBACK;
+SELECT lp, t_xmin, t_xmax, t_ctid, pg_xact_status(t_xmin::text::xid8) AS xmin_status
+FROM heap_page_items(get_raw_page('accounts', 0))
+ORDER BY lp;
+```
+
+the rolled-back version is still sitting in slot 4, and carol's tuple still has the aborted xid in xmax. nothing was undone. the commit log says that xid aborted, so every reader ignores both, and VACUUM takes slot 4 away later. rollback is instant, cleanup is someone else's job. the other side of this design, and how it compares, is in [MVCC with undo logs](/learn/mvcc/undo-logs).
+
+<Deep title="a t_ctid that points at itself, HOT, and pruning">
+the newest version of a row has its own address in `t_ctid`. that's how you know you're at the end of the chain: follow t_ctid until it points at itself. (the flags say the same thing: `HEAP_XMAX_INVALID`, nobody replaced it.)
+
+the two updates you ran were different, though. in the lab the new alice stayed on page 0, and the tuple card shows `HOT_UPDATED` on the old one and `ONLY_TUPLE` on the new one. that's a **HOT** update (heap-only tuple): the new version is on the same page and no indexed column changed, so the index isn't touched. it still points at slot 1, and anyone who arrives there follows t_ctid to slot 4.
+
+on bank the new version went to another page, so it can't be HOT, and the primary key got a second entry for key 1 (`01 00 00 00 00 00 00 00` is the int 1, as the index stores it):
+
+```sql run session=ledger
+SELECT itemoffset, ctid, dead
+FROM bt_page_items('accounts_pkey', 1)
+WHERE data = '01 00 00 00 00 00 00 00'
+ORDER BY itemoffset;
+```
+
+one more entry per index, per update. that's the cost HOT avoids.
+
+and old versions don't always wait for VACUUM. in the browser nobody else is ever looking, so the moment that UPDATE committed, alice's old version was dead to everyone. read her once more, then look at slot 1:
+
+```sql run session=ledger
+SELECT ctid, balance FROM accounts WHERE id = 1;
+SELECT lp, lp_flags, t_xmin, t_xmax, t_ctid
+FROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 1;
+SELECT upper - lower AS free_bytes FROM page_header(get_raw_page('accounts', 0));
+```
+
+gone. page 0 was nearly full, so the read **pruned** it on the way through: the 64 bytes are free again (page 0 had 44 free a moment ago), and slot 1 is left as a dead line pointer (`lp_flags` 3), kept only until VACUUM clears the index entry that still points there. on a busy server the same read would leave it alone for as long as any snapshot might still need it.
+
+a HOT chain whose row is still alive can't do that to its first slot, because the index entry has to keep leading to the live version. so that slot becomes a **redirect** instead. here's the page from the two-session figure, after its VACUUM:
+
+<Figure caption={<>after VACUUM: slot 1 is a <C k="ref">redirect</C> to slot 4, slot 3 is free again, and the index entry for (0,1) still works.</>}>
+<PageView page={updateTwice.steps[10].heap.accounts[0]} xact={updateTwice.steps[10].xact} layout="auto" focus={1} provenance="real postgres 18.6 output · a native server · traces/update-twice, after the VACUUM" />
+</Figure>
+
+all of that is [HOT updates and pruning](/learn/mvcc/hot-updates).
+</Deep>
+
+<Interview q="why does postgres need VACUUM?">
+because an UPDATE or DELETE never removes anything. every update leaves the old version behind, stamped with xmax, and every rollback leaves the versions it wrote. once no snapshot can see a version anymore, something has to find it, free its space for reuse, and remove the index entries pointing at it. that's VACUUM (usually autovacuum). skip it and tables and indexes bloat, and every scan wades through dead tuples. VACUUM also updates the visibility map, which index-only scans depend on. bonus point: transaction ids are 32 bits, so they wrap around after about 4 billion. postgres compares them in a circle, two billion behind and two billion ahead, so a version written long enough ago would suddenly look like it's from the future. VACUUM **freezes** old tuples (marks them as older than everything) so that never happens, and if it falls too far behind, postgres stops handing out xids rather than let it happen. see [freezing and wraparound](/learn/mvcc/freezing-and-wraparound).
+</Interview>
+
+<Keylines>
+- an UPDATE writes a new version of the whole row. the old one gets xmax and a t_ctid pointing at the new one.
+- a DELETE is just the stamp. nothing is removed, the file doesn't shrink.
+- every reader picks the version its snapshot allows, so readers never wait for writers.
+- the price is dead tuples, and VACUUM is what pays it.
+- `SET x = x` still writes a row. `suppress_redundant_updates_trigger()` stops that.
+</Keylines>

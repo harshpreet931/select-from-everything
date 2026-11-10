@@ -1,0 +1,123 @@
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import { DangerousStructure } from "@/components/figures/locking/DangerousStructure";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import { errorText, errorsIn } from "@/components/figures/locking/lanes";
+import siread from "./traces/ssi-siread.pgtrace.json";
+import fp from "./traces/ssi-false-positive.pgtrace.json";
+import deferrable from "./traces/ssi-deferrable.pgtrace.json";
+
+{/* every two-session figure is captured on a real postgres 18.6 server
+    (traces/ssi-*.scenario.sql). the lock list beside the lanes is pg_locks filtered to
+    mode = SIReadLock. */}
+
+export const serErr = errorsIn(siread).find((e) => e.sqlstate === "40001");
+
+<InShort>
+postgres's SERIALIZABLE is **serializable snapshot isolation** (SSI): snapshot isolation, plus bookkeeping that catches the cases where snapshot isolation goes wrong. every read leaves an **SIRead lock** (a note that blocks nobody), every write checks those notes, and a hit records an **rw-antidependency**. two of those in a row through one transaction, the **dangerous structure**, and somebody gets 40001.
+</InShort>
+
+## the picture
+
+you know [write skew](/learn/transactions/write-skew): two doctors each see two on call, each goes off, nobody's left. snapshot isolation lets it happen because each one wrote a row the other only *read*. no write-write conflict, nothing to block on.
+
+the fix doesn't take locks that block. it takes notes. think of a shared document where readers leave pencil ticks next to the paragraphs they read. a writer who changes a ticked paragraph doesn't wait; they just jot down "I changed something X read". if the jottings ever form the wrong shape, someone is told to start over.
+
+here are the doctors again, at SERIALIZABLE, on a real server, with the notes showing:
+
+<Figure wide caption={<>step through. each count is a seq scan, so its note is an <C k="meta">SIRead</C> lock on the whole doctors relation. the UPDATEs don't wait for anything. T1's note outlives its COMMIT, because T2 overlapped it and is still running. T2's COMMIT fails with <C k="dead">40001</C>.</>}>
+<LockLanes trace={siread} locks={{ modes: ["SIReadLock"] }} sideTitle="SIRead locks (pg_locks)" />
+</Figure>
+
+## SIRead locks
+
+they live in pg_locks with mode `SIReadLock`, and they come in three sizes: a **tuple** (a row read through an index), a **page** (an index page that was searched, or a heap page once enough of its tuples are noted), and a **relation** (a seq scan read everything, so every row counts). you can watch them in the browser too; one session can't conflict with itself, but it still takes notes:
+
+```sql run db=bank
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT balance FROM accounts WHERE id = 1;
+SELECT owner FROM accounts WHERE id = 2;
+SELECT locktype, relation::regclass, page, tuple
+FROM pg_locks WHERE mode = 'SIReadLock'
+ORDER BY locktype, relation::regclass::text, page, tuple;
+SELECT count(*) FROM accounts WHERE balance > 1000;
+SELECT locktype, relation::regclass, page, tuple
+FROM pg_locks WHERE mode = 'SIReadLock'
+ORDER BY locktype, relation::regclass::text, page, tuple;
+COMMIT;
+```
+
+two index lookups: a note on each of the two tuples, and one on the index page both searches went through. then one seq scan, and the two tuple notes on accounts are replaced by a single relation-wide one: it covers every row, so they're redundant. (the note on accounts_pkey stays. it's a different relation.) there's a budget too (`max_pred_locks_per_transaction` and friends): past it, postgres promotes many small notes into fewer big ones. bigger notes cost less memory and catch more false conflicts.
+
+an SIRead lock never blocks anyone, and it isn't released at COMMIT. it has to last until every transaction that overlapped the reader has finished, because a later write by one of them can still create an edge to the reader.
+
+## rw-antidependencies and the dangerous structure
+
+when a serializable transaction writes a row (or index entry) covered by another transaction's note, postgres records an **rw-antidependency**, reader → writer: the reader saw a version the writer replaced, so in any serial order the reader must come first. on its own, that's harmless: run the reader first, done.
+
+the trouble is a transaction with an edge in *and* an edge out:
+
+<Figure caption={<>the dangerous structure. <C k="hot">T_pivot</C> must come after T_in and before T_out. if T_out committed first, that can be a cycle: in write skew, T_in and T_out are the same transaction.</>}>
+<DangerousStructure />
+</Figure>
+
+Cahill, Röhm and Fekete showed (in "Serializable Isolation for Snapshot Databases", SIGMOD 2008) that every non-serializable execution under snapshot isolation contains this pattern: two consecutive rw-antidependencies between concurrent transactions, with T_out committing first. so you don't have to search the whole dependency graph for cycles (expensive), only for the pattern (cheap). Ports and Grittner describe how postgres 9.1 implemented it, with read-only optimizations and the SIRead lock manager, in "Serializable Snapshot Isolation in PostgreSQL" (VLDB 2012).
+
+in the doctors run, T1 and T2 are both T_in and T_out: T2 → T1 (T2 read asha, T1 changed her), T1 → T2 (T1 read ben, T2 changed him). T2 is a pivot, T1 committed first, so T2 gets it at its commit:
+
+<Figure caption={<>T2's COMMIT, as the server answered it. "pivot, during commit attempt": the dangerous structure was complete, and the other side had already committed.</>}>
+<SqlPanel code={errorText(serErr)} lang="text" nolines file="T2: COMMIT" />
+<Provenance trace={prov(siread)} />
+</Figure>
+
+<Predict question="T1 reads row 1 and writes row 1. T2 reads row 2 and writes row 2. both SERIALIZABLE, table with no index. does anyone get 40001?" options={["no: different rows", "yes, one of them", "only if a row is shared"]} answer={1}>
+```sql
+/* T1 */ BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT v FROM plain WHERE id = 1;
+/* T2 */ BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT v FROM plain WHERE id = 2;
+/* T1 */ UPDATE plain SET v = v + 1 WHERE id = 1;
+/* T2 */ UPDATE plain SET v = v + 1 WHERE id = 2;
+/* T1 */ COMMIT;
+/* T2 */ COMMIT;  -- ?
+```
+<Explain>
+yes: T2's commit fails. with no index, each read is a seq scan, so each note covers the whole table. T1's write lands under T2's note and T2's under T1's: two edges, a dangerous structure, though no serial order is actually violated. that's a false positive, and it's the first round of the capture below.
+</Explain>
+</Predict>
+
+## false positives
+
+SSI is conservative. the pattern is necessary for an anomaly, not sufficient, and the notes are coarser than your rows. here are three rounds of "two transactions, two different rows":
+
+<Figure wide caption={<>switch the table. with no index, relation-wide notes overlap and T2 <C k="dead">fails</C> for nothing. with a primary key (and room on the page), the notes are one tuple each plus a shared index page that nobody writes to: both commit. on a packed table, each update moves the row and adds an index entry to the leaf page both of them noted, so T2 fails again.</>}>
+<LockLanes trace={fp} option="table" byRound={["no index", "primary key", "primary key, full pages"]} locks={{ modes: ["SIReadLock"] }} sideTitle="SIRead locks (pg_locks)" />
+</Figure>
+
+notice one more detail in the middle round: after T1 updates row 1, its own tuple note on row 1 is gone. a transaction that writes a row it read doesn't need the read note any more: its write lock covers it.
+
+what you can do about false positives: index the columns your serializable transactions search by (smaller notes), keep transactions short (notes die sooner), declare read-only transactions `READ ONLY`, and retry 40001 everywhere, because some will happen anyway ([retrying serialization failures](/learn/transactions/retry-loops)).
+
+## READ ONLY DEFERRABLE
+
+a long read-only report at SERIALIZABLE takes notes on everything it reads and can still be a pivot. the escape hatch: `SERIALIZABLE, READ ONLY, DEFERRABLE`. the first query waits until it can run on a snapshot that's provably safe, and from then on the transaction takes no notes and can never fail with 40001:
+
+<Figure wide caption={<>step through. T2's first query <C k="mute">waits</C>, with no heavyweight lock involved (pg_locks has nothing for it), until T1, a read-write serializable transaction, commits. then it runs with no SIRead locks at all. it sees the data from before T1's change: the snapshot it took when it asked turned out safe.</>}>
+<LockLanes trace={deferrable} locks={{ modes: ["SIReadLock"] }} sideTitle="SIRead locks (pg_locks)" />
+</Figure>
+
+the wait can be long on a busy server, so it's for reports and backups (`pg_dump --serializable-deferrable` uses it), not for requests.
+
+<Gotcha title="only serializable transactions are watched">
+the notes and the checks run only between SERIALIZABLE transactions. a READ COMMITTED transaction writing to the same rows is invisible to SSI, so the guarantee only holds if every transaction that touches the data runs at SERIALIZABLE. set it with `default_transaction_isolation`, not per call site.
+</Gotcha>
+
+<Interview q="how does postgres implement SERIALIZABLE without blocking readers?">
+serializable snapshot isolation (Cahill et al.; the postgres version is Ports and Grittner). each transaction runs on a snapshot, as in repeatable read. additionally, reads take SIRead locks (tuple, page or relation granularity) which block nothing and outlive the commit until all overlapping transactions finish. a write that hits another transaction's SIRead lock records an rw-antidependency (reader → writer). if a transaction ends up with an rw edge in and an rw edge out (a pivot) and the outgoing one's target committed first, one transaction is aborted with 40001. it can report false positives (coarse locks, the pattern being necessary but not sufficient), so apps must retry. bonus point: READ ONLY DEFERRABLE waits for a safe snapshot and then runs without tracking and can't fail.
+</Interview>
+
+<Keylines>
+- SSI = snapshot isolation + notes on reads + a check on writes.
+- SIRead locks block nobody, come in tuple, page and relation sizes, and outlive COMMIT.
+- a write over someone's note is an rw-antidependency: the reader must go first.
+- two in a row through one pivot, with the far end committed first: 40001.
+- false positives happen. index what you search, keep transactions short, retry.
+</Keylines>

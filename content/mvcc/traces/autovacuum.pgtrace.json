@@ -1,0 +1,127 @@
+{
+ "v": 1,
+ "scenario": "content/mvcc/traces/autovacuum.scenario.sql",
+ "title": "autovacuum switched on with a one-second nap: 300 dead rows in a 1,000-row table, and the worker that comes for them",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "on",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on",
+  "autovacuum_naptime": "1s",
+  "autovacuum_vacuum_threshold": "2000000000",
+  "autovacuum_analyze_threshold": "2000000000",
+  "autovacuum_vacuum_insert_threshold": "-1",
+  "log_autovacuum_min_duration": "-1"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "t": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"n","type":"int4"}]},
+  "t_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t"}
+ },
+ "base": {"xid":760,"lsn":23354984},
+ "setup": "-- server-wide thresholds are raised out of reach so the catalogs are left alone and the run\n-- repeats exactly. t gets the default vacuum threshold back, and its worker's log line.\nCREATE TABLE t (id int PRIMARY KEY, n int NOT NULL)\n  WITH (autovacuum_vacuum_threshold = 50, autovacuum_vacuum_scale_factor = 0.2,\n        log_autovacuum_min_duration = 0);\nINSERT INTO t SELECT g, 0 FROM generate_series(1, 1000) AS g ORDER BY g;\nVACUUM (ANALYZE) t;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT backend_type, count(*) FROM pg_stat_activity GROUP BY backend_type ORDER BY backend_type",
+   "note": "the processes of a real server. one of them is the autovacuum launcher, which wakes every autovacuum_naptime and decides which tables need a worker.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"backend_type","type":"text"},{"name":"count","type":"int8"}],
+    "data": [
+     ["autovacuum launcher","1"],
+     ["background writer","1"],
+     ["checkpointer","1"],
+     ["client backend","2"],
+     ["io worker","3"],
+     ["logical replication launcher","1"],
+     ["walwriter","1"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT reltuples, 50 + 0.2 * reltuples AS threshold FROM pg_class WHERE relname = 't'",
+   "note": "a 1,000-row table, just vacuumed. its vacuum threshold is 50 + 0.2 × 1,000 = 250 dead rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"reltuples","type":"float4"},{"name":"threshold","type":"float8"}],
+    "data": [["1000","250"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "DELETE FROM t WHERE id <= 300;\nSELECT pg_stat_force_next_flush();\nSELECT n_dead_tup, autovacuum_count FROM pg_stat_user_tables WHERE relname = 't'",
+   "note": "delete 300 rows: 50 past the threshold. the statistics system counts them as dead.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"n_dead_tup","type":"int8"},{"name":"autovacuum_count","type":"int8"}],
+    "data": [["300","0"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT pg_sleep(3)",
+   "note": "wait three seconds. the launcher wakes every second, finds t over its threshold, and starts a worker, which logs what it did.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_sleep","type":"void"}],"data":[[""]]},
+   "log": [
+    "LOG:  automatic vacuum of table \"postgres.public.t\": index scans: 1",
+    "\tpages: 0 removed, 5 remain, 5 scanned (100.00% of total), 0 eagerly scanned",
+    "\ttuples: 300 removed, 700 remain, 0 are dead but not yet removable",
+    "\tremovable cutoff: 761, which was 0 XIDs old when operation ended",
+    "\tfrozen: 0 pages from table (0.00% of total) had 0 tuples frozen",
+    "\tvisibility map: 2 pages set all-visible, 1 pages set all-frozen (0 were all-visible)",
+    "\tindex scan needed: 2 pages from table (40.00% of total) had 300 dead item identifiers removed",
+    "\tindex \"t_pkey\": pages: 5 in total, 0 newly deleted, 0 currently deleted, 0 reusable",
+    "\tavg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s",
+    "\tbuffer usage: 75 hits, 0 reads, 0 dirtied",
+    "\tWAL usage: 9 records, 0 full page images, 2828 bytes, 0 buffers full",
+    "\tsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: <t> s"
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT pg_stat_force_next_flush();\nSELECT n_dead_tup, autovacuum_count FROM pg_stat_user_tables WHERE relname = 't'",
+   "note": "the counters after: no dead rows left, and one automatic vacuum.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"n_dead_tup","type":"int8"},{"name":"autovacuum_count","type":"int8"}],
+    "data": [["0","1"]]
+   }
+  }
+ ]
+}

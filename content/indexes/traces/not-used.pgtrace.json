@@ -1,0 +1,501 @@
+{
+ "v": 1,
+ "scenario": "content/indexes/traces/not-used.scenario.sql",
+ "title": "seven reasons an index isn't used, each with a fix",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "orders_customer": {"kind":"index","am":"btree","columns":[{"name":"customer_id","type":"int4"}],"on":"orders"},
+  "orders_status": {"kind":"index","am":"btree","columns":[{"name":"status","type":"text"}],"on":"orders"},
+  "customers_name": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"customers"},
+  "jobs": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"state","type":"text"}]},
+  "jobs_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"jobs"},
+  "jobs_state": {"kind":"index","am":"btree","columns":[{"name":"state","type":"text"}],"on":"jobs"}
+ },
+ "base": {"xid":801,"lsn":33760192},
+ "setup": "CREATE INDEX orders_customer ON orders (customer_id);\nCREATE INDEX orders_status ON orders (status);\nCREATE INDEX customers_name ON customers (name);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT id FROM customers WHERE lower(name) = 'ada lovelace'",
+   "note": "a function wrapped around the column: the index has name, not lower(name).",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "customers",
+     "Alias": "customers",
+     "Startup Cost": 0,
+     "Total Cost": 54,
+     "Plan Rows": 10,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Filter": "(lower(name) = 'ada lovelace'::text)"
+    }
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id FROM customers WHERE name = 'Ada Lovelace'",
+   "note": "compare the column itself and the index works.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "customers",
+     "Alias": "customers",
+     "Startup Cost": 4.29,
+     "Total Cost": 10.59,
+     "Plan Rows": 2,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Recheck Cond": "(name = 'Ada Lovelace'::text)",
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "customers_name",
+       "Startup Cost": 0,
+       "Total Cost": 4.29,
+       "Plan Rows": 2,
+       "Plan Width": 0,
+       "Disabled": false,
+       "Index Cond": "(name = 'Ada Lovelace'::text)"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE customer_id = 42.0",
+   "note": "42.0 is numeric, customer_id is int: postgres casts the column, and the int index no longer applies.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 0,
+     "Total Cost": 233,
+     "Plan Rows": 50,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Filter": "((customer_id)::numeric = 42.0)"
+    }
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE customer_id = 42",
+   "note": "the same value as an int literal (or a quoted '42', which takes the column's type).",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 4.32,
+     "Total Cost": 20.7,
+     "Plan Rows": 5,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Recheck Cond": "(customer_id = 42)",
+     "Plans": [
+      {
+       "Node Type": "Bitmap Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Index Name": "orders_customer",
+       "Startup Cost": 0,
+       "Total Cost": 4.32,
+       "Plan Rows": 5,
+       "Plan Width": 0,
+       "Disabled": false,
+       "Index Cond": "(customer_id = 42)"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT id FROM customers WHERE name LIKE '%Lovelace'",
+   "note": "a leading wildcard: the match could start anywhere, so sorted order doesn't help.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "customers",
+     "Alias": "customers",
+     "Startup Cost": 0,
+     "Total Cost": 49,
+     "Plan Rows": 1,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Filter": "(name ~~ '%Lovelace'::text)"
+    }
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT id FROM customers WHERE name LIKE 'Ada%'",
+   "note": "a fixed prefix is a range in sorted order: 'Ada' up to 'Adb'.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "customers_name",
+     "Relation Name": "customers",
+     "Alias": "customers",
+     "Startup Cost": 0.28,
+     "Total Cost": 8.3,
+     "Plan Rows": 1,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Index Cond": "((name >= 'Ada'::text) AND (name < 'Adb'::text))",
+     "Filter": "(name ~~ 'Ada%'::text)"
+    }
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE customer_id = 42 OR shipped_at IS NULL",
+   "note": "OR with a column that has no index: one side can't be answered from an index, so the table is read.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 0,
+     "Total Cost": 208,
+     "Plan Rows": 434,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Filter": "((customer_id = 42) OR (shipped_at IS NULL))"
+    }
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE customer_id = 42 OR status = 'placed'",
+   "note": "OR between two indexed columns: one bitmap per index, combined with BitmapOr.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Bitmap Heap Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 9.02,
+     "Total Cost": 88.23,
+     "Plan Rows": 56,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Recheck Cond": "((customer_id = 42) OR (status = 'placed'::text))",
+     "Plans": [
+      {
+       "Node Type": "BitmapOr",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 9.02,
+       "Total Cost": 9.02,
+       "Plan Rows": 56,
+       "Plan Width": 0,
+       "Disabled": false,
+       "Plans": [
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Member",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "orders_customer",
+         "Startup Cost": 0,
+         "Total Cost": 4.32,
+         "Plan Rows": 5,
+         "Plan Width": 0,
+         "Disabled": false,
+         "Index Cond": "(customer_id = 42)"
+        },
+        {
+         "Node Type": "Bitmap Index Scan",
+         "Parent Relationship": "Member",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Index Name": "orders_status",
+         "Startup Cost": 0,
+         "Total Cost": 4.67,
+         "Plan Rows": 51,
+         "Plan Width": 0,
+         "Disabled": false,
+         "Index Cond": "(status = 'placed'::text)"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE status = 'delivered'",
+   "note": "93% of the orders are delivered: reading the table is cheaper than the index.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 0,
+     "Total Cost": 208,
+     "Plan Rows": 9352,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Filter": "(status = 'delivered'::text)"
+    }
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT id FROM orders WHERE status = 'placed'",
+   "note": "0.5% are placed: the index wins.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "orders_status",
+     "Relation Name": "orders",
+     "Alias": "orders",
+     "Startup Cost": 0.29,
+     "Total Cost": 30.71,
+     "Plan Rows": 51,
+     "Plan Width": 4,
+     "Disabled": false,
+     "Index Cond": "(status = 'placed'::text)"
+    }
+   }
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "CREATE TABLE jobs (id int PRIMARY KEY, state text NOT NULL);\nINSERT INTO jobs SELECT g, CASE WHEN g <= 20 THEN 'done' ELSE 'new' END FROM generate_series(1, 10000) AS g ORDER BY g;\nCREATE INDEX jobs_state ON jobs (state);\nANALYZE jobs;\nUPDATE jobs SET state = 'done' WHERE id <= 9980",
+   "note": "a table loaded after its last ANALYZE: statistics say almost every row is 'new'.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":9980,"columns":[],"data":[]}
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT id FROM jobs WHERE state = 'done'",
+   "note": "stale statistics: they say 0.2% of jobs are done, so postgres expects a few dozen rows and walks the index. there are 9,980.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Index Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Scan Direction": "Forward",
+     "Index Name": "jobs_state",
+     "Relation Name": "jobs",
+     "Alias": "jobs",
+     "Startup Cost": 0.29,
+     "Total Cost": 9.06,
+     "Plan Rows": 44,
+     "Plan Width": 4,
+     "Actual Rows": 9980,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Index Cond": "(state = 'done'::text)",
+     "Rows Removed by Index Recheck": 0,
+     "Index Searches": 1,
+     "Shared Hit Blocks": 66,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 3,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "ANALYZE jobs",
+   "note": "ANALYZE.",
+   "status": "ok",
+   "result": {"command":"ANALYZE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "SELECT id FROM jobs WHERE state = 'done'",
+   "note": "fresh statistics: a seq scan, which is right for 99.8% of the table.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "jobs",
+     "Alias": "jobs",
+     "Startup Cost": 0,
+     "Total Cost": 224,
+     "Plan Rows": 9980,
+     "Plan Width": 4,
+     "Actual Rows": 9980,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Filter": "(state = 'done'::text)",
+     "Rows Removed by Filter": 20,
+     "Shared Hit Blocks": 99,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Planning": {
+     "Shared Hit Blocks": 24,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  }
+ ],
+ "db": "shop"
+}

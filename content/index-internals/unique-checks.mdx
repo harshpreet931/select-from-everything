@@ -1,0 +1,155 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { btreeFromPages } from "@/lib/db/fromTrace";
+import { prov } from "@/lib/db/captured";
+import race from "./traces/unique-wait.pgtrace.json";
+
+{/* the race and the final leaf are traces/unique-wait.scenario.sql: two sessions on a native
+    postgres 18.6 (the browser engine has one session, so it can't wait on anyone). the
+    single-session facts are the run blocks' golden. */}
+
+export const leaf = btreeFromPages(race.steps[5].btree.k_pkey);
+
+<InShort>
+a unique index checks for a duplicate **before** it adds the new entry: it finds every entry with the same key and asks the heap about each one's row. a committed, live row means **23505**. a dead or aborted one doesn't count. a row from a transaction that **hasn't finished yet** can't be judged, so the insert **waits for that transaction**, then checks again.
+</InShort>
+
+## the picture
+
+you know how a unique constraint is enforced by a [b-tree](/learn/index-internals/b-plus-trees) index? the index can find "is 5 already here?" in a few page reads. the hard part is what "already here" means in [MVCC](/learn/mvcc/update-is-insert): an index entry has no idea whether its row is committed, deleted, rolled back, or still being written. the entry is just a key and an address.
+
+think of booking a seat with a pencil. someone has written their name on seat 5 in pencil, and they're still on the phone deciding. you can't take the seat, and you can't tell them it's free either. so you wait by the desk. if they ink it in, you're out of luck (23505). if they rub it out, it's yours.
+
+here's that, twice, on a real server:
+
+<Figure wide caption={<>two sessions inserting the same key, twice. step through: T2's insert waits (dashed) on <C k="meta">T1's transaction id</C>, the ShareLock in the lock manager. when T1 commits, T2 gets <C k="dead">23505</C>. in round two T1 rolls back, and T2's insert goes through.</>}>
+<SessionLanes sessions={["T1", "T2"]} trace={race} side="locks" sideTitle="pg_locks" />
+</Figure>
+
+the wait is the important part. T2 doesn't wait on a page, a row lock, or the index: it waits on **T1's transaction id**. every transaction holds an exclusive lock on its own id until it ends, so "wait for this transaction to finish" is just a ShareLock request on that id ([watching locks with pg_locks](/learn/locking/pg-locks)). that's the one index wait that does show up in pg_locks; page latches never do ([b-trees under concurrency](/learn/index-internals/btree-concurrency)).
+
+<Predict question="T1 inserted 5 and hasn't committed. T2, in another session, inserts 5. what does T2 get?" options={["23505 right away", "it waits for T1", "it succeeds; T1 will fail at commit"]} answer={1}>
+```sql
+-- T1: BEGIN; INSERT INTO k VALUES (5);   -- not committed
+-- T2:
+INSERT INTO k VALUES (5);
+```
+<Explain>
+it waits. T1 might still roll back, and then 5 would be free, so T2 can't fail yet; T1 might commit, so it can't succeed yet either. it waits for T1's transaction to end and checks again. the first one to insert wins, and the check happens at insert time, not at commit.
+</Explain>
+</Predict>
+
+## what the check does
+
+for the key being inserted, postgres walks every entry with an equal key (they sit side by side in the leaf, sometimes spilling to the next page), and for each one fetches the heap version it points to:
+
+<Figure caption={<>what a unique check does with each equal key it finds, from <code>_bt_check_unique</code> in the postgres source. only a <C k="live">committed live row</C> is a conflict; anything uncommitted means <C k="hot">wait</C> and start over.</>}>
+<Tree>{`
+for each entry with the same key:
+    fetch its heap version
+    version is live and committed // 23505, duplicate key #dead
+    version was inserted or deleted by a transaction still running
+        wait for that transaction to end, then redo the whole check
+    version is dead (deleted and committed, or aborted)
+        skip it // and if it's dead to everyone, mark the entry LP_DEAD
+no conflict found // insert the new entry
+`}</Tree>
+<Provenance drawn="the control flow of _bt_check_unique in nbtinsert.c" />
+</Figure>
+
+the ordinary case, a committed duplicate, needs no second session:
+
+```sql run db=shop expect=error
+INSERT INTO customers (id, name, country, created_at)
+VALUES (42, 'Ada again', 'GB', '2026-01-01');
+```
+
+the DETAIL names the key. and the heap row was already written by then: postgres inserts the row first and the index entries after, so a failed insert leaves a dead heap tuple behind for VACUUM, like a rolled-back one.
+
+## dead and in-progress entries
+
+"same key" doesn't mean "duplicate". a deleted row's entry stays in the index until VACUUM, and the check has to step over it. in one transaction, delete 2 and insert it again:
+
+```sql run ext=pageinspect session=redo
+CREATE TABLE k (id int PRIMARY KEY);
+INSERT INTO k VALUES (1), (2), (3);
+BEGIN;
+DELETE FROM k WHERE id = 2;
+INSERT INTO k VALUES (2);
+COMMIT;
+SELECT itemoffset, ctid, dead, data
+FROM bt_page_items('k_pkey', 1)
+ORDER BY itemoffset;
+```
+
+two entries for 2 now: (0,2), the deleted version, and (0,4), the new one. the check found (0,2), saw it deleted by its own transaction, and let the insert through. an UPDATE that changes a key does the same thing in one statement.
+
+and here's the end of round two of the race, read off the real leaf: two entries for 7. the first points at T1's rolled-back row. T2's unique check found it, waited, saw it aborted, and on the way past it marked the entry dead (the `LP_DEAD` hint, struck through), so the next scan or split can remove it without visiting the heap.
+
+<Figure caption={<>k_pkey after the two rounds. key 5 has one entry: T2's failed row at (0,5) never got one. key 7 has two: T1's aborted row, marked <C k="dead">dead</C> by T2's check, and T2's.</>}>
+<BTree view={leaf} heap collapse={8} />
+<Provenance trace={prov(race)} />
+</Figure>
+
+that marking is why a unique index cleans itself as it goes, and why the primary key in [the churn experiment](/learn/index-internals/dedup-and-bottom-up-deletion) stayed smaller than the other indexes.
+
+## NULLs
+
+the standard says a NULL isn't equal to anything, so a unique column can hold any number of them. postgres 15 added the other choice <Since v={15} />:
+
+```sql run errors=continue
+CREATE TABLE a (email text UNIQUE);
+INSERT INTO a VALUES (NULL), (NULL);
+CREATE TABLE b (email text UNIQUE NULLS NOT DISTINCT);
+INSERT INTO b VALUES (NULL);
+INSERT INTO b VALUES (NULL);
+SELECT (SELECT count(*) FROM a) AS a_rows, (SELECT count(*) FROM b) AS b_rows;
+```
+
+the plain UNIQUE took two NULLs. `NULLS NOT DISTINCT` treats NULL as one value, and the second NULL got 23505, with `(email)=(null)` in the DETAIL. (a [partial index](/learn/indexes/partial-and-expression) is the other way to say "at most one row may have no email".)
+
+## checked when?
+
+a plain unique constraint checks each row as it's written. that has a surprising consequence for updates that shift keys:
+
+```sql run errors=continue
+CREATE TABLE plain (id int PRIMARY KEY);
+CREATE TABLE later (id int PRIMARY KEY DEFERRABLE);
+INSERT INTO plain SELECT generate_series(1, 3);
+INSERT INTO later SELECT generate_series(1, 3);
+UPDATE plain SET id = id + 1;
+UPDATE later SET id = id + 1;
+SELECT (SELECT array_agg(id ORDER BY id) FROM plain) AS plain,
+       (SELECT array_agg(id ORDER BY id) FROM later) AS later;
+```
+
+`id = id + 1` on `plain` failed: postgres updated id 1 to 2 while the old 2 still existed, and 23505. the same statement on `later` worked: a **DEFERRABLE** constraint (even INITIALLY IMMEDIATE, the default) is checked at the end of the statement instead, when the keys are 2, 3, 4 and all different. the standard says unique constraints are checked at the end of each statement; postgres's non-deferrable ones check row by row, which is faster, and DEFERRABLE gets you the standard behaviour.
+
+INITIALLY DEFERRED moves the check to COMMIT:
+
+```sql run errors=continue
+CREATE TABLE seat (n int UNIQUE DEFERRABLE INITIALLY DEFERRED);
+BEGIN;
+INSERT INTO seat VALUES (1);
+INSERT INTO seat VALUES (1);
+SELECT count(*) AS rows_so_far FROM seat;
+COMMIT;
+SELECT count(*) AS rows_after FROM seat;
+```
+
+two 1s sat in the table, visible to the transaction, until COMMIT, which then failed and rolled everything back: zero rows. the index still did the work: it holds both entries, notes that a recheck is due, and the recheck runs at commit. ([NOT NULL, CHECK and UNIQUE](/learn/design/constraints) and [foreign keys](/learn/design/foreign-keys) have the design side.)
+
+<Gotcha title="the check doesn't take a lock you can see">
+until the insert commits, nothing stops another session from *reading* "no 5 here" and deciding to insert one: the waiting only happens inside the second INSERT. that's why check-then-insert in application code races, and why [INSERT ... ON CONFLICT](/learn/writes/upsert) exists: it does the check and the insert as one operation inside the index, with this same wait on the other transaction's id.
+</Gotcha>
+
+<Interview q="how does postgres enforce a unique constraint under concurrency?">
+with the unique b-tree index. an insert locks the leaf page where the key belongs and looks at every entry with the same key, fetching each one's heap version. a committed live version means a unique violation, 23505. a dead or aborted one is skipped (and marked LP_DEAD if it's dead to everyone). a version inserted or deleted by a transaction still running means it can't decide, so it releases the page and waits on that transaction's id (a ShareLock in pg_locks), then rechecks from scratch. bonus point: non-deferrable unique constraints check row by row, so `SET id = id + 1` can fail; DEFERRABLE checks at the end of the statement, and INITIALLY DEFERRED at commit.
+</Interview>
+
+<Keylines>
+- a unique insert first looks at every entry with the same key, and asks the heap about each row.
+- committed and live: 23505. dead or aborted: skipped, and marked dead in the index.
+- inserted or deleted by a running transaction: wait on its transaction id, then check again.
+- the waiting is in pg_locks as a ShareLock on a transactionid, not a page lock.
+- NULLS NOT DISTINCT (15+) makes NULL count as a value. DEFERRABLE moves the check to the end of the statement, or to COMMIT.
+</Keylines>

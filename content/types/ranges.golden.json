@@ -1,0 +1,280 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "d22080934cc529a9": {
+      "db": "empty",
+      "sql": "SELECT int4range(2, 5)         AS default_bounds,\n       int4range(2, 5, '[]')   AS both_inclusive,\n       '(2,5]'::int4range      AS literal,\n       int4range(2, 5, '[]') = int4range(2, 6) AS same_value,\n       numrange(2, 5, '[]')    AS continuous;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["default_bounds", "int4range", 3904],
+            ["both_inclusive", "int4range", 3904],
+            ["literal", "int4range", 3904],
+            ["same_value", "bool", 16],
+            ["continuous", "numrange", 3906]
+          ],
+          "rowCount": 1,
+          "digest": "2dbbcf9e6b565c4e",
+          "rows": [
+            ["[2,5)", "[2,6)", "[3,6)", "t", "[2,5]"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d65b42711e6067a2": {
+      "db": "empty",
+      "sql": "SELECT int4range(1, NULL) AS from_one_on, 'empty'::int4range AS empty,\n       int4range(3, 3) = 'empty' AS equal_to_empty, 'empty'::int4range && int4range(1, 5) AS empty_overlaps;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["from_one_on", "int4range", 3904],
+            ["empty", "int4range", 3904],
+            ["equal_to_empty", "bool", 16],
+            ["empty_overlaps", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "521eba34580dc279",
+          "rows": [
+            ["[1,)", "empty", "t", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7519ceefb77a3f8a": {
+      "db": "empty",
+      "sql": "CREATE TABLE bookings (\n  guest  text NOT NULL,\n  nights daterange NOT NULL,\n  EXCLUDE USING gist (nights WITH &&)\n);\nINSERT INTO bookings VALUES ('ada', '[2026-03-02,2026-03-05)'), ('grace', '[2026-03-05,2026-03-07)');\nINSERT INTO bookings VALUES ('edsger', '[2026-03-04,2026-03-06)');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23P01",
+            "message": "conflicting key value violates exclusion constraint \"bookings_nights_excl\"",
+            "detail": "Key (nights)=([2026-03-04,2026-03-06)) conflicts with existing key (nights)=([2026-03-02,2026-03-05)).",
+            "schema": "public",
+            "table": "bookings",
+            "constraint": "bookings_nights_excl"
+          },
+          "digest": "a671ed7a89cca363"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23P01",
+        "message": "conflicting key value violates exclusion constraint \"bookings_nights_excl\"",
+        "detail": "Key (nights)=([2026-03-04,2026-03-06)) conflicts with existing key (nights)=([2026-03-02,2026-03-05)).",
+        "schema": "public",
+        "table": "bookings",
+        "constraint": "bookings_nights_excl",
+        "statement": 2
+      },
+      "txn": "I"
+    },
+    "b90c61d1b1ea9e89": {
+      "db": "empty",
+      "sql": "CREATE TABLE stays (room int, nights daterange, EXCLUDE USING gist (room WITH =, nights WITH &&));",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42704",
+            "message": "data type integer has no default operator class for access method \"gist\"",
+            "hint": "You must specify an operator class for the index or define a default operator class for the data type."
+          },
+          "digest": "359c624ffcca8e93"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42704",
+        "message": "data type integer has no default operator class for access method \"gist\"",
+        "hint": "You must specify an operator class for the index or define a default operator class for the data type.",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "8e5227019325e835": {
+      "db": "empty",
+      "sql": "CREATE TABLE stays (room int, nights daterange, EXCLUDE USING gist (room WITH =, nights WITH &&));\nINSERT INTO stays VALUES (101, '[2026-03-02,2026-03-05)'), (102, '[2026-03-02,2026-03-05)');\nINSERT INTO stays VALUES (101, '[2026-03-04,2026-03-06)');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23P01",
+            "message": "conflicting key value violates exclusion constraint \"stays_room_nights_excl\"",
+            "detail": "Key (room, nights)=(101, [2026-03-04,2026-03-06)) conflicts with existing key (room, nights)=(101, [2026-03-02,2026-03-05)).",
+            "schema": "public",
+            "table": "stays",
+            "constraint": "stays_room_nights_excl"
+          },
+          "digest": "21935fc63c506c0d"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23P01",
+        "message": "conflicting key value violates exclusion constraint \"stays_room_nights_excl\"",
+        "detail": "Key (room, nights)=(101, [2026-03-04,2026-03-06)) conflicts with existing key (room, nights)=(101, [2026-03-02,2026-03-05)).",
+        "schema": "public",
+        "table": "stays",
+        "constraint": "stays_room_nights_excl",
+        "statement": 2
+      },
+      "txn": "I"
+    },
+    "5455786a610c44d0": {
+      "db": "empty",
+      "sql": "SELECT range_agg(r) AS merged\nFROM (VALUES (int4range(1, 3)), (int4range(2, 5)), (int4range(7, 9))) AS t (r);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["merged", "int4multirange", 4451]
+          ],
+          "rowCount": 1,
+          "digest": "36c1badb95fa7ed6",
+          "rows": [
+            ["{[1,5),[7,9)}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8ca0240865e3db47": {
+      "db": "empty",
+      "sql": "CREATE TABLE bookings (guest text, nights daterange);\nINSERT INTO bookings VALUES ('ada', '[2026-03-02,2026-03-05)'), ('grace', '[2026-03-05,2026-03-07)'), ('alan', '[2026-03-09,2026-03-11)');\nSELECT free\nFROM unnest(datemultirange(daterange('2026-03-01', '2026-03-11')) - (SELECT range_agg(nights) FROM bookings)) AS free\nORDER BY free;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "456642ddbdad5c7c"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["free", "daterange", 3912]
+          ],
+          "rowCount": 2,
+          "digest": "d15e7e6633f9e97c",
+          "rows": [
+            ["[2026-03-01,2026-03-02)"],
+            ["[2026-03-07,2026-03-09)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "22c50184129e4e9b": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'UTC';\nCREATE TABLE slots AS\nSELECT i AS id, tstzrange(timestamptz '2026-03-01 00:00+00' + i * interval '30 minutes', timestamptz '2026-03-01 00:00+00' + (i + 1) * interval '30 minutes') AS during\nFROM generate_series(0, 9999) AS i;\nCREATE INDEX ON slots USING gist (during);\nANALYZE slots;\nEXPLAIN (COSTS OFF) SELECT id FROM slots WHERE during && tstzrange('2026-03-02 10:00+00', '2026-03-02 11:00+00');",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 10000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "ada854e6e8e275bb"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4e5fc8411bd30366"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c9a1e56a73a93d83",
+          "rows": [
+            ["Bitmap Heap Scan on slots"],
+            ["  Recheck Cond: (during && '[\"2026-03-02 10:00:00+00\",\"2026-03-02 11:00:00+00\")'::tstzrange)"],
+            ["  ->  Bitmap Index Scan on slots_during_idx"],
+            ["        Index Cond: (during && '[\"2026-03-02 10:00:00+00\",\"2026-03-02 11:00:00+00\")'::tstzrange)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

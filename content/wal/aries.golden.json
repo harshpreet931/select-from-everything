@@ -1,0 +1,64 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "594216fe95fff0a7": {
+      "db": "lab",
+      "sql": "BEGIN;\nUPDATE accounts SET balance = 0 WHERE id = 3;\nROLLBACK;\nSELECT lp, t_xmin, t_xmax, pg_xact_status(t_xmax::text::xid8) AS xmax_status\nFROM heap_page_items(get_raw_page('accounts', 0))\nWHERE t_xmax <> 0 ORDER BY lp;\nSELECT lp, t_xmin, pg_xact_status(t_xmin::text::xid8) AS xmin_status\nFROM heap_page_items(get_raw_page('accounts', 0))\nWHERE lp > 3 ORDER BY lp;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "efebd36c5a6763a9"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["t_xmax", "xid", 28],
+            ["xmax_status", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "e682c78083be5ac6",
+          "rows": [
+            ["3", "752", "753", "aborted"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["xmin_status", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "10fd0c02dc7f1cae",
+          "rows": [
+            ["4", "753", "aborted"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

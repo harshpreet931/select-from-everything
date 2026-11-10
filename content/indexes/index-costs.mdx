@@ -1,0 +1,135 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/index-costs.pgtrace.json";
+
+{/* the WAL records and the WAL-per-index bars read traces/index-costs.scenario.sql, captured on
+    PGlite (single session, no checkpoints, so the byte counts repeat exactly). */}
+
+export const rec = trace.steps[2].result;
+export const cost = trace.steps[3].result.data.map((r) => ({ k: Number(r[0]), wal: Number(r[1]), heap: Number(r[2]), idx: Number(r[3]) }));
+export const kb = (b) => Math.round(b / 1024).toLocaleString("en-US");
+export const ratio = (cost[6].wal / cost[0].wal).toFixed(1);
+
+<InShort>
+an index makes some reads faster and **every write slower**. each INSERT adds an entry to every index, each entry is another **WAL record**, and an UPDATE that changes an indexed column can't be a **HOT update**. six indexes on a table made 10,000 inserts write {ratio}x the WAL of no indexes at all. so an index that no query uses is pure cost: find them with `pg_stat_user_indexes.idx_scan`.
+</InShort>
+
+## the picture
+
+you know how a textbook's index has to be redone for every new edition? one new paragraph about saffron means updating the index under "saffron", and under "spices", and under "persia". a book with five indexes (by subject, by name, by place, ...) takes five times the work.
+
+here's one row going into a table with a primary key and two more indexes, as the WAL saw it:
+
+<Figure caption={<>every WAL record one INSERT wrote, with the relation it changed: one for the table, <C k="ref">one per index</C>, and the commit. captured with pg_walinspect.</>}>
+<ResultTable columns={rec.columns} rows={rec.data} rowTones={rec.data.map((r) => (r[1].startsWith("Btree") ? "ref" : null))} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+the heap insert is the row. the three `Btree/INSERT_LEAF` records are the same row going into `people_pkey`, `people_email` and `people_city`, each a change to a different index page that has to be written to disk eventually, each logged first ([the WAL](/learn/wal/write-ahead-rule)). you can watch it yourself:
+
+```sql run db=lab
+CREATE TABLE people (id int PRIMARY KEY, email text NOT NULL, city text NOT NULL);
+CREATE INDEX people_email ON people (email);
+CREATE INDEX people_city ON people (city);
+INSERT INTO people VALUES (1, 'maya.chen@example.com', 'San Francisco');
+SELECT set_config('my.start', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;
+INSERT INTO people VALUES (42, 'ada@example.com', 'London');
+SELECT c.relname AS relation, r.resource_manager || '/' || r.record_type AS record
+FROM pg_get_wal_records_info(current_setting('my.start')::pg_lsn, pg_current_wal_insert_lsn()) AS r
+LEFT JOIN pg_get_wal_block_info(current_setting('my.start')::pg_lsn, pg_current_wal_insert_lsn()) AS b
+  ON b.start_lsn = r.start_lsn
+LEFT JOIN pg_class AS c ON c.relfilenode = b.relfilenode
+ORDER BY r.start_lsn;
+```
+
+(`set_config` remembers the WAL position in a session setting, so marking the start doesn't write WAL of its own.)
+
+## more indexes, more WAL
+
+scale it up: 10,000 rows into a six-column table, with 0 to 6 single-column indexes on it, measuring the WAL each load produced:
+
+<Figure caption={<>WAL written by 10,000 inserts, by number of indexes on the table. same rows every time, from the capture.</>}>
+<Bars data={cost.map((c) => ({ label: `${c.k} ${c.k === 1 ? "index" : "indexes"}`, value: Math.round(c.wal / 1024), tone: c.k === 0 ? "live" : "hot" }))} unit="KB" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+{kb(cost[0].wal)} KB with no indexes, {kb(cost[6].wal)} KB with six: every index adds roughly as much WAL as the table itself. one logical write turning into many physical ones has a name, **write amplification**, and indexes are the biggest multiplier a table has. that WAL is written on every commit, shipped to every replica, archived for every backup. the data files grow too:
+
+<Figure caption={<>size of the table and of all its indexes together, at 0, 3 and 6 indexes, in KB.</>}>
+<Bars data={[0, 3, 6].flatMap((k) => [
+  { label: `${k} indexes: table`, value: Math.round(cost[k].heap / 1024) },
+  { label: `${k} indexes: indexes`, value: Math.round(cost[k].idx / 1024), tone: "hot" },
+])} unit="KB" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+with six, the indexes ({kb(cost[6].idx)} KB) are bigger than the table ({kb(cost[6].heap)} KB). that's normal for a heavily indexed table, and every page of it competes for the same [buffer pool](/learn/storage/buffer-pool) as the data.
+
+<Predict question="a table with 4 indexes. UPDATE sets a column that none of them includes. how many index entries does it add?" options={["0, if the page has room", "4, always", "1, for the primary key"]} answer={0}>
+```sql
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+-- balance is in no index
+```
+<Explain>
+zero, if the new row version fits on the same page: that's a HOT update. no indexed value changed, so every index entry can keep pointing at the old version's slot, and readers follow the chain on the page. if the page is full, the new version goes elsewhere, and all 4 indexes get a new entry. [HOT updates](/learn/mvcc/hot-updates) has the details.
+</Explain>
+</Predict>
+
+## the index that turns off HOT
+
+that predict is the expensive part people miss. an index doesn't only cost its own entries: indexing a column that gets updated means **no update of that column can be HOT**, so every such update writes an entry in every index on the table, not just the one you added.
+
+```sql run db=lab
+CREATE TABLE counters (id int PRIMARY KEY, hits int NOT NULL, note text);
+INSERT INTO counters SELECT g, 0, 'x' FROM generate_series(1, 100) AS g ORDER BY g;
+UPDATE counters SET hits = hits + 1 WHERE id <= 50;
+CREATE INDEX counters_hits ON counters (hits);
+UPDATE counters SET hits = hits + 1 WHERE id > 50;
+SELECT pg_stat_force_next_flush();
+SELECT n_tup_upd, n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'counters';
+```
+
+100 updates. the 50 before the index on `hits` were HOT. the 50 after it can't be: `hits` is now indexed, and each update had to add an entry to `counters_pkey` and to `counters_hits`. the classic case is an `updated_at` or `status` column, indexed for one report, on a table that's updated all day.
+
+## finding the indexes nobody uses
+
+postgres counts index scans per index. an index with `idx_scan = 0` since the statistics were last reset has never been used to answer a query on this server:
+
+```sql run db=shop
+CREATE INDEX orders_customer ON orders (customer_id);
+CREATE INDEX orders_status ON orders (status);
+CREATE INDEX orders_ordered_at ON orders (ordered_at);
+SELECT count(*) FROM orders WHERE customer_id = 42;
+SELECT id FROM orders ORDER BY ordered_at DESC LIMIT 1;
+SELECT pg_stat_force_next_flush();
+SELECT s.indexrelname, s.idx_scan, pg_size_pretty(pg_relation_size(s.indexrelid)) AS size
+FROM pg_stat_user_indexes AS s
+JOIN pg_index AS i ON i.indexrelid = s.indexrelid
+WHERE s.relname = 'orders' AND NOT i.indisunique
+ORDER BY s.idx_scan, s.indexrelname;
+```
+
+`orders_status` was never scanned. before dropping one like it on a real server, check a few things:
+
+- **how long the counters have been counting.** `pg_stat_reset()` or a restart after a crash zeroes them; `stats_reset` in `pg_stat_database` says when. a month-end report needs a month of history.
+- **every server.** a read replica keeps its own counters. an index unused on the primary may carry all the replica's traffic.
+- **constraints.** unique and primary key indexes enforce rules even when no query reads them (the `NOT indisunique` above leaves them out). so do indexes that back a foreign key's lookups on delete ([foreign keys](/learn/design/foreign-keys)).
+- **duplicates and prefixes.** an index on `(customer_id)` next to one on `(customer_id, ordered_at)` is usually redundant: the second serves everything the first does ([multicolumn indexes](/learn/indexes/composite-indexes)).
+
+then `DROP INDEX CONCURRENTLY`, which doesn't block writes while it waits for running queries to finish with the index.
+
+<Gotcha title="this browser's counters start at zero every run">
+the playground is a fresh database each time, so `idx_scan` here only counts this block's queries. on a real server they accumulate since the last reset, and that history is the whole point. the same query is how you'd check it there.
+</Gotcha>
+
+<Interview q="what does an index cost you?">
+space, and work on every write. each INSERT adds an entry to every index (and a WAL record for each); an UPDATE adds entries to all of them unless it's a HOT update, which needs the changed columns to be in no index and room on the page; DELETEs leave entries for VACUUM to clean. so indexing a frequently updated column turns off HOT for those updates and makes every index bigger. indexes also take buffer pool memory away from the table. to find dead weight, look for pg_stat_user_indexes.idx_scan = 0 over a long enough window, on every replica, skipping unique and constraint indexes, and drop with DROP INDEX CONCURRENTLY.
+</Interview>
+
+<Keylines>
+- every index is another write per INSERT, and another WAL record.
+- six indexes, {ratio}x the WAL of none, on the same rows.
+- indexing an updated column turns off HOT updates for it.
+- idx_scan = 0 over a long window, on every server: a candidate to drop.
+- unique indexes and prefixes of other indexes need a second look before dropping.
+</Keylines>

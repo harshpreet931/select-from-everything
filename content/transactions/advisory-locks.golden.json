@@ -1,0 +1,234 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "6d982d46ffc34ecd": {
+      "db": "empty",
+      "sql": "SELECT pg_advisory_lock(42);\nSELECT locktype, classid, objid, objsubid, mode, granted\nFROM pg_locks WHERE locktype = 'advisory';\nSELECT pg_advisory_unlock(42);\nSELECT count(*) AS advisory_locks FROM pg_locks WHERE locktype = 'advisory';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_lock", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "70fa72757dc9e85a",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["classid", "oid", 26],
+            ["objid", "oid", 26],
+            ["objsubid", "int2", 21],
+            ["mode", "text", 25],
+            ["granted", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "41e13e49dea7ccb6",
+          "rows": [
+            ["advisory", "0", "42", "1", "ExclusiveLock", "t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_unlock", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "0ae73b8b1fef8c27",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["advisory_locks", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "39a79ca7c3229641",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ab7539a8102c7d87": {
+      "db": "empty",
+      "sql": "BEGIN;\nSELECT pg_advisory_lock(7);\nSELECT pg_advisory_xact_lock(8);\nROLLBACK;\nSELECT objid AS key, mode FROM pg_locks\nWHERE locktype = 'advisory' ORDER BY objid;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_lock", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "422c7801ed744fbf",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_xact_lock", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "8384fd5decbaa23f",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8948f71c140383d6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["key", "oid", 26],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "829083b670ec1b9c",
+          "rows": [
+            ["7", "ExclusiveLock"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8599a356f9efccbb": {
+      "db": "empty",
+      "sql": "SELECT pg_advisory_lock(42);\nSELECT pg_advisory_lock(42);\nSELECT pg_advisory_unlock(42);\nSELECT count(*) AS still_held FROM pg_locks WHERE locktype = 'advisory';\nSELECT pg_advisory_unlock(42);\nSELECT pg_advisory_unlock(42);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_lock", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "70fa72757dc9e85a",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_lock", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "422c7801ed744fbf",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_unlock", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "0ae73b8b1fef8c27",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["still_held", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "e5e69801dbf873ee",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_unlock", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "aad7562411120b3d",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_advisory_unlock", "bool", 16]
+          ],
+          "rowCount": 1,
+          "notices": [
+            {
+              "severity": "WARNING",
+              "sqlstate": "01000",
+              "message": "you don't own a lock of type ExclusiveLock"
+            }
+          ],
+          "digest": "61449e533502df62",
+          "rows": [
+            ["f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6e7234875e572096": {
+      "db": "empty",
+      "sql": "SELECT hashtextextended('nightly-report', 0) AS key,\n       pg_try_advisory_lock(hashtextextended('nightly-report', 0)) AS got_it;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["key", "int8", 20],
+            ["got_it", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "f0850aada610368e",
+          "rows": [
+            ["-1761082894366742330", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

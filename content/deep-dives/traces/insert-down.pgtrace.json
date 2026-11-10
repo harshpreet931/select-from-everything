@@ -1,0 +1,1013 @@
+{
+ "v": 1,
+ "scenario": "content/deep-dives/traces/insert-down.scenario.sql",
+ "title": "one INSERT into a table with a primary key, from BEGIN to the page on disk",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"}
+ },
+ "base": {"xid":759,"lsn":23208880},
+ "setup": "CREATE TABLE notes (id int PRIMARY KEY, body text NOT NULL);\nINSERT INTO notes VALUES (1, 'the first note'), (2, 'the second note');\nVACUUM notes;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "CHECKPOINT",
+   "note": "a checkpoint first, so the story starts clean: every page on disk, and the redo pointer right here.",
+   "status": "ok",
+   "result": {"command":"CHECKPOINT","rows":null,"columns":[],"data":[]},
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":4,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 788,
+    "summary": {"used":796,"dirty":0}
+   },
+   "wal": {
+    "insert": 23209088,
+    "flush": 23209088,
+    "redo": 23208880,
+    "checkpoint": 23208968,
+    "records": [
+     {
+      "lsn": 23208880,
+      "end": 23208912,
+      "prev": 23208784,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_REDO",
+      "len": 30,
+      "fpiLen": 0,
+      "desc": "wal_level replica",
+      "blocks": []
+     },
+     {
+      "lsn": 23208912,
+      "end": 23208968,
+      "prev": 23208880,
+      "xid": 0,
+      "rmgr": "Standby",
+      "type": "RUNNING_XACTS",
+      "len": 50,
+      "fpiLen": 0,
+      "desc": "nextXid 759 latestCompletedXid 758 oldestRunningXid 759",
+      "blocks": []
+     },
+     {
+      "lsn": 23208968,
+      "end": 23209088,
+      "prev": 23208912,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_ONLINE",
+      "len": 114,
+      "fpiLen": 0,
+      "desc": "redo 0/16223B0; tli 1; prev tli 1; fpw true; wal_level replica; xid 0:759; oid 24576; multi 1; offset 0; oldest xid 744 in DB 1; oldest multi 1 in DB 1; oldest/newest commit timestamp xid: 0/0; oldest running xid 759; online",
+      "blocks": []
+     }
+    ]
+   },
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8096,
+      "special": 8192,
+      "lsn": 23063144,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [{"off":1,"key":"1","tid":[0,1],"dead":false},{"off":2,"key":"2","tid":[0,2],"dead":false}]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":true,"allFrozen":false}]},
+   "log": [
+    "LOG:  checkpoint starting: immediate force wait",
+    "LOG:  checkpoint complete: wrote 171 buffers (1.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=<t> s, sync=<t> s, total=<t> s; sync files=75, longest=<t> s, average=<t> s; distance=890 kB, estimate=890 kB; lsn=0/1622408, redo lsn=0/16223B0"
+   ],
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "BEGIN. no transaction id yet, and nothing written anywhere: postgres hands out an xid only when a transaction first changes something.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "xids": {"T1":{"xid":null,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"read committed","inTxn":true}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":false,"usage":4,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 790,
+    "summary": {"used":798,"dirty":0}
+   },
+   "wal": {"insert":23209088,"flush":23209088,"redo":23208880,"checkpoint":23208968,"records":[]},
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8096,
+      "special": 8192,
+      "lsn": 23063144,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [{"off":1,"key":"1","tid":[0,1],"dead":false},{"off":2,"key":"2","tid":[0,2],"dead":false}]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":true,"allFrozen":false}]},
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO notes VALUES (3, 'hello from the capstone')",
+   "note": "the INSERT. a new tuple lands on page 0 of the heap, a new entry on the index leaf, and two WAL records describe both. both pages are dirty in shared buffers, and nothing has touched the disk yet.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]},
+   "xids": {"T1":{"xid":759,"snap":{"xmin":759,"xmax":759,"xip":[]},"iso":"read committed","inTxn":true}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":true,"usage":5,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":3,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":3,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 790,
+    "summary": {"used":798,"dirty":3}
+   },
+   "wal": {
+    "insert": 23217720,
+    "flush": 23209088,
+    "redo": 23208880,
+    "checkpoint": 23208968,
+    "records": [
+     {
+      "lsn": 23209088,
+      "end": 23217560,
+      "prev": 23208968,
+      "xid": 759,
+      "rmgr": "Heap",
+      "type": "INSERT",
+      "len": 8447,
+      "fpiLen": 8380,
+      "desc": "off: 3, flags: 0x01",
+      "blocks": [{"rel":"notes","block":0,"fpi":true},{"rel":"notes (vm)","block":0,"fpi":true}]
+     },
+     {
+      "lsn": 23217560,
+      "end": 23217720,
+      "prev": 23209088,
+      "xid": 759,
+      "rmgr": "Btree",
+      "type": "INSERT_LEAF",
+      "len": 153,
+      "fpiLen": 100,
+      "desc": "off: 3",
+      "blocks": [{"rel":"notes_pkey","block":1,"fpi":true}]
+     }
+    ]
+   },
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8040,
+      "special": 8192,
+      "lsn": 23217560,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8040,
+        "len": 52,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","body":"hello from the capstone"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":false,"allFrozen":false}]},
+   "xact": {"758":"committed","759":"in progress"}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "COMMIT. one more WAL record, the commit, and this time the WAL is flushed to disk before COMMIT returns. the commit log now says the xid committed. the table pages are still only in memory.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":true,"usage":5,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":3,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":3,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 790,
+    "summary": {"used":798,"dirty":3}
+   },
+   "wal": {
+    "insert": 23217760,
+    "flush": 23217760,
+    "redo": 23208880,
+    "checkpoint": 23208968,
+    "records": [
+     {
+      "lsn": 23217720,
+      "end": 23217760,
+      "prev": 23217560,
+      "xid": 759,
+      "rmgr": "Transaction",
+      "type": "COMMIT",
+      "len": 34,
+      "fpiLen": 0,
+      "desc": "<time>",
+      "blocks": []
+     }
+    ]
+   },
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8040,
+      "special": 8192,
+      "lsn": 23217560,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8040,
+        "len": 52,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","body":"hello from the capstone"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":false,"allFrozen":false}]},
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT ctid, xmin, id, body FROM notes WHERE id = 3",
+   "note": "a reader looks at the new row. its xmin isn't hinted yet, so the reader asks the commit log, gets committed, and writes that down as a hint bit on the tuple.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"ctid","type":"tid"},
+     {"name":"xmin","type":"xid"},
+     {"name":"id","type":"int4"},
+     {"name":"body","type":"text"}
+    ],
+    "data": [["(0,3)","759","3","hello from the capstone"]]
+   },
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":true,"usage":5,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":3,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":3,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 790,
+    "summary": {"used":798,"dirty":3}
+   },
+   "wal": {"insert":23217760,"flush":23217760,"redo":23208880,"checkpoint":23208968,"records":[]},
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8040,
+      "special": 8192,
+      "lsn": 23217560,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8040,
+        "len": 52,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","body":"hello from the capstone"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":false,"allFrozen":false}]},
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 5,
+   "session": "obs",
+   "sql": "CHECKPOINT",
+   "note": "a checkpoint. every dirty buffer is written to the data files and fsynced, and the redo pointer moves past our records.",
+   "status": "ok",
+   "result": {"command":"CHECKPOINT","rows":null,"columns":[],"data":[]},
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":false,"usage":5,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":3,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":3,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 790,
+    "summary": {"used":798,"dirty":0}
+   },
+   "wal": {
+    "insert": 23217968,
+    "flush": 23217968,
+    "redo": 23217760,
+    "checkpoint": 23217848,
+    "records": [
+     {
+      "lsn": 23217760,
+      "end": 23217792,
+      "prev": 23217720,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_REDO",
+      "len": 30,
+      "fpiLen": 0,
+      "desc": "wal_level replica",
+      "blocks": []
+     },
+     {
+      "lsn": 23217792,
+      "end": 23217848,
+      "prev": 23217760,
+      "xid": 0,
+      "rmgr": "Standby",
+      "type": "RUNNING_XACTS",
+      "len": 50,
+      "fpiLen": 0,
+      "desc": "nextXid 760 latestCompletedXid 759 oldestRunningXid 760",
+      "blocks": []
+     },
+     {
+      "lsn": 23217848,
+      "end": 23217968,
+      "prev": 23217792,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_ONLINE",
+      "len": 114,
+      "fpiLen": 0,
+      "desc": "redo 0/1624660; tli 1; prev tli 1; fpw true; wal_level replica; xid 0:760; oid 24576; multi 1; offset 0; oldest xid 744 in DB 1; oldest multi 1 in DB 1; oldest/newest commit timestamp xid: 0/0; oldest running xid 760; online",
+      "blocks": []
+     }
+    ]
+   },
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8040,
+      "special": 8192,
+      "lsn": 23217560,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8040,
+        "len": 52,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","body":"hello from the capstone"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":false,"allFrozen":false}]},
+   "log": [
+    "LOG:  checkpoint starting: immediate force wait",
+    "LOG:  checkpoint complete: wrote 3 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=<t> s, sync=<t> s, total=<t> s; sync files=4, longest=<t> s, average=<t> s; distance=8 kB, estimate=802 kB; lsn=0/16246B8, redo lsn=0/1624660"
+   ],
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 6,
+   "session": "obs",
+   "sql": "SELECT lp, lp_off, lp_len, t_xmin, t_ctid, (page_header(pg_read_binary_file(pg_relation_filepath('notes'), 0, 8192))).lsn AS page_lsn\nFROM heap_page_items(pg_read_binary_file(pg_relation_filepath('notes'), 0, 8192))\nORDER BY lp",
+   "note": "the page on disk, read straight from the file with pg_read_binary_file, not through shared buffers: the new tuple is in it, with the same LSN the buffer had.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"lp","type":"int2"},
+     {"name":"lp_off","type":"int2"},
+     {"name":"lp_len","type":"int2"},
+     {"name":"t_xmin","type":"xid"},
+     {"name":"t_ctid","type":"tid"},
+     {"name":"page_lsn","type":"pg_lsn"}
+    ],
+    "data": [
+     ["1","8144","43","758","(0,1)","0/1624598"],
+     ["2","8096","44","758","(0,2)","0/1624598"],
+     ["3","8040","52","759","(0,3)","0/1624598"]
+    ]
+   },
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":false,"usage":5,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":3,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":3,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 790,
+    "summary": {"used":798,"dirty":0}
+   },
+   "wal": {"insert":23217968,"flush":23217968,"redo":23217760,"checkpoint":23217848,"records":[]},
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8040,
+      "special": 8192,
+      "lsn": 23217560,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8040,
+        "len": 52,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","body":"hello from the capstone"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":false,"allFrozen":false}]},
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 7,
+   "session": "obs",
+   "sql": "SELECT r.record_type, c.relname, b.relforknumber AS fork, b.relblocknumber AS block, b.block_fpi_length AS fpi_bytes\nFROM pg_get_wal_block_info('0/1622480', '0/1624638') AS b\nJOIN pg_get_wal_records_info('0/1622480', '0/1624638') AS r USING (start_lsn)\nJOIN pg_class AS c ON c.relfilenode = b.relfilenode\nORDER BY b.start_lsn, b.block_id",
+   "note": "the INSERT's two WAL records, block by block, with pg_get_wal_block_info: which page each image is of, and how big.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"record_type","type":"text"},
+     {"name":"relname","type":"name"},
+     {"name":"fork","type":"int2"},
+     {"name":"block","type":"int8"},
+     {"name":"fpi_bytes","type":"int4"}
+    ],
+    "data": [
+     ["INSERT","notes","0","0","188"],
+     ["INSERT","notes","2","0","8192"],
+     ["INSERT_LEAF","notes_pkey","0","1","100"]
+    ]
+   },
+   "xids": {"T1":{"xid":null,"snap":null,"iso":"read committed","inTxn":false}},
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"notes","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":372,"rel":"notes_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"notes_pkey","fork":"main","block":1,"dirty":false,"usage":5,"pins":0},
+     {"id":374,"rel":"notes","fork":"vm","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":375,"rel":"notes","fork":"fsm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":376,"rel":"notes","fork":"fsm","block":1,"dirty":false,"usage":3,"pins":0},
+     {"id":377,"rel":"notes","fork":"fsm","block":2,"dirty":false,"usage":3,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 793,
+    "summary": {"used":801,"dirty":0}
+   },
+   "wal": {"insert":23217968,"flush":23217968,"redo":23217760,"checkpoint":23217848,"records":[]},
+   "heap": {
+    "notes": [
+     {
+      "rel": "notes",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8040,
+      "special": 8192,
+      "lsn": 23217560,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 43,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","body":"the first note"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","body":"the second note"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8040,
+        "len": 52,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 2,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","body":"hello from the capstone"}
+       }
+      ]
+     }
+    ]
+   },
+   "btree": {
+    "notes_pkey": {
+     "root": 1,
+     "levels": 1,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"1","tid":[0,1],"dead":false},
+        {"off":2,"key":"2","tid":[0,2],"dead":false},
+        {"off":3,"key":"3","tid":[0,3],"dead":false}
+       ]
+      }
+     ]
+    }
+   },
+   "vm": {"notes":[{"block":0,"allVisible":false,"allFrozen":false}]},
+   "xact": {"758":"committed","759":"committed"}
+  }
+ ]
+}

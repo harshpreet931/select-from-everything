@@ -1,0 +1,188 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ebb4f4ad8a57dc9c": {
+      "db": "shop",
+      "sql": "SELECT name, setting, short_desc\nFROM pg_settings\nWHERE name IN ('seq_page_cost', 'random_page_cost', 'cpu_tuple_cost',\n               'cpu_index_tuple_cost', 'cpu_operator_cost', 'effective_cache_size')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25],
+            ["short_desc", "text", 25]
+          ],
+          "rowCount": 6,
+          "digest": "7869bb9729f0fea4",
+          "rows": [
+            ["cpu_index_tuple_cost", "0.005", "Sets the planner's estimate of the cost of processing each index entry during an index scan."],
+            ["cpu_operator_cost", "0.0025", "Sets the planner's estimate of the cost of processing each operator or function call."],
+            ["cpu_tuple_cost", "0.01", "Sets the planner's estimate of the cost of processing each tuple (row)."],
+            ["effective_cache_size", "524288", "Sets the planner's assumption about the total size of the data caches."],
+            ["random_page_cost", "4", "Sets the planner's estimate of the cost of a nonsequentially fetched disk page."],
+            ["seq_page_cost", "1", "Sets the planner's estimate of the cost of a sequentially fetched disk page."]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6d740dfcf4d0ed0e": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_customer_id ON orders (customer_id);\nANALYZE orders;\nSELECT relname, relpages, reltuples\nFROM pg_class\nWHERE relname IN ('orders', 'orders_pkey', 'orders_customer_id')\nORDER BY relname;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["relpages", "int4", 23],
+            ["reltuples", "float4", 700]
+          ],
+          "rowCount": 3,
+          "digest": "54ec4433bab591d7",
+          "rows": [
+            ["orders", "83", "10000"],
+            ["orders_customer_id", "17", "10000"],
+            ["orders_pkey", "30", "10000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e14f2fed79fe3a22": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT * FROM orders WHERE id = 42;\nSELECT level AS height FROM bt_metap('orders_pkey');",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b62732383e647b47",
+          "rows": [
+            ["Index Scan using orders_pkey on orders  (cost=0.29..8.30 rows=1 width=33)"],
+            ["  Index Cond: (id = 42)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["height", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "400e3776840238b1",
+          "rows": [
+            ["1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b4bd93ded814af06": {
+      "db": "shop",
+      "sql": "SET enable_seqscan = off;\nSET enable_bitmapscan = off;\nEXPLAIN SELECT * FROM orders WHERE customer_id <= 500;\nRESET enable_seqscan;\nRESET enable_bitmapscan;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5eb04610f79834d5",
+          "rows": [
+            ["Index Scan using orders_customer_id on orders  (cost=0.29..429.57 rows=3959 width=33)"],
+            ["  Index Cond: (customer_id <= 500)"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6d7c149690208c19"
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "eedaf20fa23c648e"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d6129fb1fbb11668": {
+      "db": "shop",
+      "sql": "SET random_page_cost = 1;\nEXPLAIN SELECT * FROM orders WHERE customer_id <= 500;\nRESET random_page_cost;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "68f5fafe44e44218",
+          "rows": [
+            ["Index Scan using orders_customer_id on orders  (cost=0.29..159.57 rows=3959 width=33)"],
+            ["  Index Cond: (customer_id <= 500)"]
+          ]
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f8b479a4f4b9c024"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,378 @@
+{
+ "v": 1,
+ "scenario": "content/execution/traces/reading-explain.scenario.sql",
+ "title": "the paris query, as text EXPLAIN and as json, for reading a plan bottom-up",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "EXPLAIN\nSELECT c.name, count(*) AS orders\nFROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'Paris'\nGROUP BY c.id\nORDER BY orders DESC, c.id\nLIMIT 5",
+   "note": "the plan alone: the planner's guesses, nothing run.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Limit  (cost=262.54..262.55 rows=5 width=24)"],
+     ["  ->  Sort  (cost=262.54..262.70 rows=66 width=24)"],
+     ["        Sort Key: (count(*)) DESC, c.id"],
+     ["        ->  HashAggregate  (cost=260.78..261.44 rows=66 width=24)"],
+     ["              Group Key: c.id"],
+     ["              ->  Hash Join  (cost=49.83..259.13 rows=330 width=16)"],
+     ["                    Hash Cond: (o.customer_id = c.id)"],
+     ["                    ->  Seq Scan on orders o  (cost=0.00..183.00 rows=10000 width=4)"],
+     ["                    ->  Hash  (cost=49.00..49.00 rows=66 width=16)"],
+     ["                          ->  Seq Scan on customers c  (cost=0.00..49.00 rows=66 width=16)"],
+     ["                                Filter: (city = 'Paris'::text)"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, BUFFERS OFF, TIMING OFF, SUMMARY OFF)\nSELECT c.name, count(*) AS orders\nFROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'Paris'\nGROUP BY c.id\nORDER BY orders DESC, c.id\nLIMIT 5",
+   "note": "the same plan, run: estimates and actual rows on every line.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Limit  (cost=262.54..262.55 rows=5 width=24) (actual rows=5.00 loops=1)"],
+     ["  ->  Sort  (cost=262.54..262.70 rows=66 width=24) (actual rows=5.00 loops=1)"],
+     ["        Sort Key: (count(*)) DESC, c.id"],
+     ["        Sort Method: top-N heapsort  Memory: 17kB"],
+     ["        ->  HashAggregate  (cost=260.78..261.44 rows=66 width=24) (actual rows=66.00 loops=1)"],
+     ["              Group Key: c.id"],
+     ["              Batches: 1  Memory Usage: 32kB"],
+     ["              ->  Hash Join  (cost=49.83..259.13 rows=330 width=16) (actual rows=369.00 loops=1)"],
+     ["                    Hash Cond: (o.customer_id = c.id)"],
+     [
+      "                    ->  Seq Scan on orders o  (cost=0.00..183.00 rows=10000 width=4) (actual rows=10000.00 loops=1)"
+     ],
+     ["                    ->  Hash  (cost=49.00..49.00 rows=66 width=16) (actual rows=66.00 loops=1)"],
+     ["                          Buckets: 1024  Batches: 1  Memory Usage: 7kB"],
+     [
+      "                          ->  Seq Scan on customers c  (cost=0.00..49.00 rows=66 width=16) (actual rows=66.00 loops=1)"
+     ],
+     ["                                Filter: (city = 'Paris'::text)"],
+     ["                                Rows Removed by Filter: 1934"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT c.name, count(*) AS orders\nFROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'Paris'\nGROUP BY c.id\nORDER BY orders DESC, c.id\nLIMIT 5",
+   "note": "the same plan as json, for the tree.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Limit",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Startup Cost": 262.54,
+     "Total Cost": 262.55,
+     "Plan Rows": 5,
+     "Plan Width": 24,
+     "Actual Rows": 5,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 107,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Sort",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 262.54,
+       "Total Cost": 262.7,
+       "Plan Rows": 66,
+       "Plan Width": 24,
+       "Actual Rows": 5,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Sort Key": ["(count(*)) DESC","c.id"],
+       "Sort Method": "top-N heapsort",
+       "Sort Space Used": 17,
+       "Sort Space Type": "Memory",
+       "Shared Hit Blocks": 107,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Aggregate",
+         "Strategy": "Hashed",
+         "Partial Mode": "Simple",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Startup Cost": 260.78,
+         "Total Cost": 261.44,
+         "Plan Rows": 66,
+         "Plan Width": 24,
+         "Actual Rows": 66,
+         "Actual Loops": 1,
+         "Disabled": false,
+         "Group Key": ["c.id"],
+         "Planned Partitions": 0,
+         "HashAgg Batches": 1,
+         "Peak Memory Usage": 32,
+         "Disk Usage": 0,
+         "Shared Hit Blocks": 107,
+         "Shared Read Blocks": 0,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0,
+         "Plans": [
+          {
+           "Node Type": "Hash Join",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Join Type": "Inner",
+           "Startup Cost": 49.83,
+           "Total Cost": 259.13,
+           "Plan Rows": 330,
+           "Plan Width": 16,
+           "Actual Rows": 369,
+           "Actual Loops": 1,
+           "Disabled": false,
+           "Inner Unique": true,
+           "Hash Cond": "(o.customer_id = c.id)",
+           "Shared Hit Blocks": 107,
+           "Shared Read Blocks": 0,
+           "Shared Dirtied Blocks": 0,
+           "Shared Written Blocks": 0,
+           "Local Hit Blocks": 0,
+           "Local Read Blocks": 0,
+           "Local Dirtied Blocks": 0,
+           "Local Written Blocks": 0,
+           "Temp Read Blocks": 0,
+           "Temp Written Blocks": 0,
+           "Plans": [
+            {
+             "Node Type": "Seq Scan",
+             "Parent Relationship": "Outer",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Relation Name": "orders",
+             "Alias": "o",
+             "Startup Cost": 0,
+             "Total Cost": 183,
+             "Plan Rows": 10000,
+             "Plan Width": 4,
+             "Actual Rows": 10000,
+             "Actual Loops": 1,
+             "Disabled": false,
+             "Shared Hit Blocks": 83,
+             "Shared Read Blocks": 0,
+             "Shared Dirtied Blocks": 0,
+             "Shared Written Blocks": 0,
+             "Local Hit Blocks": 0,
+             "Local Read Blocks": 0,
+             "Local Dirtied Blocks": 0,
+             "Local Written Blocks": 0,
+             "Temp Read Blocks": 0,
+             "Temp Written Blocks": 0
+            },
+            {
+             "Node Type": "Hash",
+             "Parent Relationship": "Inner",
+             "Parallel Aware": false,
+             "Async Capable": false,
+             "Startup Cost": 49,
+             "Total Cost": 49,
+             "Plan Rows": 66,
+             "Plan Width": 16,
+             "Actual Rows": 66,
+             "Actual Loops": 1,
+             "Disabled": false,
+             "Hash Buckets": 1024,
+             "Original Hash Buckets": 1024,
+             "Hash Batches": 1,
+             "Original Hash Batches": 1,
+             "Peak Memory Usage": 7,
+             "Shared Hit Blocks": 24,
+             "Shared Read Blocks": 0,
+             "Shared Dirtied Blocks": 0,
+             "Shared Written Blocks": 0,
+             "Local Hit Blocks": 0,
+             "Local Read Blocks": 0,
+             "Local Dirtied Blocks": 0,
+             "Local Written Blocks": 0,
+             "Temp Read Blocks": 0,
+             "Temp Written Blocks": 0,
+             "Plans": [
+              {
+               "Node Type": "Seq Scan",
+               "Parent Relationship": "Outer",
+               "Parallel Aware": false,
+               "Async Capable": false,
+               "Relation Name": "customers",
+               "Alias": "c",
+               "Startup Cost": 0,
+               "Total Cost": 49,
+               "Plan Rows": 66,
+               "Plan Width": 16,
+               "Actual Rows": 66,
+               "Actual Loops": 1,
+               "Disabled": false,
+               "Filter": "(city = 'Paris'::text)",
+               "Rows Removed by Filter": 1934,
+               "Shared Hit Blocks": 24,
+               "Shared Read Blocks": 0,
+               "Shared Dirtied Blocks": 0,
+               "Shared Written Blocks": 0,
+               "Local Hit Blocks": 0,
+               "Local Read Blocks": 0,
+               "Local Dirtied Blocks": 0,
+               "Local Written Blocks": 0,
+               "Temp Read Blocks": 0,
+               "Temp Written Blocks": 0
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 6,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT relpages, reltuples,\n       relpages * current_setting('seq_page_cost')::float8 AS page_cost,\n       reltuples * current_setting('cpu_tuple_cost')::float8 AS row_cost,\n       reltuples * current_setting('cpu_operator_cost')::float8 AS filter_cost\nFROM pg_class\nWHERE relname = 'customers'",
+   "note": "what the seq scan on customers costs, worked out from the catalog and the cost settings.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"relpages","type":"int4"},
+     {"name":"reltuples","type":"float4"},
+     {"name":"page_cost","type":"float8"},
+     {"name":"row_cost","type":"float8"},
+     {"name":"filter_cost","type":"float8"}
+    ],
+    "data": [["24","2000","24","20","5"]]
+   }
+  }
+ ],
+ "db": "shop"
+}

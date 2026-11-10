@@ -1,0 +1,146 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov } from "@/lib/db/captured";
+import trace from "./traces/misestimate.pgtrace.json";
+
+{/* the figures read traces/misestimate.scenario.sql, captured on PGlite with the shop dataset
+    plus a tickets table built in its setup (`pnpm pgtrace <file> --engine=pglite --twice`), the
+    same table the run buttons build. step 0 is the estimate per number of conditions, step 2
+    the nested loop plan, step 5 the plan after CREATE STATISTICS. */}
+
+export const steps = trace.steps[0].result.data;
+export const bad = planOf(trace, 2);
+export const good = planOf(trace, 5);
+export const pages = (p) => p.Plan["Shared Hit Blocks"] + p.Plan["Shared Read Blocks"];
+
+<InShort>
+the planner's row estimates rest on assumptions, and the big one is **independence**: two conditions on different columns are treated as unrelated, so their selectivities multiply. on columns that move together that's wrong by the whole selectivity of the extra condition, every time you add one.
+
+a bad estimate low in a plan **compounds** on the way up, and a plan built for 1 row runs on 1,000. here's one that picks a nested loop because of it.
+</InShort>
+
+## the picture
+
+you know how a query is fast for months and then one day it isn't, and nothing changed? usually something did: the data. and the planner's picture of it didn't.
+
+think of a party planner who knows 1 in 30 guests is from the marketing team, and 1 in 30 sits at table 7, and 1 in 30 ordered the vegetarian meal. asked "how many marketing people at table 7 ordered vegetarian?", they multiply: 1 in 27,000. but marketing all sit at table 7, and the whole team is vegetarian. the real answer is 1 in 30.
+
+that's a table of support tickets where each team works one queue in one region. `team = 7` already means `queue = 7` and `region = 7`, and postgres has no way to know:
+
+```sql run db=shop session=tix
+CREATE TABLE tickets (id int PRIMARY KEY, team int NOT NULL, queue int NOT NULL, region int NOT NULL,
+                      customer_id int NOT NULL REFERENCES customers);
+INSERT INTO tickets
+SELECT i, i % 30, i % 30, i % 30, 1 + (i * 37) % 2000
+FROM generate_series(1, 30000) AS i
+ORDER BY i;
+CREATE INDEX orders_customer_id ON orders (customer_id);
+ANALYZE tickets;
+ANALYZE orders;
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF)
+SELECT * FROM tickets WHERE team = 7 AND queue = 7 AND region = 7;
+```
+
+`rows=1` estimated, `rows=1000.00` actual. each condition alone is 1/30 of the table, and the estimate multiplies all three:
+
+<Figure caption={<>the same 1,000 tickets, described with one, two and three conditions. each extra condition divides the estimate by 30 and changes nothing about the result. the third is a <C k="dead">1,000x</C> miss.</>}>
+<Bars data={steps.flatMap((r, i) => [
+  { label: `${i + 1} condition${i ? "s" : ""}: est`, value: Number(r[1]), tone: Number(r[2]) / Number(r[1]) >= 10 ? "dead" : undefined },
+  { label: `${i + 1} condition${i ? "s" : ""}: real`, value: Number(r[2]), tone: "live" },
+])} log />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+30,000 × 1/30 × 1/30 × 1/30 = 1.1, rounded to 1. ([estimating rows](/learn/optimizer/estimating-rows) has the AND rule.) the independence assumption isn't laziness: per-column statistics can't say anything about pairs, and storing every pair is too much. the fix is to tell postgres which pairs matter, which is [extended statistics](/learn/optimizer/extended-statistics).
+
+## the plan that follows
+
+a misestimate on its own is harmless. it hurts when it changes the plan. join those tickets to their customers' orders:
+
+```sql run session=tix
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS)
+SELECT count(*)
+FROM tickets AS t
+JOIN orders AS o ON o.customer_id = t.customer_id
+WHERE t.team = 7 AND t.queue = 7 AND t.region = 7;
+```
+
+for one ticket, a [nested loop](/learn/execution/nested-loop-join) is the obvious plan: find the ticket, probe the index on `orders.customer_id` once. it ran 1,000 probes:
+
+<Figure wide caption={<>the plan postgres picked, with estimated and actual rows on every node. the seq scan's 1 against 1,000 is where it goes wrong; the join's 5 against 4,705 is the same mistake, carried up. <C k="hot">loops=1000</C> on the index-only scan is the price: one descent per ticket the planner didn't expect.</>}>
+<PlanTree plan={bad} show={["est", "actual", "buffers"]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+with the right estimate (the next block tells postgres the columns are related, a preview of the next chapter), it reads the 1,000 tickets, sorts them by customer, and walks the index on orders once, in order:
+
+```sql run session=tix
+CREATE STATISTICS tickets_team (dependencies) ON team, queue, region FROM tickets;
+ANALYZE tickets;
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS)
+SELECT count(*)
+FROM tickets AS t
+JOIN orders AS o ON o.customer_id = t.customer_id
+WHERE t.team = 7 AND t.queue = 7 AND t.region = 7;
+```
+
+<Figure caption={<>pages the two plans asked the buffer pool for (Buffers: shared hit + read at the top node). same 4,705 rows out. the nested loop's extra pages are the 1,000 index descents.</>}>
+<Bars data={[
+  { label: "nested loop (est. 1 ticket)", value: pages(bad), tone: "dead" },
+  { label: "merge join (est. 1,000)", value: pages(good), tone: "live" },
+]} unit="pages" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+{pages(bad).toLocaleString("en-US")} pages against {pages(good)}. in the browser every one of them is a cached hit, so the difference is small in time. on a server with a cold cache, every index descent is random reads, and the nested loop is the plan that takes minutes. the bigger the outer side really is, the worse it gets: the nested loop's cost grows with outer rows × inner probe, and the planner was sure the outer side was 1.
+
+<Predict question="the seq scan on tickets is 1,000x off. how far off is the Nested Loop above it?" options={["about the same", "much less", "much more"]} answer={0}>
+```text
+Nested Loop  (rows=5) (actual rows=4705.00)
+  ->  Seq Scan on tickets t  (rows=1) (actual rows=1000.00)
+  ->  Index Only Scan using orders_customer_id on orders o  (rows=5) (actual rows=4.71 loops=1000)
+```
+<Explain>
+about the same, 941x. the join's estimate is outer rows × rows per probe: 1 × 5. the per-probe estimate (5) is right, so the join inherits exactly the outer side's error. with several joins, errors like this multiply: two 10x misses below a join can make it 100x off.
+</Explain>
+</Predict>
+
+## where misestimates come from
+
+**correlated columns.** the case above: city and country, model and make, team and queue. the estimate is too low by roughly the selectivity of every redundant condition.
+
+**a function or expression on the column.** `WHERE lower(kind) = 'view'` has no statistics, so the planner uses its default of 0.005:
+
+```sql run db=events
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF)
+SELECT * FROM events WHERE lower(kind) = 'view';
+```
+
+125 against 15,112, 121x low. `date_trunc('day', ts) = …`, `coalesce(x, 0) > 5`, `col + 0`, a cast on the column side: same story. write the condition on the bare column, or give the expression statistics (an expression index, or `CREATE STATISTICS` on the expression, see [extended statistics](/learn/optimizer/extended-statistics)).
+
+**stale statistics.** a table that changed since its last ANALYZE ([pg_stats and ANALYZE](/learn/optimizer/statistics)): new values missing from the MCV list, a histogram that ends before today's rows.
+
+**skew the summary can't hold.** a value outside the MCV list gets an average share. if the column has thousands of values and a few dozen of them are huge, a bigger statistics target is the fix.
+
+**a value the planner doesn't know yet.** a [prepared statement's generic plan](/learn/optimizer/generic-plans) is planned for `$1`, any value, so it gets an average estimate even when the value you pass is rare.
+
+**joins.** a join's estimate is built from the n_distinct of both join columns and every estimate below it. it's usually the least accurate number in a plan, and the one that decides the next join's algorithm.
+
+## finding the one that matters
+
+run EXPLAIN ANALYZE and read it bottom-up for the **lowest** node where estimated and actual rows differ by 10x or more ([EXPLAIN ANALYZE](/learn/execution/explain-analyze) explains loops: compare per-loop numbers). everything above it is planned on bad information, so fixing anything above it is fixing the symptom. this book's plan figures mark those nodes in <C k="dead">dead</C>.
+
+<Gotcha title="not every gap is a misestimate">
+a node under a `Limit`, or the inner side of a semi join, stops early on purpose: fewer actual rows than estimated is the plan working, not a mistake. and a node with `loops=1000` prints rows per loop. compare like with like before blaming the statistics.
+</Gotcha>
+
+<Interview q="a query picks a nested loop and takes minutes. what do you check?">
+EXPLAIN (ANALYZE, BUFFERS) and find the lowest node where estimated rows are far below actual: a nested loop is the right choice for a tiny outer side and a terrible one for a big one. the usual causes are correlated predicates multiplied as independent, a function on the column that hides its statistics, stale statistics, or a generic plan. fix the estimate (CREATE STATISTICS, rewrite the predicate, ANALYZE, a higher statistics target), not the plan. bonus point: enable_nestloop = off can prove the diagnosis in a session, but it's a sledgehammer, not a fix.
+</Interview>
+
+<Keylines>
+- independence: selectivities of different columns multiply. correlated columns break it.
+- functions and expressions on a column have no statistics: the planner guesses 0.005.
+- errors compound up the plan: a join inherits the error of what's below it.
+- the plan that hurts most from underestimates is a nested loop with a big outer side.
+- read EXPLAIN ANALYZE bottom-up for the lowest 10x gap, and fix that estimate.
+</Keylines>

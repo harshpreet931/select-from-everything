@@ -1,0 +1,83 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "e5b8b4b0cb8eaaa7": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF, COSTS OFF)\nSELECT sum(qty) FROM order_items WHERE order_id = 9999;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c009ee51c423329b",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared read=3"],
+            ["  ->  Index Scan using order_items_pkey on order_items (actual rows=1.00 loops=1)"],
+            ["        Index Cond: (order_id = 9999)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=32 read=4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "720aa6e5de6652b1": {
+      "db": "shop",
+      "sql": "SELECT o.id, sum(oi.qty) AS items\nFROM (SELECT id FROM orders ORDER BY ordered_at DESC, id LIMIT 5) AS o\nLEFT JOIN order_items AS oi ON oi.order_id = o.id\nGROUP BY o.id\nORDER BY o.id;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["items", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "04f01addb40fad30",
+          "rows": [
+            ["9996", "5"],
+            ["9997", "4"],
+            ["9998", "5"],
+            ["9999", "1"],
+            ["10000", "6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "70019dfda128bec1": {
+      "db": "shop",
+      "sql": "SELECT order_id, sum(qty) AS items\nFROM order_items\nWHERE order_id = ANY ('{9996,9997,9998,9999,10000}'::int[])\nGROUP BY order_id\nORDER BY order_id;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["order_id", "int4", 23],
+            ["items", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "1a59bfa4886f0f89",
+          "rows": [
+            ["9996", "5"],
+            ["9997", "4"],
+            ["9998", "5"],
+            ["9999", "1"],
+            ["10000", "6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,293 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "1c1b8046f24c37f1": {
+      "db": "empty",
+      "sql": "SELECT 32767::smallint AS smallint_max, 2147483647::integer AS integer_max, 9223372036854775807::bigint AS bigint_max;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["smallint_max", "int2", 21],
+            ["integer_max", "int4", 23],
+            ["bigint_max", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "5a3acb2bb2c1b2bb",
+          "rows": [
+            ["32767", "2147483647", "9223372036854775807"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "dc2981a5759aceb0": {
+      "db": "empty",
+      "sql": "SELECT 2147483647::bigint + 1 AS as_bigint;\nSELECT 2147483647 + 1 AS as_integer;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["as_bigint", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "44e35def147c9bb5",
+          "rows": [
+            ["2147483648"]
+          ]
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22003",
+            "message": "integer out of range"
+          },
+          "digest": "4b7f15f51d1a8d07"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22003",
+        "message": "integer out of range",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "f3e3b7baadf7a02f": {
+      "db": "empty",
+      "sql": "SELECT 5 / 2 AS int_div, -5 / 2 AS negative, 5 % 2 AS remainder, 5 / 2.0 AS numeric_div, 5::numeric / 2 AS cast_first;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["int_div", "int4", 23],
+            ["negative", "int4", 23],
+            ["remainder", "int4", 23],
+            ["numeric_div", "numeric", 1700],
+            ["cast_first", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "d5e7b1af0e6c9050",
+          "rows": [
+            ["2", "-2", "1", "2.5000000000000000", "2.5000000000000000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8096c56ea3c1b750": {
+      "db": "empty",
+      "sql": "SELECT 0.1 + 0.2 AS sum, 0.1 + 0.2 = 0.3 AS equal, pg_typeof(0.1 + 0.2) AS type;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["sum", "numeric", 1700],
+            ["equal", "bool", 16],
+            ["type", "regtype", 2206]
+          ],
+          "rowCount": 1,
+          "digest": "33d9a6a4aed09c3d",
+          "rows": [
+            ["0.3", "t", "numeric"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a04796fd02302970": {
+      "db": "empty",
+      "sql": "SELECT 123.456::numeric(5,2) AS rounded;\nSELECT 1234.5::numeric(5,2) AS too_big;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rounded", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "cafa02ab9dd2c017",
+          "rows": [
+            ["123.46"]
+          ]
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22003",
+            "message": "numeric field overflow",
+            "detail": "A field with precision 5, scale 2 must round to an absolute value less than 10^3."
+          },
+          "digest": "7a62041853741b5b"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22003",
+        "message": "numeric field overflow",
+        "detail": "A field with precision 5, scale 2 must round to an absolute value less than 10^3.",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "37c8fa9717ffd3b6": {
+      "db": "empty",
+      "sql": "SET extra_float_digits = 0;\nSELECT 0.1::float8 + 0.2::float8 AS shown, 0.1::float8 + 0.2::float8 = 0.3 AS equal;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["shown", "float8", 701],
+            ["equal", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "0fceb71bd74b31d6",
+          "rows": [
+            ["0.3", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6305c318a611e80f": {
+      "db": "empty",
+      "sql": "SELECT 1234.5::money AS shown, '10.00'::money / 3 AS a_third, ('10.00'::money / 3) * 3 AS three_thirds;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["shown", "money", 790],
+            ["a_third", "money", 790],
+            ["three_thirds", "money", 790]
+          ],
+          "rowCount": 1,
+          "digest": "603169de37704189",
+          "rows": [
+            ["$1,234.50", "$3.33", "$9.99"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4145ac1533c77b5f": {
+      "db": "empty",
+      "sql": "SET lc_monetary = 'de_DE.UTF-8';\nSELECT 1234.5::money AS germany;\nSET lc_monetary = 'en_GB.UTF-8';\nSELECT 1234.5::money AS uk;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["germany", "money", 790]
+          ],
+          "rowCount": 1,
+          "digest": "43e8838496f7a38a",
+          "rows": [
+            ["1.234,50 €"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1e914ba1b0835f7f"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["uk", "money", 790]
+          ],
+          "rowCount": 1,
+          "digest": "f358b53ad14e6660",
+          "rows": [
+            ["£1,234.50"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "4ece4f3a82ea2cd0": {
+      "db": "empty",
+      "sql": "SELECT x\nFROM (VALUES ('NaN'::numeric), ('Infinity'), (5), ('-Infinity'), (NULL)) AS v (x)\nORDER BY x;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["x", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "4b878a16a0b467a9",
+          "rows": [
+            ["-Infinity"],
+            ["5"],
+            ["Infinity"],
+            ["NaN"],
+            [null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "fafb25dd36772c10": {
+      "db": "empty",
+      "sql": "SELECT 'NaN'::numeric = 'NaN'::numeric AS nan_equals_nan,\n       'Infinity'::numeric + 1 AS inf_plus_one,\n       'Infinity'::numeric - 'Infinity'::numeric AS inf_minus_inf;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["nan_equals_nan", "bool", 16],
+            ["inf_plus_one", "numeric", 1700],
+            ["inf_minus_inf", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "dbdcd0ae5a9df96c",
+          "rows": [
+            ["t", "Infinity", "NaN"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

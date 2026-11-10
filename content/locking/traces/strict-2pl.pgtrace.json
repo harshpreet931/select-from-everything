@@ -1,0 +1,137 @@
+{
+ "v": 1,
+ "scenario": "content/locking/traces/strict-2pl.scenario.sql",
+ "title": "postgres and two-phase locking: reads take no row locks, writes keep theirs until commit",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23210088},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nSELECT balance FROM accounts WHERE id = 1",
+   "note": "T1 opens a transaction and reads alice. the only locks are on the table and its index (ACCESS SHARE) and T1's own virtual xid. nothing on the row.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "UPDATE accounts SET balance = balance + 5 WHERE id = 1",
+   "note": "T2 updates alice right away. no wait: T1's read left nothing on the row to wait for.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = balance - 10 WHERE id = 2",
+   "note": "T1 updates bob. now it holds ROW EXCLUSIVE on the table and an exclusive lock on its new transaction id, which is what anyone wanting bob's row will wait for.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT owner FROM accounts WHERE id = 2",
+   "note": "the statement is over, and T1 holds everything it took. postgres never lets go of a lock in the middle of a transaction.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"owner","type":"text"}],"data":[["bob"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "UPDATE accounts SET balance = balance + 10 WHERE id = 2",
+   "note": "T2 wants bob's row, so it waits for T1's transaction id.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"760","mode":"ShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"761","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"tuple","target":"accounts (0,2)","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "COMMIT releases every lock T1 held, all at once. T2 goes through.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [{"session":"T2","step":4,"result":{"command":"UPDATE","rows":1,"columns":[],"data":[]}}],
+   "locks": []
+  }
+ ]
+}

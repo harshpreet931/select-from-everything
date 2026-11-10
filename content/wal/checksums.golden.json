@@ -1,0 +1,99 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0c7fd37d4e2f004b": {
+      "db": "lab",
+      "sql": "SHOW data_checksums;\nSELECT checksum AS stored, page_checksum(get_raw_page('accounts', 0), 0) AS computed\nFROM page_header(get_raw_page('accounts', 0));",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["data_checksums", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2caa87635983fe34",
+          "rows": [
+            ["on"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["stored", "int2", 21],
+            ["computed", "int2", 21]
+          ],
+          "rowCount": 1,
+          "digest": "613c06c8b6097074",
+          "rows": [
+            ["11440", "11440"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ce74bc81f0e7555d": {
+      "db": "lab",
+      "sql": "UPDATE accounts SET balance = balance + 1 WHERE id = 1;\nSELECT checksum AS stored, page_checksum(get_raw_page('accounts', 0), 0) AS computed\nFROM page_header(get_raw_page('accounts', 0));\nCHECKPOINT;\nSELECT pg_buffercache_evict(bufferid) IS NOT NULL AS evicted FROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;\nSELECT checksum AS stored, page_checksum(get_raw_page('accounts', 0), 0) AS computed\nFROM page_header(get_raw_page('accounts', 0));",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "d4149e3cbcb8aced"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["stored", "int2", 21],
+            ["computed", "int2", 21]
+          ],
+          "rowCount": 1,
+          "digest": "886311a7dbdba64c",
+          "rows": [
+            ["11440", "2466"]
+          ]
+        },
+        {
+          "tag": "CHECKPOINT",
+          "command": "CHECKPOINT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "15024938cb3e2aa3"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["evicted", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "f9a90ce92b3d9fee",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["stored", "int2", 21],
+            ["computed", "int2", 21]
+          ],
+          "rowCount": 1,
+          "digest": "d70d06b14d9a7ce3",
+          "rows": [
+            ["2466", "2466"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

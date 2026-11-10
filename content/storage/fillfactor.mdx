@@ -1,0 +1,128 @@
+import { FillCompare } from "@/components/figures/storage/FillCompare";
+import { PageView } from "@/components/db/PageView";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import fillfactor from "./traces/fillfactor.pgtrace.json";
+
+export const after = fillfactor.steps[1];
+export const cost = fillfactor.steps[2].result.data;
+export const horizon = Math.max(...Object.keys(after.xact).map(Number)) + 1;
+
+<InShort>
+**fillfactor** is how full an INSERT is allowed to pack a page before it moves on to the next one. tables default to 100: packed solid. set it to 70 or 80 and every page keeps some room in reserve.
+
+the reason is UPDATE. a new row version that fits on the same page can be a **HOT update**: no new index entries, and the old version can be cleaned up by the next reader instead of waiting for VACUUM. the price is a bigger table.
+</InShort>
+
+## the picture
+
+you know how [an UPDATE is an INSERT](/learn/mvcc/update-is-insert): the new version of the row has to go somewhere. if the page it's on is full, somewhere is another page, and every index on the table has to learn the new address.
+
+think of a library where every shelf is crammed. a revised edition of a book can't go next to the old one, so it goes on a shelf across the room, and the catalog cards (the index) all need a new entry pointing there. leave a gap at the end of every shelf, and the revision slides in right beside the original. the catalog card for the old one still works: you walk to the shelf and the new edition is right there.
+
+the same 232 rows, at fillfactor 100 and at fillfactor 70, before and after updating every fourth one:
+
+<Figure wide caption={<>switch moments. at fillfactor 100 the 58 new versions all land on a fifth page, and the <C k="dead">old versions</C> stay behind on the first four. at fillfactor 70 every page had the room, so every new version is on the same page as the one it replaced.</>}>
+<FillCompare trace={fillfactor} labels={["freshly loaded", "after the UPDATE"]} tables={{ full100: "fillfactor 100", room70: "fillfactor 70" }} />
+</Figure>
+
+notice the sizes, too. room70 starts at 6 pages for the same rows full100 fits in 4. and after the update, full100 has grown to 5 and room70 hasn't grown at all. still, room70 is the bigger table. fillfactor doesn't save space. it spends space to make updates cheaper.
+
+## measuring it
+
+the figure's tables, as a block you can run. the inserts stop at 70% of each page:
+
+```sql run db=lab session=ff
+CREATE TABLE full100 (id int PRIMARY KEY, n int, pad text) WITH (fillfactor = 100);
+CREATE TABLE room70 (id int PRIMARY KEY, n int, pad text) WITH (fillfactor = 70);
+INSERT INTO full100 SELECT g, 0, repeat('x', 100) FROM generate_series(1, 232) AS g ORDER BY g;
+INSERT INTO room70 SELECT g, 0, repeat('x', 100) FROM generate_series(1, 232) AS g ORDER BY g;
+SELECT relname, reloptions, pg_relation_size(oid) / 8192 AS pages
+FROM pg_class WHERE relname IN ('full100', 'room70') ORDER BY relname;
+```
+
+58 rows to a page at 100, 40 at 70. now update every fourth row, a column no index covers:
+
+```sql run session=ff
+UPDATE full100 SET n = n + 1 WHERE id % 4 = 0;
+UPDATE room70 SET n = n + 1 WHERE id % 4 = 0;
+SELECT relname, pg_relation_size(oid) / 8192 AS pages
+FROM pg_class WHERE relname IN ('full100', 'room70') ORDER BY relname;
+```
+
+<Predict question="each table got 58 updates. how many new entries did each primary key get?" options={["58 and 58", "58 and 0", "0 and 0", "58 and 17"]} answer={1}>
+```sql
+SELECT 'full100' AS index, live_items FROM bt_page_stats('full100_pkey', 1)
+UNION ALL
+SELECT 'room70', live_items FROM bt_page_stats('room70_pkey', 1);
+```
+<Explain>
+58 for full100, none for room70. full100's new versions went to another page, so each one needed an index entry with its new address. room70's stayed on their own page as HOT updates: the index entry still points at the old version's slot, and a reader follows the chain from there to the new one, all inside the page.
+</Explain>
+</Predict>
+
+```sql run session=ff
+SELECT 'full100_pkey' AS index, live_items FROM bt_page_stats('full100_pkey', 1)
+UNION ALL
+SELECT 'room70_pkey', live_items FROM bt_page_stats('room70_pkey', 1)
+ORDER BY index;
+```
+
+<Figure caption={<>what 58 updates cost each table: new primary key entries, and updates that stayed on their own page.</>}>
+<Bars data={cost.flatMap((r) => [{ label: `${r[0]}: new index entries`, value: Number(r[1]) }, { label: `${r[0]}: HOT updates`, value: Number(r[2]) }])} />
+<Provenance trace={{ engine: fillfactor.engine, scenario: fillfactor.scenario }} />
+</Figure>
+
+232 entries for 232 rows in room70's index. 290 in full100's: one extra per update. and every one of those is an index page write, a WAL record, and later a dead index entry for VACUUM to clean up. on a table with five indexes, multiply by five.
+
+## what makes an update HOT
+
+two conditions, and fillfactor only helps with the first:
+
+1. **the new version fits on the same page.** that's what the free space is for.
+2. **no indexed column changed.** if it did, the indexes need a new entry anyway, so there's no point.
+
+you can see which updates made it, tuple by tuple. `HEAP_HOT_UPDATED` marks an old version whose replacement is on the same page, and `HEAP_ONLY_TUPLE` marks a version no index points at:
+
+```sql run session=ff
+SELECT rel,
+       count(*) FILTER (WHERE (t_infomask2 & 16384) <> 0) AS hot_updated,
+       count(*) FILTER (WHERE (t_infomask2 & 32768) <> 0) AS heap_only
+FROM (SELECT 'full100' AS rel, h.* FROM generate_series(0, 4) AS b,
+             heap_page_items(get_raw_page('full100', b)) AS h
+      UNION ALL
+      SELECT 'room70', h.* FROM generate_series(0, 5) AS b,
+             heap_page_items(get_raw_page('room70', b)) AS h) AS t
+GROUP BY rel ORDER BY rel;
+```
+
+all 58 of room70's updates were HOT. none of full100's. here's one of room70's pages up close:
+
+<Figure wide caption={<>room70's page 0 after the update. pick a slot with a <C k="dead">dead</C> version: its t_ctid points at a new version a few slots on, same page. the new versions carry ONLY_TUPLE: no index entry points at them, the chain does.</>}>
+<PageView page={after.heap.room70[0]} xact={after.xact} horizon={horizon} focus={4} fields={["id", "n"]} provenance={`real output, postgres 18.6 (PGlite 0.5.12) · fillfactor, after the UPDATE`} />
+</Figure>
+
+and there's a second payoff. old versions in a HOT chain can be removed by **pruning**: the next statement that reads the page and finds it short on space cleans the chain up on the spot, no VACUUM needed. so a page at fillfactor 70 can take update after update, freeing space as fast as it uses it. the details are in [HOT updates and pruning](/learn/mvcc/hot-updates).
+
+## picking a number
+
+- **100**, the default, for tables that are only inserted into, or rarely updated: logs, events, history. reserving space there is just waste.
+- **70 to 90** for tables whose rows are updated often, in columns that aren't indexed: counters, statuses, `last_seen_at`. watch `n_tup_hot_upd` against `n_tup_upd` in `pg_stat_user_tables` and lower it until most updates are HOT.
+- lower than that rarely pays. every point of fillfactor is a point more table to scan, cache and back up.
+
+indexes have a fillfactor too (b-trees default to 90), for the same reason the other way round: room in a leaf for a new key, so it doesn't have to split. that's [page splits](/learn/index-internals/page-splits).
+
+<Gotcha title="ALTER TABLE ... SET (fillfactor) doesn't touch existing pages">
+changing fillfactor on a table only affects pages filled from then on. the pages already there stay as packed as they were. to repack a whole table at the new setting it has to be rewritten: `VACUUM FULL` or `CLUSTER` (both lock the table for the duration), or an online tool like pg_repack. and an UPDATE that changes an indexed column is never HOT, whatever the fillfactor. if your hot column is indexed, free space won't save you.
+</Gotcha>
+
+<Interview q="what does fillfactor do, and when would you lower it?">
+it caps how full INSERTs pack each heap page: at 80, inserts move on to a new page once a page is 80% full. the reserved 20% is for updates: postgres writes a new version on every update, and if it fits on the same page and no indexed column changed, the update is HOT. no index entries get written, and the old version can be pruned by later reads without waiting for vacuum. lower it for tables with frequent updates to non-indexed columns, and check the effect with n_tup_hot_upd vs n_tup_upd. leave it at 100 for append-only tables. bonus point: it only applies to newly filled pages, so changing it on a big table needs a rewrite to take effect everywhere.
+</Interview>
+
+<Keylines>
+- fillfactor = how full an INSERT packs a page. tables default to 100, b-tree indexes to 90.
+- the reserved space lets an UPDATE put the new version on the same page.
+- same page + no indexed column changed = a HOT update: no new index entries, prunable without vacuum.
+- it makes the table bigger on purpose. use it on update-heavy tables, not append-only ones.
+- changing it only affects pages filled afterwards.
+</Keylines>

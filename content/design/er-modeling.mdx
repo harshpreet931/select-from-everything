@@ -1,0 +1,141 @@
+import { ErDiagram } from "@/components/figures/design/ErDiagram";
+
+<InShort>
+before any CREATE TABLE: find the **entities** (the nouns that have their own identity), their **attributes**, and the **relationships** between them, each with a **cardinality**: one-to-one, one-to-many, many-to-many.
+
+then the translation is mechanical. an entity is a table. one-to-many is a foreign key on the *many* side. many-to-many is a **junction table** with two foreign keys. one-to-one is a foreign key with UNIQUE on it.
+</InShort>
+
+## the picture
+
+you know how a schema designed while typing CREATE TABLE ends up with a `products` column on orders, then `product2`, then a comma-separated list? the shape of the data was decided by whichever table got written first.
+
+think of an architect's sketch before the bricks (the diagram before the DDL). boxes for the rooms, lines for the doors, and a note on each door saying how many people go through it. moving a wall on paper is free; moving it after the concrete sets is a migration.
+
+here are the shop's requirements, as a product person would write them:
+
+> customers place orders. an order has one or more lines; each line is some quantity of one product. a customer can exist before ordering anything. a product can exist before anyone buys it.
+
+the nouns are the candidate entities: customer, order, line, product. "quantity" is an attribute, it has no life of its own. the verbs are relationships: places, has, is of. and the little words carry the cardinality: *one or more*, *before ordering anything* (zero is allowed).
+
+<Figure wide caption={<>the shop, drawn before it&apos;s created. read each <C k="ref">line</C> from both ends: one customer places zero or more orders (circle = zero allowed, foot = many), and each order belongs to exactly one customer (two bars). order_items is where the many-to-many between orders and products lives.</>}>
+<ErDiagram
+  height={250}
+  provenance="from datasets/shop/schema.sql"
+  entities={[
+    { name: "customers", at: [0, 20], cols: [{ name: "id", pk: true }, { name: "name" }, { name: "email", type: "unique" }, { name: "city" }] },
+    { name: "orders", at: [260, 20], cols: [{ name: "id", pk: true }, { name: "customer_id", fk: true }, { name: "status" }, { name: "ordered_at" }] },
+    { name: "order_items", at: [260, 145], cols: [{ name: "order_id", pk: true, fk: true }, { name: "line_no", pk: true }, { name: "product_id", fk: true }, { name: "qty" }] },
+    { name: "products", at: [530, 145], cols: [{ name: "id", pk: true }, { name: "sku", type: "unique" }, { name: "name" }, { name: "price" }] },
+  ]}
+  links={[
+    { from: "orders", fromCol: "customer_id", to: "customers", fromEnd: "zero-many", toEnd: "one", label: "places" },
+    { from: "order_items", fromCol: "order_id", to: "orders", fromEnd: "many", toEnd: "one" },
+    { from: "order_items", fromCol: "product_id", to: "products", fromEnd: "zero-many", toEnd: "one" },
+  ]}
+/>
+</Figure>
+
+## from boxes and lines to tables
+
+<Figure caption={<>the whole method, left to right. each step is a question you answer from the requirements, not from the database.</>}>
+<Flow stages={[
+  { label: "nouns", sub: "→ entities", note: "things with their own identity, that you'd look up or count: customer, order, product. each becomes a table with a key." },
+  { label: "properties", sub: "→ attributes", note: "facts about one entity: a name, a price. each becomes a column. a property with properties of its own (an address with a city you query) may be an entity." },
+  { label: "verbs", sub: "→ relationships", note: "places, contains, teaches. each becomes a foreign key, or a junction table." },
+  { label: "how many", sub: "→ cardinality", note: "for each end: zero or one, exactly one, zero or more, one or more. decides where the foreign key goes, and whether it's NOT NULL or UNIQUE." },
+]} />
+</Figure>
+
+the cardinality decides where the foreign key lives:
+
+| relationship | example | becomes |
+| --- | --- | --- |
+| one-to-many | a customer places many orders | `orders.customer_id REFERENCES customers`, on the many side |
+| many-to-many | an order contains many products, a product is in many orders | a junction table, `order_items (order_id, product_id, ...)` |
+| one-to-one | a customer has at most one loyalty card | `cards.customer_id REFERENCES customers UNIQUE` |
+
+and the zero-or-not on each end decides NOT NULL. "every order belongs to a customer" is `customer_id NOT NULL`. "an employee may have a manager" is a nullable `manager_id`.
+
+<Predict options={["customers.order_id", "orders.customer_id", "a junction table"]} answer={1}>
+```sql
+-- a customer places many orders; an order has one customer.
+-- where does the foreign key go?
+```
+<Explain>
+on the many side: orders.customer_id. each order has exactly one customer, so one column holds it. the other way round, customers would need a column per order, which is a repeating group (and a 1NF violation, see [normal forms](/learn/design/normal-forms)).
+</Explain>
+</Predict>
+
+## many-to-many and the junction table
+
+neither side of a many-to-many can hold the reference, because both sides have many. so the relationship becomes a table of its own, one row per pair. the school dataset's enrollments is one: a student takes many courses, a course has many students.
+
+<Figure wide caption={<>a many-to-many, resolved. enrollments has a foreign key to each side, and a composite primary key. the grade is an attribute of the <em>relationship</em> (this student, in this course, this term), so it lives on the junction table, not on either entity.</>}>
+<ErDiagram
+  height={150}
+  provenance="from datasets/school/schema.sql"
+  entities={[
+    { name: "students", at: [0, 20], cols: [{ name: "id", pk: true }, { name: "name" }, { name: "email", type: "unique" }] },
+    { name: "enrollments", at: [270, 20], cols: [{ name: "student_id", pk: true, fk: true }, { name: "course_code", pk: true, fk: true }, { name: "term", pk: true }, { name: "grade" }] },
+    { name: "courses", at: [540, 20], cols: [{ name: "code", pk: true }, { name: "title" }, { name: "credits" }] },
+  ]}
+  links={[
+    { from: "enrollments", fromCol: "student_id", to: "students", fromEnd: "zero-many", toEnd: "one" },
+    { from: "enrollments", fromCol: "course_code", to: "courses", fromEnd: "zero-many", toEnd: "one" },
+  ]}
+/>
+</Figure>
+
+walking a many-to-many is two joins through the junction. Priya Nair's courses:
+
+```sql run db=school
+SELECT c.code, c.title, e.term, e.grade
+FROM students AS s
+JOIN enrollments AS e ON e.student_id = s.id
+JOIN courses AS c ON c.code = e.course_code
+WHERE s.name = 'Priya Nair'
+ORDER BY e.term, c.code;
+```
+
+and the other direction, a course's students, is the same two joins read from the other end. no list stored anywhere, no column per course: adding the hundredth course to a student's history is one more row.
+
+## one-to-one, and when it's really one table
+
+a true one-to-one is rare. usually it's an optional extension of an entity: a customer *may* have a loyalty card, and the card's columns would be NULL for most customers. a foreign key plus UNIQUE says "at most one":
+
+```sql run expect=error
+CREATE TABLE customers (id int PRIMARY KEY, name text NOT NULL);
+CREATE TABLE loyalty_cards (
+  customer_id int PRIMARY KEY REFERENCES customers,
+  points      int NOT NULL DEFAULT 0
+);
+INSERT INTO customers VALUES (42, 'Ada Lovelace');
+INSERT INTO loyalty_cards VALUES (42, 120);
+INSERT INTO loyalty_cards VALUES (42, 0);
+```
+
+here the foreign key *is* the primary key, which gives both: the card can't exist without a customer, and a customer can't have two. if every customer always has exactly one card, and you always read them together, it's one table with a few more columns.
+
+## a few modeling calls that come up every time
+
+- **an attribute or an entity?** if you'll filter, group or constrain on its parts, or several things share it, it's an entity. an address you only print is a column; addresses with a country you report on, shared by billing and shipping, are a table.
+- **an attribute of what?** a price that changes over time is an attribute of the product *now*, and of the order line *then*. both columns are right, because they're different facts ([denormalizing on purpose](/learn/design/denormalization)).
+- **relationships to yourself.** an employee's manager is another employee: a foreign key from the table to itself, `employees.manager_id REFERENCES employees`. that's a tree, and [storing trees](/learn/design/hierarchies) is about querying it.
+- **one relationship or several?** an order has a billing and a shipping address: two foreign keys to the same table, each named for its role.
+
+<Gotcha title="a many-to-many in an array">
+`products int[]` on orders, or `tags text` with commas, looks like it saves a table. it costs you the foreign key (postgres can't check array elements against another table), the per-pair attributes (quantity, unit price), and simple counting from the other side. [schema anti-patterns](/learn/design/anti-patterns) runs the queries that hurt. a junction table is a few lines of DDL.
+</Gotcha>
+
+<Interview q="model a system where students enroll in courses and get a grade">
+students(id) and courses(code) are entities. enrollment is a many-to-many between them, so it becomes a junction table enrollments(student_id REFERENCES students, course_code REFERENCES courses, term, grade). the grade belongs to the relationship, not to either side. the key is (student_id, course_code, term) if retakes are allowed, (student_id, course_code) if not, and that choice is a business rule you should ask about. bonus point: index the junction table in both directions, (student_id, ...) is the primary key's index, and add one on course_code for "who's in this course".
+</Interview>
+
+<Keylines>
+- nouns are entities (tables), properties are attributes (columns), verbs are relationships.
+- one-to-many: a foreign key on the many side.
+- many-to-many: a junction table with two foreign keys, and the relationship's own attributes.
+- one-to-one: a foreign key with UNIQUE, often as the primary key.
+- zero or one on an end decides NULL or NOT NULL.
+</Keylines>

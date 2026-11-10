@@ -1,0 +1,97 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b8cec9529a1896c3": {
+      "db": "bank",
+      "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT balance FROM accounts WHERE id = 1;\nSELECT owner FROM accounts WHERE id = 2;\nSELECT locktype, relation::regclass, page, tuple\nFROM pg_locks WHERE mode = 'SIReadLock'\nORDER BY locktype, relation::regclass::text, page, tuple;\nSELECT count(*) FROM accounts WHERE balance > 1000;\nSELECT locktype, relation::regclass, page, tuple\nFROM pg_locks WHERE mode = 'SIReadLock'\nORDER BY locktype, relation::regclass::text, page, tuple;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "f54ce26cb5521c0e",
+          "rows": [
+            ["100.00"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "4b76a8808a5c3b8a",
+          "rows": [
+            ["bob"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["relation", "regclass", 2205],
+            ["page", "int4", 23],
+            ["tuple", "int2", 21]
+          ],
+          "rowCount": 3,
+          "digest": "3a35bae5ef6194e6",
+          "rows": [
+            ["page", "accounts_pkey", "1", null],
+            ["tuple", "accounts", "0", "1"],
+            ["tuple", "accounts", "0", "2"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "ee525eb0a691456a",
+          "rows": [
+            ["982"]
+          ]
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["relation", "regclass", 2205],
+            ["page", "int4", 23],
+            ["tuple", "int2", 21]
+          ],
+          "rowCount": 2,
+          "digest": "85b9bab976e35544",
+          "rows": [
+            ["page", "accounts_pkey", "1", null],
+            ["relation", "accounts", null, null]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "722a5aee5ca78144"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

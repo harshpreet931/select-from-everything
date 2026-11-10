@@ -1,0 +1,254 @@
+import { WindowFrame } from "@/components/figures/analytics/WindowFrame";
+import { frameLab } from "@/components/figures/analytics/frames";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/window-frames.pgtrace.json";
+import days from "./traces/window-frames-days.pgtrace.json";
+
+{/* every frame on this page is postgres's own answer: traces/window-frames.scenario.sql (org's
+    nine leads, every mode and four frames, then EXCLUDE) and window-frames-days.scenario.sql
+    (events, a three-day sum across the missing day), both captured on PGlite. each step selects
+    array_agg(id) OVER w, the list of rows that fed the window function; frameLab turns that into
+    the bracket. nothing about frame membership is computed in the browser. */}
+
+export const MODES = ["ROWS", "RANGE", "GROUPS"];
+export const BOUNDS = [
+  { v: "UNBOUNDED PRECEDING AND CURRENT ROW", label: "start → current" },
+  { v: "n PRECEDING AND n FOLLOWING", label: "n before → n after" },
+  { v: "CURRENT ROW AND UNBOUNDED FOLLOWING", label: "current → end" },
+  { v: "UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING", label: "start → end" },
+];
+export const lab = frameLab(trace, BOUNDS.flatMap((b) => MODES.map((m) => `${m} | ${b.v}`)), 1, { key: "id", frame: "frame", show: ["id", "name", "salary"], out: ["sum", "last_value"] });
+export const EX = ["NO OTHERS", "CURRENT ROW", "GROUP", "TIES"];
+export const exclude = frameLab(trace, EX, 13, { key: "id", frame: "frame", show: ["id", "name", "salary"], out: ["n", "avg"], base: { "CURRENT ROW": "NO OTHERS", GROUP: "NO OTHERS", TIES: "NO OTHERS" } });
+export const daily = frameLab(days, ["ROWS", "RANGE"], 0, { key: "day", frame: "frame", show: ["day", "purchases"], out: ["three_days"] });
+
+<InShort>
+a **window frame** is the slice of the partition a window function reads for one row. it moves with the current row. **ROWS** counts rows, **RANGE** measures the ORDER BY value, **GROUPS** counts runs of tied rows.
+
+write only ORDER BY and you get `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`: from the first row to the current row's last tie. that one default is why `last_value` looks broken.
+</InShort>
+
+## the picture
+
+you know how `last_value(name) OVER (ORDER BY salary)` is supposed to give you the best-paid person, and instead hands every row back its own name, more or less? kinda cursed. it stops being cursed once you can see the frame.
+
+think of a ruler laid down the list of rows, with a sliding clip on it. for every row, postgres moves the clip, and the window function reads only what's inside the clip (the frame). a running total clips from the top down to here. a moving average clips one above and one below. last_value reads the last thing inside the clip, not the last thing on the ruler.
+
+the rows here are the nine leads under one director, in salary order, with their ties. move the current row, switch the mode, and watch the bracket:
+
+<Figure wide caption={<>click a row, or step through them. the bracket is the frame, the rows that fed <code>sum</code> and <code>last_value</code> for the <C k="hot">current row</C>, tinted <C k="live">live</C>. a darker line separates salaries, so you can see the ties. switch ROWS to RANGE on the first row: the frame grows to all three people on 95,000.</>}>
+<WindowFrame
+  {...lab}
+  options={[
+    { key: "mode", values: MODES },
+    { key: "frame", values: BOUNDS },
+  ]}
+  start={["RANGE", "UNBOUNDED PRECEDING AND CURRENT ROW"]}
+  peer="salary"
+  trace={prov(trace)}
+/>
+</Figure>
+
+notice what never happens: no row disappears. nine rows go in, nine come out, each with its own sum and its own last_value. a frame only decides what a row *reads*. ([window functions](/learn/analytics/window-functions) has the part about not collapsing.)
+
+## the frame clause
+
+the frame lives at the end of the window definition, after ORDER BY:
+
+```text
+{ ROWS | RANGE | GROUPS } BETWEEN start AND end [ EXCLUDE ... ]
+
+start, end:  UNBOUNDED PRECEDING | n PRECEDING | CURRENT ROW | n FOLLOWING | UNBOUNDED FOLLOWING
+```
+
+the figure works on a small table of its own, the nine leads copied out of `employees` in salary order. every block below runs after this one:
+
+```sql run db=org session=leads
+CREATE TABLE leads AS
+SELECT id, name, salary FROM employees
+WHERE manager_id IN (14, 15, 16)
+ORDER BY salary, id;
+
+SELECT id, name, salary FROM leads ORDER BY salary, id;
+```
+
+three salaries are tied at 95,000, two at 98,000, three at 99,000. rows that tie on the window's ORDER BY are **peers**, and peers are where the three modes part ways.
+
+## three ways to say "1 PRECEDING"
+
+the bounds read the same in every mode. what "1" counts is the difference:
+
+- **ROWS**: one row. the row above, whatever it holds.
+- **RANGE**: one unit of the ORDER BY value. `RANGE BETWEEN 1000 PRECEDING AND 1000 FOLLOWING` is "everyone paid within 1,000 of me". it needs exactly one ORDER BY column, of a type you can subtract from (numbers, dates with an interval).
+- **GROUPS**: one peer group. the whole run of tied rows above, however long it is.
+
+and CURRENT ROW changes too: in ROWS it's this row, in RANGE and GROUPS it's this row *and its peers*.
+
+<Predict options={["3 rows", "4 rows", "6 rows"]} answer={2}>
+```sql
+-- for Chen Ahmed, the only lead on 97,000
+SELECT count(*) OVER (ORDER BY salary
+                      GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+FROM leads;
+```
+<Explain>
+GROUPS counts peer groups, not rows. Chen's group is just Chen. one group back is all three people on 95,000, one group ahead is both people on 98,000. that's 3 + 1 + 2 = 6 rows. ROWS would have said 3, and RANGE 1000 would have said 3 as well (only 96,000 to 98,000, and nobody earns 96,000).
+</Explain>
+</Predict>
+
+all three at once, one window per mode:
+
+```sql run session=leads
+SELECT id, salary,
+       count(*) OVER (ORDER BY salary, id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS by_rows,
+       count(*) OVER (ORDER BY salary RANGE BETWEEN 1000 PRECEDING AND 1000 FOLLOWING) AS by_range,
+       count(*) OVER (ORDER BY salary GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS by_groups
+FROM leads
+ORDER BY salary, id;
+```
+
+Chen Ahmed (45) gets 3, 3 and 6. the ROWS window says `ORDER BY salary, id` on purpose: ROWS picks rows by position, and among ties the position is whatever the sort left. add a unique column and the positions are fixed. (RANGE and GROUPS take whole peer groups, so they don't care.)
+
+### a moving sum across a missing day
+
+ROWS vs RANGE stops being academic the moment your data has holes. the events table has none on 2026-04-14. here's a "three-day" moving sum of purchases both ways:
+
+<Figure wide caption={<>step to the 15th. ROWS 2 PRECEDING takes the two rows above, the 12th and the 13th: three rows spanning four days. RANGE <code>interval '2 days'</code> takes the days that are really within two days, so the missing 14th just counts as nothing.</>}>
+<WindowFrame
+  {...daily}
+  options={[{ key: "mode", values: ["ROWS", "RANGE"] }]}
+  startRow={4}
+  rowLabel="day"
+  trace={prov(days)}
+/>
+</Figure>
+
+63 purchases by ROWS, 46 by RANGE, for the same day. ROWS counts rows, and a missing day is a missing row, so ROWS quietly reaches further back. if the window is about time, say it in time: RANGE with an interval. (or fill the hole first with a [calendar from generate_series](/learn/analytics/generate-series), and then ROWS is honest again.)
+
+## the default frame, and last_value
+
+if you write no frame clause, you still get one. which one depends on ORDER BY:
+
+- no ORDER BY in the window: every row is a peer of every other, so the frame is the whole partition.
+- ORDER BY: `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. from the first row to the current row's **last peer**.
+
+that's what makes a running total come out of `sum(x) OVER (ORDER BY day)` with no frame in sight ([running totals](/learn/analytics/lag-and-lead)). and it's what breaks last_value.
+
+<Predict options={["Lucas Haddad, the top", "Omar Kim", "Olivia Nguyen herself"]} answer={1}>
+```sql
+SELECT name, salary,
+       last_value(name) OVER (ORDER BY salary) AS top_paid
+FROM leads
+ORDER BY salary, id;
+-- what's top_paid on Olivia Nguyen's row (95,000, first in the list)?
+```
+<Explain>
+the default frame ends at the current row's last peer. Olivia is on 95,000 with Rahul Haddad and Omar Kim, and Omar comes last of the three. so her frame is those three rows, and the last value in it is Omar Kim. not her, not the top. last_value did exactly what it says; the frame stopped short.
+</Explain>
+</Predict>
+
+```sql run session=leads
+SELECT id, name, salary,
+       last_value(name) OVER (ORDER BY salary) AS top_paid
+FROM leads
+ORDER BY salary, id;
+```
+
+Omar Kim three times, then Chen Ahmed's own name, then Emma Smith twice. every row reports the last of its own ties. the fix is to say which frame you meant: the whole partition.
+
+```sql run session=leads
+SELECT id, name, salary,
+       last_value(name) OVER (ORDER BY salary, id
+                              ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS top_paid,
+       first_value(name) OVER (ORDER BY salary DESC, id DESC) AS also_top_paid
+FROM leads
+ORDER BY salary, id;
+```
+
+two ways to the same answer. widen the frame, or flip the order and use first_value, which works with the default frame because the first row is always in it. either way, notice the `id` in the ORDER BY. the top salary is a three-way tie, and "the last of them" is only one person once you've said how to break the tie. ([ranking](/learn/analytics/ranking) is all about that.)
+
+<Gotcha title="nth_value and last_value read the frame, row_number and lag don't">
+the frame only matters to the aggregates (`sum`, `avg`, `count` used with OVER) and to `first_value`, `last_value` and `nth_value`. the ranking functions and `lag`/`lead` work on the whole partition and ignore it. a frame of just the current row changes first_value, and leaves lag alone:
+
+```sql run session=leads
+SELECT id,
+       first_value(id) OVER w AS first_in_frame,
+       lag(id) OVER w AS lag,
+       row_number() OVER w AS row_number
+FROM leads
+WINDOW w AS (ORDER BY salary, id ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+ORDER BY salary, id;
+```
+</Gotcha>
+
+## EXCLUDE: leaving rows out
+
+the last part of a frame clause takes rows back out of the frame, after the bounds have picked it. "how does my salary compare with everyone else's?" wants the whole team minus me:
+
+<Figure wide caption={<>the frame is always the whole table here (the bracket). switch EXCLUDE and step through the rows: <C k="faint">dashed</C> rows are inside the bracket but left out of <code>count</code> and <code>avg</code>.</>}>
+<WindowFrame
+  {...exclude}
+  options={[{ key: "EXCLUDE", values: EX }]}
+  start={["CURRENT ROW"]}
+  peer="salary"
+  trace={prov(trace)}
+/>
+</Figure>
+
+- `EXCLUDE CURRENT ROW`: everyone but me. 8 rows for everyone.
+- `EXCLUDE GROUP`: me and my peers. for Olivia that's 6 rows: the people *not* on 95,000.
+- `EXCLUDE TIES`: my peers, but not me. 7 rows for Olivia.
+- `EXCLUDE NO OTHERS`: the default. nothing excluded.
+
+```sql run session=leads
+SELECT id, name, salary,
+       salary - round(avg(salary) OVER (ORDER BY salary
+                      ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                      EXCLUDE CURRENT ROW)) AS vs_the_others
+FROM leads
+ORDER BY salary, id;
+```
+
+Olivia earns 2,500 less than the other eight do on average. (without EXCLUDE, she'd be compared with an average that includes her own salary, which is a small lie that grows as the team shrinks.)
+
+## the rules postgres checks
+
+a few frames don't make sense, and postgres says so before it reads a row. RANGE with an offset needs exactly one ORDER BY column to measure along:
+
+```sql run session=leads expect=error
+SELECT id, sum(salary) OVER (ORDER BY salary, id
+                             RANGE BETWEEN 1000 PRECEDING AND CURRENT ROW)
+FROM leads;
+```
+
+and a frame can't end before it starts (`BETWEEN CURRENT ROW AND 1 PRECEDING`), can't start at UNBOUNDED FOLLOWING, and the offsets can't be negative or NULL.
+
+under the hood, each distinct window becomes a `WindowAgg` node over a sort. postgres 18's EXPLAIN prints the window definition on the node, frame included ([release notes](https://www.postgresql.org/docs/18/release-18.html): "details about window function arguments"):
+
+```sql run session=leads
+EXPLAIN (COSTS OFF)
+SELECT id, sum(salary) OVER w
+FROM leads
+WINDOW w AS (ORDER BY salary ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+ORDER BY salary, id;
+```
+
+the sort by salary feeds the WindowAgg, and the final ORDER BY only has to add `id` within each salary: an incremental sort, with `Presorted Key: salary`. ([sorting](/learn/execution/sorting) has how that works.)
+
+<Deep title="where GROUPS and EXCLUDE came from">
+the SQL:2003 standard had ROWS and RANGE. SQL:2011 added GROUPS, frame exclusion, and RANGE with a distance like `1000 PRECEDING`. postgres had ROWS, and RANGE with only UNBOUNDED and CURRENT ROW, until postgres 11, whose [release notes](https://www.postgresql.org/docs/release/11.0/) list all three as "all window function framing options shown in the SQL:2011 standard".
+</Deep>
+
+<Docs href="https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-WINDOW-FUNCTIONS" title="window function calls">the manual's grammar for frames, with the exact meaning of CURRENT ROW in each mode, and the note that the default frame ends at the current row's last peer.</Docs>
+
+<Interview q="why does last_value(x) OVER (ORDER BY y) seem to return the current row?">
+because with ORDER BY and no frame clause, the frame is RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, which ends at the current row's last peer. last_value returns the last row of that frame, so for a row with no ties it's the row itself. fix it with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING, or use first_value with the order reversed. bonus point: break ties in the ORDER BY, or "the last row" isn't well defined, and mention that lag, lead and the ranking functions ignore the frame entirely.
+</Interview>
+
+<Keylines>
+- a frame is the slice of the partition a window function reads for the current row. it moves; nothing collapses.
+- ROWS counts rows, RANGE measures the ORDER BY value, GROUPS counts runs of ties.
+- the default with ORDER BY is RANGE UNBOUNDED PRECEDING to CURRENT ROW, which includes the current row's peers.
+- that default is why last_value looks broken. say UNBOUNDED FOLLOWING, or use first_value backwards.
+- for time windows over data with holes, use RANGE with an interval, not ROWS.
+</Keylines>

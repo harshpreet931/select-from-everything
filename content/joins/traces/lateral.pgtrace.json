@@ -1,0 +1,346 @@
+{
+ "v": 1,
+ "scenario": "content/joins/traces/lateral.scenario.sql",
+ "title": "the latest three orders per customer, one LATERAL subquery per customer",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT id, name FROM customers WHERE id IN (1, 7, 42) ORDER BY id",
+   "note": "the left side: three customers.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"}],
+    "data": [["1","Maya Chen"],["7","Ming Li"],["42","Ada Lovelace"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT o.id, o.status, o.ordered_at::date AS day\nFROM orders AS o\nWHERE o.customer_id = 1\nORDER BY o.ordered_at DESC\nLIMIT 3",
+   "note": "for Maya Chen, the subquery runs with c.id = 1: her three latest orders, out of 57.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"status","type":"text"},{"name":"day","type":"date"}],
+    "data": [["9982","cancelled","2026-06-26"],["9405","delivered","2026-06-05"],["9398","delivered","2026-06-05"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT o.id, o.status, o.ordered_at::date AS day\nFROM orders AS o\nWHERE o.customer_id = 7\nORDER BY o.ordered_at DESC\nLIMIT 3",
+   "note": "for Ming Li, c.id = 7. she has never ordered, so the subquery returns no rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 0,
+    "columns": [{"name":"id","type":"int4"},{"name":"status","type":"text"},{"name":"day","type":"date"}],
+    "data": []
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT o.id, o.status, o.ordered_at::date AS day\nFROM orders AS o\nWHERE o.customer_id = 42\nORDER BY o.ordered_at DESC\nLIMIT 3",
+   "note": "for Ada, c.id = 42: three of her seven orders.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"status","type":"text"},{"name":"day","type":"date"}],
+    "data": [["9946","placed","2026-06-25"],["9615","delivered","2026-06-13"],["8219","delivered","2026-04-23"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT c.id, c.name, o.id AS order_id, o.day\nFROM customers AS c\nCROSS JOIN LATERAL (\n  SELECT o.id, o.ordered_at::date AS day\n  FROM orders AS o\n  WHERE o.customer_id = c.id\n  ORDER BY o.ordered_at DESC\n  LIMIT 3\n) AS o\nWHERE c.id IN (1, 7, 42)\nORDER BY c.id, o.day DESC, o.id DESC",
+   "note": "CROSS JOIN LATERAL: each customer joined to whatever their subquery returned. Ming Li's returned nothing, so she has no rows here, like an inner join.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"order_id","type":"int4"},
+     {"name":"day","type":"date"}
+    ],
+    "data": [
+     ["1","Maya Chen","9982","2026-06-26"],
+     ["1","Maya Chen","9405","2026-06-05"],
+     ["1","Maya Chen","9398","2026-06-05"],
+     ["42","Ada Lovelace","9946","2026-06-25"],
+     ["42","Ada Lovelace","9615","2026-06-13"],
+     ["42","Ada Lovelace","8219","2026-04-23"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT c.id, c.name, o.id AS order_id, o.day\nFROM customers AS c\nLEFT JOIN LATERAL (\n  SELECT o.id, o.ordered_at::date AS day\n  FROM orders AS o\n  WHERE o.customer_id = c.id\n  ORDER BY o.ordered_at DESC\n  LIMIT 3\n) AS o ON true\nWHERE c.id IN (1, 7, 42)\nORDER BY c.id, o.day DESC, o.id DESC",
+   "note": "LEFT JOIN LATERAL ... ON true: same subqueries, but a customer whose subquery returned nothing comes back once, padded. Ming Li is back.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"order_id","type":"int4"},
+     {"name":"day","type":"date"}
+    ],
+    "data": [
+     ["1","Maya Chen","9982","2026-06-26"],
+     ["1","Maya Chen","9405","2026-06-05"],
+     ["1","Maya Chen","9398","2026-06-05"],
+     ["7","Ming Li",null,null],
+     ["42","Ada Lovelace","9946","2026-06-25"],
+     ["42","Ada Lovelace","9615","2026-06-13"],
+     ["42","Ada Lovelace","8219","2026-04-23"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT c.id, c.name, o.id AS order_id, o.day\nFROM customers AS c\nCROSS JOIN LATERAL (\n  SELECT o.id, o.ordered_at::date AS day\n  FROM orders AS o\n  WHERE o.customer_id = c.id\n  ORDER BY o.ordered_at DESC\n  LIMIT 3\n) AS o\nWHERE c.id IN (1, 7, 42)",
+   "note": "the plan: a nested loop, with the whole subquery (scan, sort, limit) on its inner side, run once per customer.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Nested Loop",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Join Type": "Inner",
+     "Startup Cost": 208.35,
+     "Total Cost": 641.31,
+     "Plan Rows": 9,
+     "Plan Width": 24,
+     "Actual Rows": 6,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Inner Unique": false,
+     "Shared Hit Blocks": 252,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Index Scan",
+       "Parent Relationship": "Outer",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Scan Direction": "Forward",
+       "Index Name": "customers_pkey",
+       "Relation Name": "customers",
+       "Alias": "c",
+       "Startup Cost": 0.28,
+       "Total Cost": 16.89,
+       "Plan Rows": 3,
+       "Plan Width": 16,
+       "Actual Rows": 3,
+       "Actual Loops": 1,
+       "Disabled": false,
+       "Index Cond": "(id = ANY ('{1,7,42}'::integer[]))",
+       "Rows Removed by Index Recheck": 0,
+       "Index Searches": 1,
+       "Shared Hit Blocks": 3,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0
+      },
+      {
+       "Node Type": "Limit",
+       "Parent Relationship": "Inner",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 208.07,
+       "Total Cost": 208.08,
+       "Plan Rows": 3,
+       "Plan Width": 16,
+       "Actual Rows": 2,
+       "Actual Loops": 3,
+       "Disabled": false,
+       "Shared Hit Blocks": 249,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Sort",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Startup Cost": 208.07,
+         "Total Cost": 208.08,
+         "Plan Rows": 5,
+         "Plan Width": 16,
+         "Actual Rows": 2,
+         "Actual Loops": 3,
+         "Disabled": false,
+         "Sort Key": ["o.ordered_at DESC"],
+         "Sort Method": "top-N heapsort",
+         "Sort Space Used": 17,
+         "Sort Space Type": "Memory",
+         "Shared Hit Blocks": 249,
+         "Shared Read Blocks": 0,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0,
+         "Plans": [
+          {
+           "Node Type": "Seq Scan",
+           "Parent Relationship": "Outer",
+           "Parallel Aware": false,
+           "Async Capable": false,
+           "Relation Name": "orders",
+           "Alias": "o",
+           "Startup Cost": 0,
+           "Total Cost": 208.01,
+           "Plan Rows": 5,
+           "Plan Width": 16,
+           "Actual Rows": 21.33,
+           "Actual Loops": 3,
+           "Disabled": false,
+           "Filter": "(customer_id = c.id)",
+           "Rows Removed by Filter": 9979,
+           "Shared Hit Blocks": 249,
+           "Shared Read Blocks": 0,
+           "Shared Dirtied Blocks": 0,
+           "Shared Written Blocks": 0,
+           "Local Hit Blocks": 0,
+           "Local Read Blocks": 0,
+           "Local Dirtied Blocks": 0,
+           "Local Written Blocks": 0,
+           "Temp Read Blocks": 0,
+           "Temp Written Blocks": 0
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 0,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  }
+ ],
+ "db": "shop"
+}

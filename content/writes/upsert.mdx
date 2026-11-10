@@ -1,0 +1,198 @@
+import { TableSteps } from "@/components/figures/writes/TableSteps";
+import { framesOf } from "@/components/figures/writes/frames";
+import { runOf } from "@/components/figures/writes/lanes";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/upsert.pgtrace.json";
+import race from "./traces/upsert-race.pgtrace.json";
+import naive from "./traces/check-then-insert.pgtrace.json";
+import undo from "./traces/upsert-rollback.pgtrace.json";
+
+{/* the stepper reads traces/upsert.scenario.sql (PGlite, one session). the race is two real
+    sessions on a native postgres 18.6: traces/upsert-race.scenario.sql and
+    traces/check-then-insert.scenario.sql, with the committed rows read off the heap. */}
+
+export const steps = framesOf(trace, [
+  { label: "before", state: 2 },
+  { label: "plain INSERT", stmt: 3, state: 4 },
+  { label: "DO NOTHING", stmt: 5, state: 6 },
+  { label: "DO UPDATE", stmt: 7, state: 8 },
+  { label: "... WHERE", stmt: 9, state: 10 },
+  { label: "a key twice", stmt: 11, state: 12 },
+], "sku");
+export const races = {
+  "INSERT ... ON CONFLICT": runOf(race, { ok: true, what: "lost delivery", text: "T2 waited for T1, then updated the row T1 had committed. one row, qty 8, nothing to retry." }),
+  "ON CONFLICT, T1 rolls back": runOf(undo, { ok: true, what: "lost delivery", text: "T1 rolled back, so after the wait there was no conflict: T2 inserted its own row, qty 3." }),
+  "check, then INSERT": runOf(naive, { ok: false, what: "lost delivery", text: "both sessions saw no row and both inserted. T2 got 23505 and rolled back, so its 3 teas are gone unless the app retries." }),
+};
+export const arbiters = {
+  "(sku) | DO NOTHING": resultOf(trace, 14),
+  "(sku) | DO UPDATE": resultOf(trace, 17),
+  "ON CONSTRAINT stock_pkey | DO NOTHING": resultOf(trace, 20),
+  "ON CONSTRAINT stock_pkey | DO UPDATE": resultOf(trace, 23),
+  "(qty) | DO NOTHING": resultOf(trace, 26),
+  "(qty) | DO UPDATE": resultOf(trace, 29),
+  "none | DO NOTHING": resultOf(trace, 32),
+  "none | DO UPDATE": resultOf(trace, 35),
+};
+export const source = prov(trace);
+
+<InShort>
+`INSERT ... ON CONFLICT` inserts a row, or does something else when a **unique index** says the key is taken: **DO NOTHING** skips it, **DO UPDATE** updates the row that's there. inside DO UPDATE, **EXCLUDED** is the row you tried to insert.
+
+it's the only upsert that's safe when two sessions insert the same key at once: one waits, then updates. a SELECT followed by an INSERT isn't.
+</InShort>
+
+## the picture
+
+you know the "insert it, or if it's already there, update it" logic every app ends up writing? stock counts, page views, a settings row per user. it looks like two steps: look, then decide. that's exactly the problem, because between your look and your write, someone else can look too.
+
+think of a guest list at a door. "is Ada on the list? no? write her down." two doormen asking at the same moment both get "no", and Ada ends up on the list twice (or, with a unique key, one of them gets an error). ON CONFLICT is one doorman with one pen: the check and the write happen as one step, at the index.
+
+<Figure wide caption={<>step through six statements on a small stock table. a plain INSERT of an existing sku fails outright. DO NOTHING skips it. DO UPDATE changes the existing row (<C k="hot">hot</C>) and inserts the new one (<C k="live">live</C>). a WHERE can turn the update down, and the same key twice in one statement is an error.</>}>
+<TableSteps frames={steps} table="stock" file="stock.sql" trace={source} />
+</Figure>
+
+everything below runs on a fresh copy of the database each time, so nothing you do here sticks.
+
+## DO NOTHING and DO UPDATE
+
+the shape is an ordinary INSERT with one more clause: what counts as a conflict (the **conflict target**, a column list in parentheses), and what to do about it.
+
+```sql run session=stock title="stock.sql"
+CREATE TABLE stock (
+  sku  text PRIMARY KEY,
+  qty  int  NOT NULL,
+  seen date NOT NULL
+);
+INSERT INTO stock VALUES ('TEA-01', 10, '2026-03-01'), ('TEA-02', 5, '2026-03-01');
+```
+
+DO NOTHING inserts the rows that don't conflict and quietly skips the ones that do. the tag counts only what went in:
+
+```sql run session=stock
+INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-02'), ('TEA-03', 7, '2026-03-02')
+ON CONFLICT (sku) DO NOTHING;
+```
+
+DO UPDATE runs an UPDATE on the existing row instead. in its SET and WHERE, the table's own name means the row that's already there, and **EXCLUDED** means the row you proposed, the one that was excluded from going in:
+
+```sql run session=stock
+INSERT INTO stock VALUES ('TEA-01', 3, '2026-03-03'), ('TEA-04', 12, '2026-03-03')
+ON CONFLICT (sku) DO UPDATE
+SET qty = stock.qty + EXCLUDED.qty, seen = EXCLUDED.seen;
+
+SELECT * FROM stock ORDER BY sku;
+```
+
+`INSERT 0 2`: one row inserted, one updated, and the tag counts both. TEA-01 went from 10 to 13. (to tell which row took which path, ask RETURNING for `old.sku IS NULL`, [new in postgres 18](/learn/writes/returning-old-and-new).)
+
+a WHERE after DO UPDATE decides whether the update happens at all. the classic use: only accept newer data.
+
+```sql run session=stock
+INSERT INTO stock VALUES ('TEA-02', 99, '2026-02-01')
+ON CONFLICT (sku) DO UPDATE
+SET qty = EXCLUDED.qty, seen = EXCLUDED.seen
+WHERE EXCLUDED.seen > stock.seen;
+```
+
+`INSERT 0 0`: the row conflicted, the WHERE said no, and the row was left alone. it still counts as handled: no error, no insert.
+
+<Predict options={["TEA-02 ends up at 8", "an error", "TEA-02 ends up at 7"]} answer={1}>
+```sql
+-- TEA-02 has qty 5
+INSERT INTO stock VALUES ('TEA-02', 1, '2026-03-04'),
+                         ('TEA-02', 2, '2026-03-04')
+ON CONFLICT (sku) DO UPDATE
+SET qty = stock.qty + EXCLUDED.qty;
+```
+<Explain>
+an error. the first TEA-02 updates the existing row. the second would update that same row again, in the same statement, and postgres won't: `ON CONFLICT DO UPDATE command cannot affect row a second time` (SQLSTATE 21000). which of the two should win would depend on the order rows happen to be processed in, and postgres refuses to guess. deduplicate the batch first (GROUP BY sku, sum the qty).
+</Explain>
+</Predict>
+
+```sql run session=stock expect=error
+INSERT INTO stock VALUES ('TEA-02', 1, '2026-03-04'), ('TEA-02', 2, '2026-03-04')
+ON CONFLICT (sku) DO UPDATE
+SET qty = stock.qty + EXCLUDED.qty;
+```
+
+## the arbiter index
+
+`ON CONFLICT (sku)` doesn't mean "if sku is equal to something". it means "find the unique index on exactly (sku), and use it". that index is the **arbiter**: the thing that detects the conflict, and the thing that makes it safe under concurrency.
+
+<Figure wide caption={<>the same insert of TEA-01, which exists, with four conflict targets and both actions. a target names a unique index, by its columns or by its constraint's name. qty has no unique index, so there's nothing to arbitrate with. and DO UPDATE has to know which conflict it's for, so it needs a target; DO NOTHING doesn't.</>}>
+<RunPick
+  options={[
+    { key: "target", values: ["(sku)", "ON CONSTRAINT stock_pkey", "(qty)", "none"] },
+    { key: "action", values: ["DO NOTHING", "DO UPDATE"] },
+  ]}
+  runs={arbiters}
+  hot={["ON CONFLICT"]}
+  file="stock.sql"
+  trace={source}
+/>
+</Figure>
+
+the same refusal on shop, where products has a unique constraint on sku but not on name:
+
+```sql run db=shop expect=error
+INSERT INTO products (sku, name, price) VALUES ('BOO-0300', 'the art of sql', 30.00)
+ON CONFLICT (name) DO NOTHING;
+```
+
+arbiters must be unique indexes or constraints that aren't deferrable. a partial unique index works too, if you repeat its WHERE in the conflict target.
+
+and upserts burn sequence values. the INSERT computes the whole proposed row, defaults and identity included, before it finds out it has to update instead:
+
+```sql run db=shop
+INSERT INTO products (sku, name, price) VALUES ('BOO-0003', 'the art of sql', 30.00)
+ON CONFLICT (sku) DO UPDATE SET price = EXCLUDED.price
+RETURNING id, sku, price;
+
+INSERT INTO products (sku, name, price) VALUES ('BOO-0300', 'sql antipatterns', 38.00)
+RETURNING id, sku, price;
+```
+
+the first upsert updated product 3, and still took 201 from the sequence. the new book gets 202. a table that's mostly upserted can burn through ids much faster than it grows. ([INSERT](/learn/writes/insert) has more on gaps; they're harmless.)
+
+## two sessions, one key
+
+here's why ON CONFLICT exists, rather than every app writing the two steps itself. two sessions, both delivering TEA-02, which nobody has in stock yet:
+
+<Figure wide caption={<>switch between the three runs, and step through. each is two real sessions on a postgres 18.6 server. in each, T2 waits on T1's transaction (the dashed lane). what T2 does when it wakes up is the whole difference. the table on the right is what's committed after each step.</>}>
+<SessionLanes sessions={["T1", "T2"]} options={[{ key: "how", label: "upsert by", values: ["INSERT ... ON CONFLICT", "ON CONFLICT, T1 rolls back", "check, then INSERT"] }]} runs={races} side="db" />
+</Figure>
+
+with ON CONFLICT, T2 goes to the unique index first. it finds T1's entry for TEA-02, not committed yet, so it can't know whether it's a conflict. it waits on T1's transaction id. when T1 commits, T2 checks again, finds a committed row, and takes the DO UPDATE path. the manual promises exactly this: with DO UPDATE, every proposed row ends in an insert or an update, "even under high concurrency", unless some other error gets in the way.
+
+with check-then-insert, both SELECTs run before either INSERT, so both see no row. both decide to insert. the unique index still saves the data (there's only one TEA-02), but it does it with an error: T2's transaction dies with 23505, and the 3 teas it was delivering are lost unless the application catches that and retries.
+
+and if T1 rolls back instead (the second option), T2 wakes to find no conflict at all and inserts its own row. either way, no error. how the unique check waits on another transaction is in [how a unique index says no](/learn/index-internals/unique-checks), and the ShareLock on a transaction id that T2 waits for shows up in [pg_locks](/learn/locking/pg-locks).
+
+<Gotcha title="SELECT ... FOR UPDATE doesn't fix check-then-insert">
+the usual fix for read-then-write races is to lock the row you read ([SELECT ... FOR UPDATE](/learn/transactions/row-locking-clauses)). it doesn't help here: there's no row yet, and you can't lock a row that doesn't exist. that's the case ON CONFLICT is built for. the other honest fixes are a retry loop around the 23505, or SERIALIZABLE (which turns the race into a [serialization failure](/learn/transactions/retry-loops) you also retry).
+</Gotcha>
+
+<Deep title="what DO NOTHING returns">
+`RETURNING` only returns rows the statement inserted or updated. a row DO NOTHING skipped returns nothing, which breaks the "get the id, inserting it if needed" pattern:
+
+```sql run db=shop
+INSERT INTO products (sku, name, price) VALUES ('BOO-0003', 'the art of sql', 30.00)
+ON CONFLICT (sku) DO NOTHING
+RETURNING id;
+```
+
+zero rows. two ways out: follow up with a SELECT for the rows that didn't come back, or use a DO UPDATE that changes nothing (`DO UPDATE SET sku = EXCLUDED.sku`) so every row comes back. the second always returns the row, and always writes a new version of it, which on a hot key means bloat and WAL for nothing ([an UPDATE is an INSERT](/learn/mvcc/update-is-insert)).
+</Deep>
+
+<Interview q="how do you do an upsert in postgres, and why not SELECT then INSERT?">
+`INSERT ... ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col`, which needs a unique index on the key (the arbiter). SELECT-then-INSERT is a race: two transactions can both see no row and both insert, and at read committed one of them gets a unique violation. ON CONFLICT checks the arbiter index and, if another transaction holds an uncommitted conflicting row, waits for it to finish, then updates. bonus points: the same key twice in one batch is an error (21000), every upsert consumes a sequence value even when it updates, and MERGE is not a drop-in replacement under concurrency: it can still fail with a unique violation, because it doesn't use an arbiter index ([MERGE](/learn/writes/merge)).
+</Interview>
+
+<Keylines>
+- ON CONFLICT (key) needs a unique index on exactly that key: the arbiter.
+- DO NOTHING skips conflicting rows. DO UPDATE updates them, with EXCLUDED as the proposed row.
+- a WHERE on DO UPDATE can turn an update down, and the row is left alone.
+- the same key twice in one statement is an error: deduplicate the batch.
+- under concurrency one session waits and then updates. check-then-insert gets a 23505 instead.
+</Keylines>

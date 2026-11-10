@@ -1,0 +1,29 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "6d3a8ce00597eebb": {
+      "db": "lab",
+      "sql": "UPDATE accounts SET balance = balance + 10 WHERE id = 1\nRETURNING old.ctid AS old_version, new.ctid AS new_version, old.balance AS old_balance, new.balance AS new_balance;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": [
+            ["old_version", "tid", 27],
+            ["new_version", "tid", 27],
+            ["old_balance", "numeric", 1700],
+            ["new_balance", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "efa21ac92a2308f2",
+          "rows": [
+            ["(0,1)", "(0,4)", "100.00", "110.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

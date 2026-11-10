@@ -1,0 +1,165 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f60e06365bac8a75": {
+      "db": "shop",
+      "sql": "SELECT category, count(*) AS products\nFROM products\nGROUP BY category\nORDER BY category NULLS FIRST;",
+      "statements": [
+        {
+          "tag": "SELECT 11",
+          "command": "SELECT",
+          "columns": [
+            ["category", "text", 25],
+            ["products", "int8", 20]
+          ],
+          "rowCount": 11,
+          "digest": "449148af33bff721",
+          "rows": [
+            [null, "3"],
+            ["audio", "21"],
+            ["bath", "27"],
+            ["books", "12"],
+            ["games", "14"],
+            ["garden", "15"],
+            ["kitchen", "19"],
+            ["office", "26"],
+            ["outdoor", "22"],
+            ["pets", "17"],
+            ["toys", "24"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6380be0d2aa448bd": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT status, count(*) FROM orders GROUP BY status ORDER BY status;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "bace585402958ca7",
+          "rows": [
+            ["Sort"],
+            ["  Sort Key: status"],
+            ["  ->  HashAggregate"],
+            ["        Group Key: status"],
+            ["        ->  Seq Scan on orders"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "661343d5063e8462": {
+      "db": "school",
+      "sql": "SELECT dept, title, count(*) AS courses\nFROM courses\nGROUP BY dept;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42803",
+            "message": "column \"courses.title\" must appear in the GROUP BY clause or be used in an aggregate function",
+            "position": 14
+          },
+          "digest": "b78254e66c4ae80c"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42803",
+        "message": "column \"courses.title\" must appear in the GROUP BY clause or be used in an aggregate function",
+        "position": 14,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "a182d52e9bc11312": {
+      "db": "school",
+      "sql": "SELECT dept,\n       count(*) AS courses,\n       min(title) AS first_title,\n       string_agg(title, ', ' ORDER BY title) AS titles\nFROM courses\nGROUP BY dept\nORDER BY dept;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["dept", "text", 25],
+            ["courses", "int8", 20],
+            ["first_title", "text", 25],
+            ["titles", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "95c72ae86d04fe77",
+          "rows": [
+            ["CS", "5", "Data Structures", "Data Structures, Database Internals, Databases, Intro to Programming, Operating Systems"],
+            ["GEN", "1", "Senior Thesis", "Senior Thesis"],
+            ["HIST", "1", "History of Computing", "History of Computing"],
+            ["MATH", "3", "Calculus I", "Calculus I, Discrete Math, Linear Algebra"],
+            ["PHYS", "2", "Electromagnetism", "Electromagnetism, Mechanics"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bb2d77eef41770fb": {
+      "db": "shop",
+      "sql": "SELECT date_trunc('month', ordered_at)::date AS month, count(*) AS orders\nFROM orders\nGROUP BY date_trunc('month', ordered_at)\nORDER BY month\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["orders", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "d12e442227de9cba",
+          "rows": [
+            ["2025-07-01", "858"],
+            ["2025-08-01", "858"],
+            ["2025-09-01", "830"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "edcbea0dc2a2f38f": {
+      "db": "school",
+      "sql": "SELECT dept, count(*) AS courses FROM courses;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42803",
+            "message": "column \"courses.dept\" must appear in the GROUP BY clause or be used in an aggregate function",
+            "position": 8
+          },
+          "digest": "8d24ba5c59b0a9f4"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42803",
+        "message": "column \"courses.dept\" must appear in the GROUP BY clause or be used in an aggregate function",
+        "position": 8,
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

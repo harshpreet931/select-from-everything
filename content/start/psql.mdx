@@ -1,0 +1,347 @@
+import { PsqlPrompt } from "@/components/figures/start/PsqlPrompt";
+
+<InShort>
+**psql** is postgres's own terminal client. you type SQL, it sends it to a server and prints the table that comes back. lines that start with a **backslash** (`\d`, `\x`, `\timing`) are psql's own commands: they never reach the server as typed.
+
+this page can't run psql (it's a program in your terminal, not SQL), so every session below is a real one, pasted whole: psql 18.6 talking to a throwaway postgres 18.6 server loaded with the book's shop data.
+</InShort>
+
+## the picture
+
+you know how the run buttons on this site just work, and you never see a server? at some point you'll want your own, and psql is how you'll talk to it.
+
+think of a phone call. the server is the person on the other end: it only understands SQL. psql is the phone: it dials (connects), carries your words over the line, and shows you what came back. the backslash commands are the phone's own menu (contacts, speaker, call history). the person you're calling never hears you press those buttons.
+
+<Figure caption="hover a stage. SQL goes over the connection as text. backslash commands are handled by psql; some of them turn into ordinary SQL queries on the system catalog first.">
+<Flow
+  stages={[
+    { label: "you type", sub: "SQL or \\command", note: "a statement ending in a semicolon, or a line starting with a backslash." },
+    { label: "psql", sub: "the client", note: "backslash commands stop here. \\dt becomes a catalog query; \\x just changes how psql prints." },
+    { label: "connection", sub: "socket or TCP", note: "the wire protocol: query text goes out, rows and errors come back." },
+    { label: "server", sub: "postgres 18.6", note: "parses, plans and runs the SQL. it has no idea psql exists." },
+    { label: "psql prints", sub: "the grid", note: "aligned columns, (n rows), errors with their caret." },
+  ]}
+/>
+</Figure>
+
+## installing postgres 18
+
+pick your system. each of these installs the server and psql together.
+
+<Tabs>
+<Tab label="macOS">
+<div className="mx-auto mt-4 max-w-[var(--measure)]">
+
+[Postgres.app](https://postgresapp.com) is a menu-bar app: open it and a server is running. it's what made the transcripts on this page. or use Homebrew, where the formula is named for the major version and isn't put on your `PATH` for you (it's "keg-only"):
+
+</div>
+
+
+```bash
+brew install postgresql@18
+brew services start postgresql@18
+```
+</Tab>
+<Tab label="linux">
+<div className="mx-auto mt-4 max-w-[var(--measure)]">
+
+on debian and ubuntu, postgres's own apt repository (PGDG) has every current version. this is the setup from postgresql.org's download page:
+
+</div>
+
+
+```bash
+sudo apt install -y postgresql-common
+sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+sudo apt update
+sudo apt install postgresql-18
+```
+</Tab>
+<Tab label="windows">
+<div className="mx-auto mt-4 max-w-[var(--measure)]">
+
+the installer from EDB, linked from [postgresql.org/download/windows](https://www.postgresql.org/download/windows/), sets up the server as a service and puts psql in its `bin` folder.
+
+</div>
+
+</Tab>
+<Tab label="docker">
+<div className="mx-auto mt-4 max-w-[var(--measure)]">
+
+the official image. from 18 on, mount volumes at `/var/lib/postgresql` (the image now keeps its data in a version-specific folder under it):
+
+</div>
+
+
+```bash
+docker run --name pg18 -e POSTGRES_PASSWORD=secret -p 5432:5432 \
+  -v pgdata:/var/lib/postgresql -d postgres:18
+docker exec -it pg18 psql -U postgres
+```
+</Tab>
+</Tabs>
+
+check what you got:
+
+```text title="terminal" nolines
+$ psql --version
+psql (PostgreSQL) 18.6 (Postgres.app)
+```
+
+then load the book's shop data, so you can follow along with the same rows. the datasets are plain SQL files in the [book's repository](https://github.com/harshpreet931/select-from-everything/tree/main/datasets). from a checkout of it:
+
+```text title="terminal" nolines
+$ createdb shop
+$ psql -d shop -1 -v ON_ERROR_STOP=1 -f datasets/shop/schema.sql -f datasets/shop/data.sql
+CREATE TABLE
+CREATE TABLE
+...
+INSERT 0 2000
+...
+INSERT 0 24942
+ALTER TABLE
+ALTER TABLE
+ALTER TABLE
+psql:datasets/shop/data.sql:212: NOTICE:  drop cascades to 6 other objects
+...
+DROP SCHEMA
+$ psql -d shop -c 'VACUUM (ANALYZE);'
+VACUUM
+```
+
+`-1` wraps both files in one transaction, and `ON_ERROR_STOP` makes psql quit (and roll everything back) at the first error, so you never end up with half a dataset. the `...` lines are mine; the rest is psql's own output.
+
+## your first session
+
+```psql nolines
+$ psql -d shop
+psql (18.6 (Postgres.app))
+Type "help" for help.
+
+shop=# SELECT name, city FROM customers WHERE id = 42;
+     name     |  city
+--------------+--------
+ Ada Lovelace | London
+(1 row)
+
+shop=# \q
+```
+
+`shop=#` is the prompt, and it's not decoration. it tells you which database you're in, whether psql is waiting for the rest of a statement, and whether a transaction is open or broken:
+
+<Figure caption={<>pick a prompt. the <C k="hot">highlighted</C> character is the one telling you something. every transcript here is from a real psql 18.6 session.</>}>
+<PsqlPrompt />
+</Figure>
+
+<Quiz question="you typed SELECT * FROM customers and pressed enter. psql shows shop-# and nothing happens. what's wrong?" options={["the server is still thinking", "the table is too big to print", "psql is waiting for a semicolon"]} answer={2}>
+<Explain>
+the `-` in `shop-#` means "this statement isn't finished". psql sends nothing until it sees a semicolon (or `\g`). type `;` and press enter. and if the prompt ever shows `'`, you have an unclosed quote: close it first.
+</Explain>
+</Quiz>
+
+## the backslash commands worth knowing
+
+`\?` lists all of them (there are a lot). these are the ones you'll actually type:
+
+| command | what it does |
+| --- | --- |
+| `\l` | list databases |
+| `\c shop` | connect to another database |
+| `\dt` | list tables |
+| `\d customers` | describe a table: columns, types, indexes, foreign keys |
+| `\dn`, `\df`, `\du` | list schemas, functions, roles |
+| `\x` | expanded display: one column per line. `\x auto` decides for you |
+| `\timing` | print how long each statement took |
+| `\pset null '(null)'` | show NULL as something you can see |
+| `\e` | edit the last query in your `$EDITOR` |
+| `\i file.sql` | run a file of SQL |
+| `\copy` | COPY to or from a file on your machine, not the server's |
+| `\h SELECT` | SQL syntax help for a command |
+| `\q` | quit |
+
+the two you'll use most, on the shop database:
+
+```psql nolines
+shop=# \dt
+             List of tables
+ Schema |    Name     | Type  |  Owner
+--------+-------------+-------+----------
+ public | customers   | table | postgres
+ public | order_items | table | postgres
+ public | orders      | table | postgres
+ public | products    | table | postgres
+(4 rows)
+
+shop=# \d customers
+                                    Table "public.customers"
+   Column   |           Type           | Collation | Nullable |             Default
+------------+--------------------------+-----------+----------+----------------------------------
+ id         | integer                  |           | not null | generated by default as identity
+ name       | text                     |           | not null |
+ email      | text                     |           |          |
+ city       | text                     |           |          |
+ country    | character(2)             |           | not null |
+ created_at | timestamp with time zone |           | not null |
+Indexes:
+    "customers_pkey" PRIMARY KEY, btree (id)
+    "customers_email_key" UNIQUE CONSTRAINT, btree (email)
+Referenced by:
+    TABLE "orders" CONSTRAINT "orders_customer_id_fkey" FOREIGN KEY (customer_id) REFERENCES customers(id)
+```
+
+`\d` is the fastest way to learn a schema: every column with its type and default, the indexes (here the two that `PRIMARY KEY` and `UNIQUE` made), and every foreign key pointing in.
+
+## \x for rows too wide
+
+a table with many columns, or long values, prints lines wider than your terminal, and the terminal wraps them into soup. `\x` turns each row on its side:
+
+<Figure wide caption={<>step through it. the same row, before and after <code>\x</code>. recorded in an 80-column terminal, which is why the first one runs off the edge.</>}>
+<Slides>
+<Slide note="one product, nine columns. each line is about 160 characters, twice the terminal's width.">
+<div className="w-0 min-w-full">
+<SqlPanel lang="psql" file="psql 18.6 · 80 columns" nolines code={"shop=# SELECT * FROM products WHERE id = 1;\n id |   sku    |     name     | category | price |     tags      |                attrs                |            description             | discontinued\n----+----------+--------------+----------+-------+---------------+-------------------------------------+------------------------------------+--------------\n  1 | KIT-0001 | chef's knife | kitchen  | 49.00 | {steel,sharp} | {\"color\": \"black\", \"weight_g\": 210} | a 20 cm knife that holds its edge. | f\n(1 row)"} />
+</div>
+</Slide>
+<Slide note="\x on: one line per column, column names down the left. long rows become readable.">
+<div className="w-0 min-w-full">
+<SqlPanel lang="psql" file="psql 18.6 · 80 columns" nolines code={"shop=# \\x\nExpanded display is on.\nshop=# SELECT * FROM products WHERE id = 1;\n-[ RECORD 1 ]+------------------------------------\nid           | 1\nsku          | KIT-0001\nname         | chef's knife\ncategory     | kitchen\nprice        | 49.00\ntags         | {steel,sharp}\nattrs        | {\"color\": \"black\", \"weight_g\": 210}\ndescription  | a 20 cm knife that holds its edge.\ndiscontinued | f"} />
+</div>
+</Slide>
+<Slide note="\x auto: psql picks. narrow results stay a normal grid; wide ones flip on their side.">
+<div className="w-0 min-w-full">
+<SqlPanel lang="psql" file="psql 18.6 · 80 columns" nolines code={"shop=# \\x auto\nExpanded display is used automatically.\nshop=# SELECT id, name FROM products WHERE id = 1;\n id |     name\n----+--------------\n  1 | chef's knife\n(1 row)"} />
+</div>
+</Slide>
+</Slides>
+</Figure>
+
+put `\x auto` in a file called `~/.psqlrc` and psql runs it every time it starts. (`\gx` instead of `;` does the same for one query only.)
+
+## NULL looks like nothing
+
+<Gotcha title="by default, psql prints NULL as an empty space">
+so a missing value and an empty string look the same. Grace has no email (NULL), Ana has no email (NULL) and a city that's an empty string, and you can't tell any of it apart:
+
+```psql nolines
+shop=# SELECT id, name, email, city FROM customers WHERE id IN (2, 10, 11) ORDER BY id;
+ id |     name     |      email       |  city
+----+--------------+------------------+--------
+  2 | Grace Okafor |                  | Lagos
+ 10 | Null         | null@example.com | Berlin
+ 11 | Ana Lima     |                  |
+(3 rows)
+
+shop=# \pset null '(null)'
+Null display is "(null)".
+shop=# SELECT id, name, email, city FROM customers WHERE id IN (2, 10, 11) ORDER BY id;
+ id |     name     |      email       |  city
+----+--------------+------------------+--------
+  2 | Grace Okafor | (null)           | Lagos
+ 10 | Null         | null@example.com | Berlin
+ 11 | Ana Lima     | (null)           |
+(3 rows)
+```
+
+now NULL is visible, and Ana's empty city still shows as blank, because it is a value. this site's grid draws NULL faint and italic for the same reason. why it matters: [NULL and three-valued logic](/learn/basics/null-and-three-valued-logic).
+</Gotcha>
+
+## what \dt really sends
+
+the server doesn't know `\dt`. psql translates it into an ordinary query on the system catalog, and `\set ECHO_HIDDEN on` makes it show you:
+
+```psql nolines
+shop=# \set ECHO_HIDDEN on
+shop=# \dt
+/******** QUERY *********/
+SELECT n.nspname as "Schema",
+  c.relname as "Name",
+  CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END as "Type",
+  pg_catalog.pg_get_userbyid(c.relowner) as "Owner"
+FROM pg_catalog.pg_class c
+     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam
+WHERE c.relkind IN ('r','p','')
+      AND n.nspname <> 'pg_catalog'
+      AND n.nspname !~ '^pg_toast'
+      AND n.nspname <> 'information_schema'
+  AND pg_catalog.pg_table_is_visible(c.oid)
+ORDER BY 1,2;
+/************************/
+```
+
+and since that's plain SQL, the browser engine can run it, even though it can't run `\dt`:
+
+```sql run db=shop
+SELECT n.nspname as "Schema",
+  c.relname as "Name",
+  CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END as "Type",
+  pg_catalog.pg_get_userbyid(c.relowner) as "Owner"
+FROM pg_catalog.pg_class c
+     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam
+WHERE c.relkind IN ('r','p','')
+      AND n.nspname <> 'pg_catalog'
+      AND n.nspname !~ '^pg_toast'
+      AND n.nspname <> 'information_schema'
+  AND pg_catalog.pg_table_is_visible(c.oid)
+ORDER BY 1,2;
+```
+
+same four tables. reading the queries psql sends is a good way to learn the catalog, which gets its own chapter: [the system catalog](/learn/execution/system-catalog).
+
+## three more you'll want
+
+`\timing` prints the time for every statement. that's the client's wall clock, round trip included (this was on a laptop, and your number will differ):
+
+```psql nolines
+shop=# \timing on
+Timing is on.
+shop=# SELECT count(*) FROM order_items;
+ count
+-------
+ 24942
+(1 row)
+
+Time: 4.914 ms
+```
+
+`\copy` reads or writes a file on *your* machine (plain `COPY` reads and writes the server's disk, which usually isn't where you are):
+
+```psql nolines
+shop=# \copy (SELECT id, name, city FROM customers WHERE id = 42) TO 'ada.csv' WITH (FORMAT csv, HEADER)
+COPY 1
+shop=# \! cat ada.csv
+id,name,city
+42,Ada Lovelace,London
+```
+
+and `\h` is the syntax reference for any SQL command, with a link to its page in the manual:
+
+```psql nolines
+shop=# \h DELETE
+Command:     DELETE
+Description: delete rows of a table
+Syntax:
+[ WITH [ RECURSIVE ] with_query [, ...] ]
+DELETE FROM [ ONLY ] table_name [ * ] [ [ AS ] alias ]
+    [ USING from_item [, ...] ]
+    [ WHERE condition | WHERE CURRENT OF cursor_name ]
+    [ RETURNING [ WITH ( { OLD | NEW } AS output_alias [, ...] ) ]
+                { * | output_expression [ [ AS ] output_name ] } [, ...] ]
+
+URL: https://www.postgresql.org/docs/18/sql-delete.html
+```
+
+that `RETURNING WITH (OLD ... NEW ...)` line is new in 18. it gets its own chapter: [RETURNING, with OLD and NEW](/learn/writes/returning-old-and-new).
+
+<Docs href="https://www.postgresql.org/docs/18/app-psql.html" title="psql">
+every backslash command, every variable (`ON_ERROR_STOP`, `ECHO_HIDDEN`, the prompt escapes) and every command-line option. long, but searchable.
+</Docs>
+
+<Keylines>
+- psql is a client: it sends SQL to a server and prints what comes back.
+- backslash commands are psql's own. the server never sees them, only the SQL some of them turn into.
+- the prompt tells you the database, whether a statement is unfinished, and whether a transaction is open or failed.
+- \d describes a table, \x turns wide rows on their side, \pset null makes NULL visible.
+- psql sends nothing until it sees a semicolon.
+</Keylines>

@@ -1,0 +1,204 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ce1c49de36c5067d": {
+      "db": "empty",
+      "sql": "CREATE TABLE pts AS\nSELECT g AS id, point(abs(hashint4(g)) % 100, abs(hashint4(-g)) % 100) AS p\nFROM generate_series(1, 1000) AS g;\nCREATE INDEX pts_gist ON pts USING gist (p);\nSELECT b AS blkno, o.flags, o.rightlink,\n       (SELECT count(*) FROM gist_page_items(get_raw_page('pts_gist', b), 'pts_gist')) AS items\nFROM generate_series(0, pg_relation_size('pts_gist') / 8192 - 1) AS b,\n     gist_page_opaque_info(get_raw_page('pts_gist', b)) AS o\nORDER BY b;",
+      "statements": [
+        {
+          "tag": "SELECT 1000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 1000,
+          "digest": "327b5d75819d5100"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["flags", "text[]", 1009],
+            ["rightlink", "int8", 20],
+            ["items", "int8", 20]
+          ],
+          "rowCount": 9,
+          "digest": "721a66b82cc4c474",
+          "rows": [
+            ["0", "{}", "4294967295", "8"],
+            ["1", "{leaf}", "4294967295", "176"],
+            ["2", "{leaf}", "1", "113"],
+            ["3", "{leaf}", "2", "79"],
+            ["4", "{leaf}", "3", "85"],
+            ["5", "{leaf}", "4", "103"],
+            ["6", "{leaf}", "5", "184"],
+            ["7", "{leaf}", "6", "145"],
+            ["8", "{leaf}", "7", "115"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "79e34dd4c8439718": {
+      "db": "empty",
+      "sql": "SELECT itemoffset, ctid, keys\nFROM gist_page_items(get_raw_page('pts_gist', 0), 'pts_gist')\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["keys", "text", 25]
+          ],
+          "rowCount": 8,
+          "digest": "04130989d7652ba2",
+          "rows": [
+            ["1", "(1,65535)", "(p)=(\"(37,42),(0,0)\")"],
+            ["2", "(2,65535)", "(p)=(\"(37,72),(0,44)\")"],
+            ["3", "(3,65535)", "(p)=(\"(31,99),(0,74)\")"],
+            ["4", "(4,65535)", "(p)=(\"(67,29),(38,0)\")"],
+            ["5", "(5,65535)", "(p)=(\"(99,29),(69,0)\")"],
+            ["6", "(6,65535)", "(p)=(\"(99,63),(38,30)\")"],
+            ["7", "(7,65535)", "(p)=(\"(69,99),(32,64)\")"],
+            ["8", "(8,65535)", "(p)=(\"(99,99),(71,54)\")"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bd9fe0fd61b31e35": {
+      "db": "empty",
+      "sql": "SELECT itemoffset, ctid, keys\nFROM gist_page_items(get_raw_page('pts_gist', 1), 'pts_gist')\nORDER BY itemoffset\nLIMIT 4;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["keys", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "a48158071a1c39d4",
+          "rows": [
+            ["1", "(2,148)", "(p)=(\"(24,0),(24,0)\")"],
+            ["2", "(0,4)", "(p)=(\"(33,0),(33,0)\")"],
+            ["3", "(3,8)", "(p)=(\"(6,1),(6,1)\")"],
+            ["4", "(0,92)", "(p)=(\"(29,1),(29,1)\")"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "786659fc82b00e02": {
+      "db": "empty",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, p FROM pts ORDER BY p <-> point(50, 50) LIMIT 5;\nSELECT id, p, round((p <-> point(50, 50))::numeric, 2) AS dist\nFROM pts ORDER BY p <-> point(50, 50), id LIMIT 5;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "cd972fe6a21bc2d8",
+          "rows": [
+            ["Limit (actual rows=5.00 loops=1)"],
+            ["  Buffers: shared hit=7"],
+            ["  ->  Index Scan using pts_gist on pts (actual rows=5.00 loops=1)"],
+            ["        Order By: (p <-> '(50,50)'::point)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=7"],
+            ["Planning:"],
+            ["  Buffers: shared hit=21 read=3"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["p", "point", 600],
+            ["dist", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "8ec61f77675d3e4c",
+          "rows": [
+            ["319", "(51,49)", "1.41"],
+            ["828", "(49,48)", "2.24"],
+            ["370", "(48,48)", "2.83"],
+            ["125", "(48,47)", "3.61"],
+            ["955", "(50,54)", "4.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "151cc4d58027ea47": {
+      "db": "empty",
+      "sql": "CREATE INDEX pts_spgist ON pts USING spgist (p);\nDROP INDEX pts_gist;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, p FROM pts ORDER BY p <-> point(50, 50) LIMIT 5;\nEXPLAIN (COSTS OFF) SELECT id FROM pts WHERE p <@ box '((40,40),(45,45))';",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "DROP INDEX",
+          "command": "DROP INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "893fee6e8345a51d"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "cdaf4c4cad377ba8",
+          "rows": [
+            ["Limit (actual rows=5.00 loops=1)"],
+            ["  Buffers: shared hit=14"],
+            ["  ->  Index Scan using pts_spgist on pts (actual rows=5.00 loops=1)"],
+            ["        Order By: (p <-> '(50,50)'::point)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=14"],
+            ["Planning:"],
+            ["  Buffers: shared hit=20"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "3752a3593cca5a2d",
+          "rows": [
+            ["Index Scan using pts_spgist on pts"],
+            ["  Index Cond: (p <@ '(45,45),(40,40)'::box)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

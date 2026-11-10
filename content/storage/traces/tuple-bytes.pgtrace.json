@@ -1,0 +1,130 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/tuple-bytes.scenario.sql",
+ "title": "the same four columns in two orders, and a NULL, byte by byte",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"},
+  "loose": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"a","type":"bool"},
+    {"name":"b","type":"int8"},
+    {"name":"c","type":"bool"},
+    {"name":"d","type":"int8"}
+   ]
+  },
+  "tight": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"b","type":"int8"},
+    {"name":"d","type":"int8"},
+    {"name":"a","type":"bool"},
+    {"name":"c","type":"bool"}
+   ]
+  },
+  "loose10k": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"a","type":"bool"},
+    {"name":"b","type":"int8"},
+    {"name":"c","type":"bool"},
+    {"name":"d","type":"int8"}
+   ]
+  },
+  "tight10k": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"b","type":"int8"},
+    {"name":"d","type":"int8"},
+    {"name":"a","type":"bool"},
+    {"name":"c","type":"bool"}
+   ]
+  }
+ },
+ "base": {"xid":757,"lsn":26128808},
+ "setup": "CREATE TABLE loose (a bool, b int8, c bool, d int8);\nCREATE TABLE tight (b int8, d int8, a bool, c bool);\nINSERT INTO loose VALUES (true, 1, false, 2), (true, NULL, false, 2);\nINSERT INTO tight VALUES (1, 2, true, false);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT 'loose' AS t, lp, lp_len, t_hoff, t_bits,\n       encode(substr(get_raw_page('loose', 0), lp_off + 1, lp_len), 'hex') AS bytes\nFROM heap_page_items(get_raw_page('loose', 0))\nUNION ALL\nSELECT 'tight', lp, lp_len, t_hoff, t_bits,\n       encode(substr(get_raw_page('tight', 0), lp_off + 1, lp_len), 'hex')\nFROM heap_page_items(get_raw_page('tight', 0))\nORDER BY t, lp",
+   "note": "every tuple, raw: header, null bitmap if any, padding and data, straight off the page.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"t","type":"text"},
+     {"name":"lp","type":"int2"},
+     {"name":"lp_len","type":"int2"},
+     {"name":"t_hoff","type":"int2"},
+     {"name":"t_bits","type":"text"},
+     {"name":"bytes","type":"text"}
+    ],
+    "data": [
+     [
+      "loose",
+      "1",
+      "56",
+      "24",
+      null,
+      "f302000000000000000000000000000001000400000818000100000000000000010000000000000000000000000000000200000000000000"
+     ],
+     [
+      "loose",
+      "2",
+      "40",
+      "24",
+      "10110000",
+      "f3020000000000000000000000000000020004000108180d01000000000000000200000000000000"
+     ],
+     [
+      "tight",
+      "1",
+      "42",
+      "24",
+      null,
+      "f40200000000000000000000000000000100040000081800010000000000000002000000000000000100"
+     ]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "CREATE TABLE loose10k (a bool, b int8, c bool, d int8);\nCREATE TABLE tight10k (b int8, d int8, a bool, c bool);\nINSERT INTO loose10k SELECT true, g, false, g FROM generate_series(1, 10000) AS g;\nINSERT INTO tight10k SELECT g, g, true, false FROM generate_series(1, 10000) AS g;\nSELECT 'loose' AS t, pg_relation_size('loose10k') AS bytes\nUNION ALL SELECT 'tight', pg_relation_size('tight10k')\nORDER BY t",
+   "note": "the same two column orders, 10,000 rows each: how big is each file?",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"t","type":"text"},{"name":"bytes","type":"int8"}],
+    "data": [["loose","606208"],["tight","524288"]]
+   }
+  }
+ ],
+ "db": "lab"
+}

@@ -1,0 +1,312 @@
+{
+ "v": 1,
+ "scenario": "content/writes/traces/returning.scenario.sql",
+ "title": "RETURNING old and new from every kind of write, an upsert that says what it did, and rows moved in one statement",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  },
+  "orders_archive": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "a transaction to undo it in.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO products (sku, name, category, price)\nVALUES ('BOO-0201', 'the sql cookbook', 'books', 24.00)\nRETURNING old.sku AS old_sku, old.price AS old_price,\n          new.sku AS new_sku, new.price AS new_price",
+   "note": "INSERT: there was no row before, so every old column is NULL.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 1,
+    "columns": [
+     {"name":"old_sku","type":"text"},
+     {"name":"old_price","type":"numeric"},
+     {"name":"new_sku","type":"text"},
+     {"name":"new_price","type":"numeric"}
+    ],
+    "data": [[null,null,"BOO-0201","24.00"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "again.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "UPDATE products SET price = round(price * 1.10, 2)\nWHERE category = 'books' AND price < 40\nRETURNING old.sku AS old_sku, old.price AS old_price,\n          new.sku AS new_sku, new.price AS new_price",
+   "note": "UPDATE: both sides. old is the row before this statement touched it, new is what it wrote.",
+   "status": "ok",
+   "result": {
+    "command": "UPDATE",
+    "rows": 3,
+    "columns": [
+     {"name":"old_sku","type":"text"},
+     {"name":"old_price","type":"numeric"},
+     {"name":"new_sku","type":"text"},
+     {"name":"new_price","type":"numeric"}
+    ],
+    "data": [
+     ["BOO-0003","32.00","BOO-0003","35.20"],
+     ["BOO-0028","16.90","BOO-0028","18.59"],
+     ["BOO-0120","16.60","BOO-0120","18.26"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "again.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "DELETE FROM products WHERE name = 'left-handed teapot'\nRETURNING old.sku AS old_sku, old.price AS old_price,\n          new.sku AS new_sku, new.price AS new_price",
+   "note": "DELETE: there is no row after, so every new column is NULL. the left-handed teapot, gone.",
+   "status": "ok",
+   "result": {
+    "command": "DELETE",
+    "rows": 1,
+    "columns": [
+     {"name":"old_sku","type":"text"},
+     {"name":"old_price","type":"numeric"},
+     {"name":"new_sku","type":"text"},
+     {"name":"new_price","type":"numeric"}
+    ],
+    "data": [["KIT-0200","19.99",null,null]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "again.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "MERGE INTO products AS p\nUSING (VALUES ('BOO-0028', 17.50, 'bamboo cookbook'),\n              ('BOO-0203', 21.00, 'joins for cats')) AS f (sku, price, name)\nON p.sku = f.sku\nWHEN MATCHED THEN UPDATE SET price = f.price\nWHEN NOT MATCHED THEN INSERT (sku, name, category, price)\n                      VALUES (f.sku, f.name, 'books', f.price)\nRETURNING merge_action() AS action,\n          old.sku AS old_sku, old.price AS old_price,\n          new.sku AS new_sku, new.price AS new_price",
+   "note": "MERGE: one statement, two kinds of write. merge_action() says which, and old and new follow the same rules row by row.",
+   "status": "ok",
+   "result": {
+    "command": "MERGE",
+    "rows": 2,
+    "columns": [
+     {"name":"action","type":"text"},
+     {"name":"old_sku","type":"text"},
+     {"name":"old_price","type":"numeric"},
+     {"name":"new_sku","type":"text"},
+     {"name":"new_price","type":"numeric"}
+    ],
+    "data": [["UPDATE","BOO-0028","16.90","BOO-0028","17.50"],["INSERT",null,null,"BOO-0203","21.00"]]
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "again.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "INSERT INTO products (sku, name, category, price)\nVALUES ('BOO-0003', 'the art of sql', 'books', 30.00),\n       ('BOO-0202', 'sql antipatterns', 'books', 38.00)\nON CONFLICT (sku) DO UPDATE SET price = EXCLUDED.price\nRETURNING new.sku, old.price AS old_price, new.price AS new_price,\n          old.sku IS NULL AS inserted",
+   "note": "an upsert with two rows: one sku exists, one doesn't. old.sku IS NULL tells them apart.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 2,
+    "columns": [
+     {"name":"sku","type":"text"},
+     {"name":"old_price","type":"numeric"},
+     {"name":"new_price","type":"numeric"},
+     {"name":"inserted","type":"bool"}
+    ],
+    "data": [["BOO-0003","32.00","30.00","f"],["BOO-0202",null,"38.00","t"]]
+   }
+  },
+  {
+   "i": 14,
+   "session": "T1",
+   "sql": "ROLLBACK",
+   "note": "undo.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 15,
+   "session": "T1",
+   "sql": "CREATE TABLE orders_archive (LIKE orders)",
+   "note": "an archive table, shaped like orders.",
+   "status": "ok",
+   "result": {"command":"CREATE TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 16,
+   "session": "T1",
+   "sql": "SELECT 'orders' AS tbl, count(*) AS n FROM orders\nUNION ALL\nSELECT 'orders_archive', count(*) FROM orders_archive\nORDER BY tbl",
+   "note": "before: 10,000 orders, an empty archive.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"tbl","type":"text"},{"name":"n","type":"int8"}],
+    "data": [["orders","10000"],["orders_archive","0"]]
+   }
+  },
+  {
+   "i": 17,
+   "session": "T1",
+   "sql": "WITH gone AS (\n  DELETE FROM orders WHERE status = 'cancelled'\n  RETURNING *\n)\nINSERT INTO orders_archive SELECT * FROM gone",
+   "note": "one statement: DELETE hands its rows to the INSERT through RETURNING. both happen, or neither does.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":317,"columns":[],"data":[]}
+  },
+  {
+   "i": 18,
+   "session": "T1",
+   "sql": "SELECT 'orders' AS tbl, count(*) AS n FROM orders\nUNION ALL\nSELECT 'orders_archive', count(*) FROM orders_archive\nORDER BY tbl",
+   "note": "after: 317 orders moved.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"tbl","type":"text"},{"name":"n","type":"int8"}],
+    "data": [["orders","9683"],["orders_archive","317"]]
+   }
+  }
+ ],
+ "db": "shop"
+}

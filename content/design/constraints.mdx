@@ -1,0 +1,172 @@
+import { chainRun } from "@/components/figures/design/runs";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/constraints.pgtrace.json";
+
+{/* both RunPicks read traces/constraints.scenario.sql (PGlite, one session): every row a rule
+    turns away, with its real error, and one shift under three kinds of UNIQUE. */}
+
+export const rules = {
+  "NOT NULL": chainRun(trace, [1]),
+  "CHECK": chainRun(trace, [2]),
+  "UNIQUE": chainRun(trace, [3]),
+  "UNIQUE, two NULLs": chainRun(trace, [4, 5]),
+  "NULLS NOT DISTINCT": chainRun(trace, [6]),
+};
+export const shifts = {
+  "UNIQUE": chainRun(trace, [8]),
+  "DEFERRABLE": chainRun(trace, [9, 10]),
+  "INITIALLY DEFERRED, before COMMIT": chainRun(trace, [11]),
+  "INITIALLY DEFERRED, at COMMIT": chainRun(trace, [11, 12]),
+};
+export const source = prov(trace);
+
+<InShort>
+a **constraint** is a rule the database checks on every write, so no code path can forget it: **NOT NULL**, **CHECK** (a boolean expression per row), **UNIQUE**, plus primary keys, foreign keys and exclusion constraints. a row that breaks one is refused with an error and a SQLSTATE.
+
+UNIQUE ignores NULLs unless you say **NULLS NOT DISTINCT** (postgres 15). a **deferrable** constraint can wait until the end of the statement or the transaction. and on a big table you add one **NOT VALID** first, then **VALIDATE** it without blocking writes.
+</InShort>
+
+## the picture
+
+you know the validation code in every app: "name can't be blank", "price must be positive", "this email is taken"? it lives in a form, then an API, then a batch import someone writes on a friday, and one of them forgets. the database is the only place every write goes through.
+
+think of a bouncer at the one door of a club (the table). the app's checks are friendly signs in the street; useful, but anyone can walk past them. the bouncer checks every single person, including the ones who came in through the back with a script.
+
+<Figure wide caption={<>one products table with a rule on every column that needs one. pick a rule and see the row it turns away, with the real error and its SQLSTATE. <em>two NULLs</em> is the surprise: plain UNIQUE lets them both in.</>}>
+<RunPick options={[{ key: "rule", values: ["NOT NULL", "CHECK", "UNIQUE", "UNIQUE, two NULLs", "NULLS NOT DISTINCT"] }]} runs={rules} file="products.sql" trace={source} />
+</Figure>
+
+every error names the constraint, and postgres names constraints for you (`products_price_check`, `products_sku_key`) unless you name them yourself with `CONSTRAINT name`. name them: the name is what your app catches and what shows up in logs.
+
+## CHECK is "not false"
+
+a CHECK is any boolean expression over the row's own columns. it can span columns:
+
+```sql run expect=error
+CREATE TABLE stays (
+  guest     text NOT NULL,
+  check_in  date NOT NULL,
+  check_out date NOT NULL,
+  CONSTRAINT stays_order CHECK (check_out > check_in)
+);
+INSERT INTO stays VALUES ('ada', '2026-03-05', '2026-03-02');
+```
+
+<Predict options={["refused", "stored"]} answer={1}>
+```sql
+CREATE TABLE items (qty int CHECK (qty > 0));
+INSERT INTO items VALUES (NULL);
+```
+<Explain>
+stored. `NULL > 0` is NULL (unknown), not false, and a CHECK only refuses rows where the expression is false. a WHERE keeps rows where the condition is true; a CHECK lets through anything that isn't false. if NULL shouldn't be allowed, say NOT NULL too.
+</Explain>
+</Predict>
+
+```sql run
+CREATE TABLE items (qty int CHECK (qty > 0));
+INSERT INTO items VALUES (NULL);
+SELECT qty IS NULL AS stored_a_null FROM items;
+```
+
+the [three-valued logic](/learn/basics/null-and-three-valued-logic) asymmetry, in one table. two other limits: a CHECK sees only the row being written (not other rows, not other tables, that's what UNIQUE, foreign keys and triggers are for), and any function it calls should be IMMUTABLE, because postgres never re-checks old rows when the function's answer changes.
+
+## UNIQUE and its NULLs
+
+UNIQUE is enforced by a unique b-tree index (postgres builds it for you). the figure showed the catch: by default two NULLs aren't equal, so they don't collide, and a UNIQUE column can hold any number of them. that's what the standard says, and usually what you want: two customers with no phone number aren't duplicates.
+
+when NULL is a real value ("no shelf assigned", and only one product may be unassigned), `UNIQUE NULLS NOT DISTINCT` <Since v={15} /> makes NULLs collide too. before 15, the workaround was a unique index on `coalesce(col, '')`, or a partial unique index `WHERE col IS NULL` on a constant.
+
+for overlap rather than equality (two bookings of one room on the same night) the generalisation of UNIQUE is an **exclusion constraint**, `EXCLUDE USING gist (room WITH =, nights WITH &&)`, covered in [range types](/learn/types/ranges), with postgres 18's shorthand in [temporal keys](/learn/design/temporal-keys).
+
+## when the check happens
+
+postgres checks a NOT NULL, CHECK or plain UNIQUE constraint row by row, as each row is written. for UNIQUE that has an odd consequence: a statement that would end up fine can fail halfway through.
+
+<Figure wide caption={<>a playlist with unique positions; shift every song down one. plain UNIQUE <C k="dead">fails</C>, because the first row moves onto a position the next row hasn&apos;t left yet. DEFERRABLE checks once the statement is done. INITIALLY DEFERRED waits for COMMIT, and a duplicate still there at COMMIT kills the transaction.</>}>
+<RunPick options={[{ key: "unique", values: ["UNIQUE", "DEFERRABLE", "INITIALLY DEFERRED, before COMMIT", "INITIALLY DEFERRED, at COMMIT"] }]} runs={shifts} file="playlist.sql" trace={source} />
+</Figure>
+
+`DEFERRABLE` alone means "initially immediate": checked at the end of each statement. a transaction can push it to COMMIT with `SET CONSTRAINTS name DEFERRED`. `INITIALLY DEFERRED` makes COMMIT the default. NOT NULL and CHECK are never deferrable; UNIQUE, PRIMARY KEY, EXCLUDE and FOREIGN KEY can be. foreign keys are where deferring earns its keep, for rows that point at each other ([foreign keys](/learn/design/foreign-keys)).
+
+the cost: a deferrable unique index can't be an [ON CONFLICT arbiter](/learn/writes/upsert), and checking later means postgres keeps a list of rows to recheck. make a constraint deferrable when you need it, not by default.
+
+## adding a constraint to a table that's live
+
+`ALTER TABLE ... ADD CONSTRAINT ... CHECK` scans the whole table to prove every row passes, under an ACCESS EXCLUSIVE lock: no reads, no writes, for as long as the scan takes. on a big table that's an outage, and a queue of blocked queries behind it ([the lock queue](/learn/locking/lock-queue)).
+
+the fix is two steps. `NOT VALID` adds the rule without looking at old rows; new and updated rows are checked from that moment. `VALIDATE CONSTRAINT` later scans the old rows under a weaker lock. here are both locks, read from pg_locks:
+
+```sql run
+CREATE TABLE payments (id int PRIMARY KEY, amount numeric(10,2));
+INSERT INTO payments VALUES (1, 20.00), (2, -3.00), (3, 7.50);
+
+BEGIN;
+ALTER TABLE payments ADD CONSTRAINT payments_positive CHECK (amount > 0) NOT VALID;
+SELECT 'add NOT VALID' AS step, mode FROM pg_locks WHERE relation = 'payments'::regclass;
+COMMIT;
+
+UPDATE payments SET amount = 3.00 WHERE id = 2;
+
+BEGIN;
+ALTER TABLE payments VALIDATE CONSTRAINT payments_positive;
+SELECT 'validate' AS step, mode FROM pg_locks WHERE relation = 'payments'::regclass;
+COMMIT;
+```
+
+the ADD still takes ACCESS EXCLUSIVE, but only for an instant, since it doesn't scan. VALIDATE takes SHARE UPDATE EXCLUSIVE, which lets reads and writes carry on while it scans. had row 2 still been negative, VALIDATE would have failed and named the constraint, and the constraint would have stayed in place, NOT VALID, still checking new rows.
+
+<Figure caption={<>the safe migration, in three steps. the expensive scan happens in the step that doesn&apos;t block writes.</>}>
+<Flow stages={[
+  { label: "ADD ... NOT VALID", sub: "an instant", note: "a short ACCESS EXCLUSIVE lock, no scan. every new or updated row is checked from now on." },
+  { label: "fix the old rows", sub: "UPDATE in batches", note: "find the violators with the constraint's own expression: WHERE NOT (amount > 0)." },
+  { label: "VALIDATE", sub: "a scan, writes allowed", note: "SHARE UPDATE EXCLUSIVE. reads and writes go on; it conflicts only with VACUUM, CREATE INDEX and other schema changes." },
+]} />
+</Figure>
+
+<Since v={18} /> NOT NULL joins in. postgres 18 stores NOT NULL constraints in pg_constraint with names, and lets you add one NOT VALID:
+
+```sql run errors=continue
+CREATE TABLE signups (id int, email text);
+INSERT INTO signups VALUES (1, 'ada@example.com'), (2, NULL);
+
+ALTER TABLE signups ADD CONSTRAINT signups_email_nn NOT NULL email NOT VALID;
+INSERT INTO signups VALUES (3, NULL);
+ALTER TABLE signups VALIDATE CONSTRAINT signups_email_nn;
+
+SELECT conname, contype, convalidated FROM pg_constraint WHERE conrelid = 'signups'::regclass;
+```
+
+the new NULL is refused, the old one is still there, and VALIDATE says so. fix row 2 and VALIDATE goes through.
+
+## constraints that aren't checked
+
+also new in <Since v={18} />: CHECK and foreign key constraints can be declared `NOT ENFORCED`. the constraint exists in the catalog, documents the rule, and checks nothing:
+
+```sql run
+CREATE TABLE readings (id int, celsius numeric CONSTRAINT plausible CHECK (celsius BETWEEN -90 AND 60) NOT ENFORCED);
+INSERT INTO readings VALUES (1, 400);
+SELECT conname, conenforced, convalidated FROM pg_constraint WHERE conrelid = 'readings'::regclass;
+```
+
+400 degrees went in. it's for rules enforced somewhere else (an upstream system, a loader) that you still want written down, for people and for tools. in 18 a foreign key can later be switched with `ALTER CONSTRAINT ... ENFORCED` (which checks the existing rows), but a CHECK can't, so a NOT ENFORCED CHECK becomes enforced only by dropping it and adding it again:
+
+```sql run expect=error
+CREATE TABLE readings (id int, celsius numeric CONSTRAINT plausible CHECK (celsius BETWEEN -90 AND 60) NOT ENFORCED);
+ALTER TABLE readings ALTER CONSTRAINT plausible ENFORCED;
+```
+
+<Gotcha title="a constraint the app enforces is a constraint nobody enforces">
+the second writer always comes: a backfill script, an admin panel, a second service, a psql session at 2 a.m. if a rule matters, put it where every write passes. the app can still check first for a nicer message; the database is the one that can't be skipped. and name your constraints, because `23514 products_price_check` in a log tells you exactly which rule a row broke.
+</Gotcha>
+
+<Interview q="how do you add a NOT NULL or CHECK constraint to a large, busy table?">
+add it NOT VALID, which takes a brief ACCESS EXCLUSIVE lock without scanning and checks new rows from then on. backfill or fix the old rows in batches. then VALIDATE CONSTRAINT, which scans under SHARE UPDATE EXCLUSIVE and doesn't block reads or writes. for NOT NULL, postgres 18 supports NOT NULL ... NOT VALID directly; before 18 the trick was a validated CHECK (col IS NOT NULL), which SET NOT NULL can use to skip its own scan. bonus point: set lock_timeout on the session, because even the brief lock queues behind a long-running query and everything else queues behind it.
+</Interview>
+
+<Keylines>
+- constraints are checked on every write, so no code path can skip them.
+- a CHECK refuses false, not NULL: add NOT NULL when NULL isn't allowed.
+- UNIQUE lets many NULLs in; NULLS NOT DISTINCT (15+) makes them collide.
+- DEFERRABLE moves the check to the end of the statement, INITIALLY DEFERRED to COMMIT.
+- on a big table: ADD ... NOT VALID, fix the rows, then VALIDATE without blocking writes.
+</Keylines>

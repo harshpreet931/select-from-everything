@@ -1,0 +1,138 @@
+import { HashSpill } from "@/components/figures/execution/HashSpill";
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import { tableAt } from "@/components/figures/execution/source";
+import trace from "./traces/hash-join.pgtrace.json";
+
+{/* the small tables, the build-side switch and the spill figure read traces/hash-join.scenario.sql,
+    captured on PGlite with the shop dataset: eight orders and five customers for the JoinLab
+    (steps 0, 1), the same join written both ways round (2, 3), and orders hashed for
+    order_items at 4MB, 256kB, 128kB and 64kB of work_mem (4 to 7). the JoinLab is the join
+    model in src/lib/db/sim/join.ts, checked against postgres in join.test.ts; its work_mem is
+    counted in rows, the real one in bytes. */}
+
+export const ords = tableAt(trace, 0);
+export const cust = tableAt(trace, 1);
+export const probeT = { name: "orders", columns: ords.columns.map((c) => c.name), rows: ords.rows.map((r) => r.map(Number)) };
+export const buildT = { name: "customers", columns: cust.columns.map((c) => c.name), rows: cust.rows.map((r) => [Number(r[0]), r[1]]) };
+
+<InShort>
+a **hash join** reads the smaller input once and builds a hash table on the join key (the **build** side, under the Hash node). then it streams the bigger input past it (the **probe** side), and each row checks one bucket instead of every row. n + m work instead of n × m.
+
+it only works for `=`, and the hash table has to fit in **work_mem × hash_mem_multiplier**. when it doesn't, postgres splits both inputs into **batches** and parks all but one of them in temp files.
+</InShort>
+
+## the picture
+
+you know how a lookup in a hash map is one step, however big the map is? a hash join is that, at table scale. the only question is what goes in the map.
+
+think of a post office sorting mail. first, every letter for one street goes into the pigeonhole for its house number (the build). then each carrier walks the street, and at every door they only look in that door's pigeonhole (the probe). nobody compares a letter with every house on the street.
+
+here's the shop's version: eight orders, five customers, and three ways to join them.
+
+<Figure wide caption={<>switch the algorithm and step through. the nested loop compares every order with every customer; the hash join hashes the five customers once and checks each order against one bucket; the merge join sorts both sides first. with hash join picked, slide <em>work_mem</em> below 5 rows and the table no longer fits: it splits into batches. the bars at the end compare the comparisons.</>}>
+<JoinLab left={probeT} right={buildT} on={["customer_id", "id"]} algos={["nested-loop", "hash", "merge"]} workMem={buildT.rows.length + 1} />
+</Figure>
+
+40 comparisons for the nested loop (8 × 5), and a handful for the hash join, since a key's bucket usually holds just that key. on the real tables that's the difference between 20 million comparisons and about 10,000 lookups.
+
+## build, then probe
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT o.id, c.name
+FROM orders AS o JOIN customers AS c ON c.id = o.customer_id;
+```
+
+the **Hash** node is the build. it pulls all 2,000 customers out of its scan before the join returns anything ([a blocking node](/learn/execution/iterator-model)), and reports the table it built: `Buckets: 2048` (a power of two at least as big as the row count, so a bucket holds about one key), `Batches: 1` (it fit), `Memory Usage: 90kB`. then the **Hash Join** reads orders, one row at a time, hashes `o.customer_id`, and looks in that one bucket. that's the probe, and it streams.
+
+<Predict question="swap the tables in FROM. which one gets hashed now?" options={["orders, it's first", "customers, the smaller one", "it depends on the ON"]} answer={1}>
+```sql
+SELECT o.id, c.name
+FROM customers AS c JOIN orders AS o ON o.customer_id = c.id;
+```
+<Explain>
+customers again. the order you write tables in doesn't decide the plan; the planner tries both ways round and prices them, and hashing 2,000 rows to probe with 10,000 beats hashing 10,000 to probe with 2,000. the smaller side becomes the build because the hash table is the part that has to fit in memory.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>the same join, written both ways round. the plans are identical: customers is under the Hash both times. (the buffers differ because the first run read the pages in and the second found them in memory.)</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "FROM", values: ["orders JOIN customers", "customers JOIN orders"] }]}
+  runs={{ "orders JOIN customers": 2, "customers JOIN orders": 3 }}
+  hot={["->  Hash", "Buckets"]}
+/>
+</Figure>
+
+## which side, for outer joins
+
+for an inner join the sides are interchangeable. for an outer join they aren't, and postgres still wants the smaller side in the hash table. so it flips the join's name instead:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT c.name, o.id
+FROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.id;
+```
+
+`Hash Right Join`. you asked for every customer, customers is the smaller table, so customers is hashed, and orders probes. a customer nobody probed for (one with no orders) is found at the end, by walking the hash table for entries that never matched, and comes out padded with NULLs. "Right" because, from the join's point of view, the side being kept is now the inner one. a full join works the same way, keeping score on both sides, which is why a hash join can do FULL JOIN and a [nested loop](/learn/execution/nested-loop-join) can't.
+
+## when it doesn't fit
+
+the hash table gets `work_mem × hash_mem_multiplier`: 4MB × 2 by default, 8MB. a bigger build side has to be split. postgres picks a number of batches (a power of two), and every row of *both* inputs goes to batch `hash(key) mod batches`. batch 0 is joined straight away, in memory. the others are written to temp files, and once the probe side is used up, they're joined one batch at a time: read a batch of the build side back, hash it, read the matching batch of the probe side back, probe. matching keys always land in the same batch number on both sides, so no match is ever split across batches.
+
+here's orders (10,000 rows, a wider row this time) hashed for order_items (24,942):
+
+<Figure wide caption={<>pick a work_mem. each box is a batch of one input: the solid one is joined in memory, the <C k="hot">dashed</C> ones go to temp files and come back later. every halving of work_mem doubles the batches, and the temp traffic grows with them.</>}>
+<HashSpill
+  trace={trace}
+  build="orders"
+  probe="order_items"
+  runs={[
+    { label: "4MB (default)", step: 4, limitKB: 8192 },
+    { label: "256kB", step: 5, limitKB: 512 },
+    { label: "128kB", step: 6, limitKB: 256 },
+    { label: "64kB", step: 7, limitKB: 128 },
+  ]}
+/>
+</Figure>
+
+at 4MB: one batch, a 647kB table, no temp files. at 256kB: 2 batches, 82 temp pages written and read back. at 64kB: 8 batches and 152. the answer is the same 24,942 rows every time; what changes is how many of them make a round trip through a file. temp pages count in `Buffers:` as `temp read` and `temp written`, next to the shared ones.
+
+it's the product that matters, not work_mem alone. 256kB with the multiplier at 1 is a 256kB budget, the same as 128kB at the default 2:
+
+```sql run db=shop
+SET work_mem = '256kB';
+SET hash_mem_multiplier = 1;
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT o.customer_id, o.status, o.ordered_at, o.shipped_at, oi.product_id, oi.qty
+FROM order_items AS oi JOIN orders AS o ON o.id = oi.order_id;
+```
+
+4 batches, same as the 128kB run. hash_mem_multiplier exists so that hashing can be given more memory than sorting: a sort that spills degrades gently, a hash table that spills costs more. its default went from 1 to 2 in [postgres 15](https://www.postgresql.org/docs/release/15.0/).
+
+<Quiz question="which ON can a hash join use?" options={["o.customer_id = c.id", "o.customer_id < c.id", "o.total > c.limit * 2"]} answer={0}>
+<Explain>
+only the equality. a hash table answers "which rows have exactly this key?", and nothing else: the hash of 41 tells you nothing about the keys below 42. joins on `<`, ranges or arbitrary conditions are nested loops. an equality can have extra conditions alongside it, though: those run as a Join Filter on each matching pair.
+</Explain>
+</Quiz>
+
+<Gotcha title="one hot key can't be split">
+batches split rows by the hash of their key, so every row with the same key lands in the same batch. if one key has a huge share of the build side (a NULL-ish default, a giant customer), doubling the batches doesn't shrink its batch, and that one batch overshoots work_mem anyway. if `Batches:` keeps climbing and memory still blows past the limit, look for a skewed key.
+</Gotcha>
+
+<Deep title="the same hash, two jobs">
+each row's join key is hashed once. part of the hash value picks the bucket (which slot of the in-memory table), another part picks the batch (which pass of the join). that's why the number of batches can double halfway through without rehashing everything: a row in batch 3 of 4 is in batch 3 or 7 of 8, decided by one more bit of the hash it already has. EXPLAIN says `Batches: 8 (originally 4)` when that happens, meaning the planner's guess at the size was too small.
+</Deep>
+
+<Interview q="how does a hash join work, and when does it spill?">
+two phases. build: read the smaller input and put every row in a hash table keyed on the join column. probe: read the larger input once, hash each row's key and compare it only against the rows in that bucket, so the cost is about n + m rather than n × m. it needs an equality condition. the hash table gets work_mem × hash_mem_multiplier; if the build side is bigger, both inputs are partitioned into batches by hash, batch 0 is joined in memory and the rest are written to temp files and joined batch by batch. bonus points: EXPLAIN ANALYZE shows Buckets, Batches (and "originally" if it grew) and Memory Usage on the Hash node, and temp read/written in Buffers; for outer joins postgres hashes the smaller side and calls it a Hash Right Join.
+</Interview>
+
+<Keylines>
+- build a hash table on the smaller side, stream the bigger side past it: n + m, not n × m.
+- the Hash node blocks; the probe streams.
+- equality only. inequalities go to nested loops.
+- the table gets work_mem × hash_mem_multiplier (4MB × 2 by default).
+- too big: both sides split into batches, all but one in temp files. Batches > 1 means it spilled.
+</Keylines>

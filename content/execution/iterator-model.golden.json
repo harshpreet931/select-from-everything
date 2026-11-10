@@ -1,0 +1,208 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "33e65f194dd1d3d1": {
+      "db": "empty",
+      "sql": "CREATE TABLE products (id int PRIMARY KEY, name text NOT NULL, category text, price numeric(8,2) NOT NULL, discontinued boolean NOT NULL DEFAULT false);\nINSERT INTO products\nSELECT i,\n       (ARRAY['lamp','mug','kettle','novel','atlas','puzzle','kite','spade','teapot','chess','yoyo','rake'])[1 + (i * 7) % 12] || '-' || i,\n       CASE WHEN i % 11 = 0 THEN NULL ELSE (ARRAY['books','games','kitchen','garden','toys'])[1 + (i * 3) % 5] END,\n       round((5 + (i * 37) % 90 + ((i * 13) % 100) / 100.0)::numeric, 2),\n       i % 9 = 0\nFROM generate_series(1, 24) i;\nCREATE TABLE orders (id int PRIMARY KEY, product_id int NOT NULL, qty int NOT NULL);\nINSERT INTO orders SELECT i, 1 + (i * 5) % 24, 1 + i % 3 FROM generate_series(1, 16) i;\nANALYZE products;\nANALYZE orders;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 24",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 24,
+          "digest": "9a236cc94d96e7e1"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "INSERT 0 16",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 16,
+          "digest": "68213e1dbcb8e816"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e9ea2cf09baac279"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "0158666dab518b98"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8ed153c6ab7a3da1": {
+      "db": "empty",
+      "sql": "SELECT id, name, price FROM products ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 24",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["price", "numeric", 1700]
+          ],
+          "rowCount": 24,
+          "digest": "7d80aecf5fb8edf9",
+          "rows": [
+            ["1", "spade-1", "42.13"],
+            ["2", "kettle-2", "79.26"],
+            ["3", "chess-3", "26.39"],
+            ["4", "atlas-4", "63.52"],
+            ["5", "rake-5", "10.65"],
+            ["6", "kite-6", "47.78"],
+            ["7", "mug-7", "84.91"],
+            ["8", "teapot-8", "31.04"],
+            ["9", "novel-9", "68.17"],
+            ["10", "yoyo-10", "15.30"],
+            ["11", "puzzle-11", "52.43"],
+            ["12", "lamp-12", "89.56"],
+            ["13", "spade-13", "36.69"],
+            ["14", "kettle-14", "73.82"],
+            ["15", "chess-15", "20.95"],
+            ["16", "atlas-16", "57.08"],
+            ["17", "rake-17", "94.21"],
+            ["18", "kite-18", "41.34"],
+            ["19", "mug-19", "78.47"],
+            ["20", "teapot-20", "25.60"],
+            ["21", "novel-21", "62.73"],
+            ["22", "yoyo-22", "9.86"],
+            ["23", "puzzle-23", "46.99"],
+            ["24", "lamp-24", "83.12"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9380cc1d198a89ee": {
+      "db": "empty",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, name, price FROM products WHERE price > 50 LIMIT 3;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "eb2ab9cee534a006",
+          "rows": [
+            ["Limit (actual rows=3.00 loops=1)"],
+            ["  ->  Seq Scan on products (actual rows=3.00 loops=1)"],
+            ["        Filter: (price > '50'::numeric)"],
+            ["        Rows Removed by Filter: 4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5cef0d1d857c0d8a": {
+      "db": "empty",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, name, price FROM products WHERE price > 50 ORDER BY price DESC LIMIT 3;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "fa579b30d51efd3d",
+          "rows": [
+            ["Limit (actual rows=3.00 loops=1)"],
+            ["  ->  Sort (actual rows=3.00 loops=1)"],
+            ["        Sort Key: price DESC"],
+            ["        Sort Method: top-N heapsort  Memory: 17kB"],
+            ["        ->  Seq Scan on products (actual rows=12.00 loops=1)"],
+            ["              Filter: (price > '50'::numeric)"],
+            ["              Rows Removed by Filter: 12"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "601081f679734bea": {
+      "db": "shop",
+      "sql": "BEGIN;\nDECLARE c CURSOR FOR SELECT id, name FROM customers ORDER BY id;\nFETCH 3 FROM c;\nFETCH 2 FROM c;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "DECLARE CURSOR",
+          "command": "DECLARE CURSOR",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bcc103186e3599c8"
+        },
+        {
+          "tag": "FETCH 3",
+          "command": "FETCH",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "9a056b9d3b5b4496",
+          "rows": [
+            ["1", "Maya Chen"],
+            ["2", "Grace Okafor"],
+            ["3", "Sam Lee"]
+          ]
+        },
+        {
+          "tag": "FETCH 2",
+          "command": "FETCH",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "ee2658d665eff735",
+          "rows": [
+            ["4", "Zoë Martin"],
+            ["5", "Zoe Martin"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "753270741c360f16"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,180 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "dfa36e6593f4a7e4": {
+      "db": "lab",
+      "sql": "BEGIN;\nUPDATE accounts SET balance = balance + 1 WHERE id = 1;\nCOMMIT;\nBEGIN;\nUPDATE accounts SET balance = balance + 1 WHERE id = 2;\nROLLBACK;\nSELECT x AS xid, pg_xact_status(x::text::xid8) AS status\nFROM generate_series(751, 754) AS x\nORDER BY x;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f634ecd471a56cb0"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "ced3313e28d15fcb"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "8076d3d0a61a7e81"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "db45e74bd6762320"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["xid", "int4", 23],
+            ["status", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "e626571e0fa00330",
+          "rows": [
+            ["751", "committed"],
+            ["752", "committed"],
+            ["753", "committed"],
+            ["754", "aborted"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bd88b2631eab1ba4": {
+      "db": "lab",
+      "sql": "SELECT pg_ls_dir('pg_xact') AS file, (pg_stat_file('pg_xact/0000')).size AS bytes;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["file", "text", 25],
+            ["bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "a122c92574dc2ba4",
+          "rows": [
+            ["0000", "8192"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b7debf832379fd6f": {
+      "db": "lab",
+      "sql": "SELECT lp, t_xmin, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags\nFROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;\nSELECT isdirty FROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0\n  AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database());",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["raw_flags", "text[]", 1009]
+          ],
+          "rowCount": 3,
+          "digest": "e0391b35ba149ace",
+          "rows": [
+            ["1", "752", "{HEAP_HASVARWIDTH,HEAP_XMAX_INVALID}"],
+            ["2", "752", "{HEAP_HASVARWIDTH,HEAP_XMAX_INVALID}"],
+            ["3", "752", "{HEAP_HASVARWIDTH,HEAP_XMAX_INVALID}"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["isdirty", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "0dfa5cc661907456",
+          "rows": [
+            ["f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "55c3c76fc0914201": {
+      "db": "lab",
+      "sql": "SELECT owner, balance FROM accounts ORDER BY id;\nSELECT lp, t_xmin, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags\nFROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;\nSELECT isdirty FROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0\n  AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database());",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "3d8fb9c1bc9940b9",
+          "rows": [
+            ["alice", "100.00"],
+            ["bob", "100.00"],
+            ["carol", "50.00"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["raw_flags", "text[]", 1009]
+          ],
+          "rowCount": 3,
+          "digest": "f0c20bb9f2ef7e8d",
+          "rows": [
+            ["1", "752", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMAX_INVALID}"],
+            ["2", "752", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMAX_INVALID}"],
+            ["3", "752", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMAX_INVALID}"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["isdirty", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "b9210f04e2f3e397",
+          "rows": [
+            ["t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

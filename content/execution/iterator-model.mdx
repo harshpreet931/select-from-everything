@@ -1,0 +1,188 @@
+import { VolcanoPull } from "@/components/figures/execution/VolcanoPull";
+import { jsonNodes, prov, tableAt, tidy } from "@/components/figures/execution/source";
+import { fromExplainJson } from "@/lib/db/fromTrace";
+import { withSim } from "@/lib/db/sim/volcano";
+import trace from "./traces/volcano.pgtrace.json";
+
+{/* the three plans come from traces/volcano.scenario.sql, captured on PGlite: a 24-row products
+    table and 16 orders, the same rows src/lib/db/fixtures/gen.mjs builds for the volcano model's
+    test (src/lib/db/sim/volcano.test.ts), which checks that the model's per-node row counts equal
+    the actual rows of these three plans. the specs below only tell the model what each node
+    does (its filter, sort key, limit); the plans themselves are real. orders' id is passed as
+    "o.id" so the join's output doesn't take products' id instead. */}
+
+export const products = tableAt(trace, 0);
+export const ordersT = tableAt(trace, 1);
+export const tables = {
+  products,
+  orders: { columns: ordersT.columns.map((c) => (c.name === "id" ? "o.id" : c.name)), rows: ordersT.rows },
+};
+export const scanned = (i) => jsonNodes(trace, i).filter((n) => n["Node Type"] === "Seq Scan").reduce((s, n) => s + Number(n["Actual Rows"]) + Number(n["Rows Removed by Filter"] ?? 0), 0);
+export const plans = [
+  {
+    label: "LIMIT 3",
+    sql: tidy(trace.steps[2].sql),
+    note: "the Limit asks for a row, the scan reads until one passes the filter, hands it up, and waits. after the third, the Limit stops asking.",
+    plan: withSim(fromExplainJson(trace.steps[2].explain), [{ count: 3 }, { table: "products", where: [["price", ">", 50]], cols: ["id", "name", "price"] }]),
+  },
+  {
+    label: "ORDER BY + LIMIT 3",
+    sql: tidy(trace.steps[3].sql),
+    note: "the Sort can't answer the first next() until it has pulled every row out of the scan: the most expensive product might be the last one.",
+    plan: withSim(fromExplainJson(trace.steps[3].explain), [{ count: 3 }, { key: "price", desc: true }, { table: "products", where: [["price", ">", 50]], cols: ["id", "name", "price"] }]),
+  },
+  {
+    label: "hash join",
+    sql: tidy(trace.steps[4].sql),
+    note: "the join's first next() makes the Hash drain its scan into a hash table. after that, every next() streams one order past it.",
+    plan: withSim(fromExplainJson(trace.steps[4].explain), [{ on: ["product_id", "id"], cols: ["o.id", "name", "qty"] }, { table: "orders" }, {}, { table: "products", where: [["price", ">", 30]] }]),
+  },
+];
+
+<InShort>
+every plan node is an **iterator** that answers one question: *next row, please?* the client asks the top node, the top node asks its child, and so on down to the scans. rows are **pulled** up the tree one at a time, so a LIMIT can stop the whole thing early.
+
+except at **blocking** nodes: a Sort, a Hash or an aggregate has to read all of its input before it can answer the first time.
+</InShort>
+
+## the picture
+
+you know how `LIMIT 3` on a huge table comes back instantly, but `ORDER BY price DESC LIMIT 3` on the same table takes ages? same three rows. it's not the LIMIT doing the work, it's who's asking.
+
+think of a bucket brigade up a ladder. nobody passes a bucket until the person above holds out an empty hand. the client at the top holds out a hand (calls next()), the Limit below turns and holds out its own, and so on down to the scan at the bottom, which scoops one row and passes it up. when the person at the top has three buckets, they stop holding out their hand, and the whole ladder goes still. nobody fills buckets just in case.
+
+<Figure wide caption={<>pick a query, then press <em>step</em> for one call at a time or <em>to the next row</em> for one result row. the <C k="hot">hot</C> edge is the call in flight: next() going down, a row coming up. under each node, how many rows it has returned so far next to what EXPLAIN ANALYZE reported for it.</>}>
+<VolcanoPull plans={plans} tables={tables} source={prov(trace)} />
+</Figure>
+
+with `LIMIT 3`, the scan reads 7 of the 24 rows: 3 that pass `price > 50` and 4 that don't. then the Limit says "no more", and the other 17 rows are never touched. that's the whole trick behind fast `LIMIT` queries, and it's why the model's counts match postgres's exactly: they're both just counting calls.
+
+## the same thing, for real
+
+a toy table, small enough to watch: 24 products, built by a hidden setup block.
+
+```sql run session=toy hidden
+CREATE TABLE products (id int PRIMARY KEY, name text NOT NULL, category text, price numeric(8,2) NOT NULL, discontinued boolean NOT NULL DEFAULT false);
+INSERT INTO products
+SELECT i,
+       (ARRAY['lamp','mug','kettle','novel','atlas','puzzle','kite','spade','teapot','chess','yoyo','rake'])[1 + (i * 7) % 12] || '-' || i,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE (ARRAY['books','games','kitchen','garden','toys'])[1 + (i * 3) % 5] END,
+       round((5 + (i * 37) % 90 + ((i * 13) % 100) / 100.0)::numeric, 2),
+       i % 9 = 0
+FROM generate_series(1, 24) i;
+CREATE TABLE orders (id int PRIMARY KEY, product_id int NOT NULL, qty int NOT NULL);
+INSERT INTO orders SELECT i, 1 + (i * 5) % 24, 1 + i % 3 FROM generate_series(1, 16) i;
+ANALYZE products;
+ANALYZE orders;
+```
+
+```sql run session=toy rows=8
+SELECT id, name, price FROM products ORDER BY id;
+```
+
+ask for three expensive ones, with no order:
+
+```sql run session=toy
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, name, price FROM products WHERE price > 50 LIMIT 3;
+```
+
+`actual rows=3.00` on the scan, and `Rows Removed by Filter: 4`. seven rows looked at. the scan is a cursor parked on row 7, and nobody will ever ask it to move again.
+
+<Predict question="now with ORDER BY price DESC. how many rows does the scan look at?" options={["3", "7", "all 24"]} answer={2}>
+```sql
+SELECT id, name, price FROM products
+WHERE price > 50
+ORDER BY price DESC
+LIMIT 3;
+```
+<Explain>
+all 24. the Limit still only wants 3, but it asks the Sort, and the Sort can't hand over the most expensive product until it has seen every product: the best one could be the last row in the table. so the Sort's first next() drains the scan to the end, and only then does it answer.
+</Explain>
+</Predict>
+
+```sql run session=toy
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, name, price FROM products WHERE price > 50 ORDER BY price DESC LIMIT 3;
+```
+
+12 rows passed, 12 were removed: 24, the whole table. the Limit still stopped the Sort after 3 rows (`actual rows=3.00`), but by then the work was done. postgres knows this, so its sort only keeps the best 3 while it reads (a top-N heapsort, [more in sorting](/learn/execution/sorting)), which saves memory, not reading.
+
+## streaming and blocking
+
+so there are two kinds of node. **streaming** nodes return a row as soon as they have one: scans, filters, Limit, the probe side of a join. **blocking** nodes have to consume all of their input before they can return the first row:
+
+<Figure caption={<>rows each plan's scans looked at, from EXPLAIN ANALYZE (rows returned plus rows removed by the filter). only the streaming plan stops early.</>}>
+<Bars data={[
+  { label: "LIMIT 3", value: scanned(2), tone: "live" },
+  { label: "ORDER BY + LIMIT 3", value: scanned(3) },
+  { label: "hash join (both scans)", value: scanned(4) },
+]} unit="rows" />
+</Figure>
+
+| node | kind | why |
+| --- | --- | --- |
+| Seq Scan, Index Scan, Filter | streaming | each row is ready the moment it's read |
+| Limit | streaming | passes rows through, then stops asking |
+| Nested Loop, Merge Join | streaming | a match is ready when both sides have a row |
+| Hash Join | blocking, then streaming | builds the whole hash table first, then streams the other side |
+| Sort | blocking | the first row out could be the last row in |
+| HashAggregate, plain Aggregate | blocking | a group isn't finished until the input is |
+| GroupAggregate | streaming | input sorted by the key: a group is done when the key changes |
+
+blocking is exactly what a high startup cost means in [reading EXPLAIN](/learn/execution/reading-explain): the work before the first row. with a LIMIT on top, the planner prefers plans with low startup cost, even when their total is higher, because it knows the pipeline will stop early.
+
+<Quiz question="which of these has to read all of its input before it returns its first row?" options={["Limit", "Hash", "Nested Loop"]} answer={1}>
+<Explain>
+Hash. it builds a hash table out of every row of its child before the join above it can look anything up. Limit and Nested Loop both stream: a row comes out as soon as one is ready.
+</Explain>
+</Quiz>
+
+## the interface
+
+in postgres's source, that question is three functions, one set per node type, in `src/backend/executor/`:
+
+<Figure caption={<>the life of one plan node. hover a stage. every node type (a Seq Scan, a Hash Join, a Sort) fills in these same steps, and only ever talks to its children through them.</>}>
+<Flow stages={[
+  { label: "ExecInitNode", sub: "open", note: "build the node's state: open the relation, set up the filter's expressions, init the children. nothing is read yet." },
+  { label: "ExecProcNode", sub: "next()", note: "return one row (a tuple slot), or an empty slot for 'no more'. called again and again by the parent." },
+  { label: "ExecReScan", sub: "rewind", note: "start over, maybe with a new parameter. a nested loop rescans its inner side once per outer row: those are the loops." },
+  { label: "ExecEndNode", sub: "close", note: "free memory, close the relation, end the children." },
+]} />
+</Figure>
+
+a node never sees the whole plan. a Hash Join doesn't know whether its outer side is a table, an index or another join; it just calls next() on it. that's why plans compose so freely, and why the [joins](/learn/execution/nested-loop-join) and [sorts](/learn/execution/sorting) in this part are each one small machine.
+
+## you can be the client
+
+the client at the top of the ladder is usually your driver, asking for everything. a cursor lets you hold out your hand one row at a time yourself:
+
+```sql run db=shop
+BEGIN;
+DECLARE c CURSOR FOR SELECT id, name FROM customers ORDER BY id;
+FETCH 3 FROM c;
+FETCH 2 FROM c;
+COMMIT;
+```
+
+each FETCH runs the plan just far enough to return that many rows, then the plan sits there, paused, scan position and all, until the next one. that's the iterator model with you as the parent node.
+
+<Gotcha title="LIMIT without ORDER BY is the scan's order">
+`LIMIT 3` with no ORDER BY returned kettle-2, atlas-4 and mug-7 because they're the first three over 50 in the order the scan happened to meet them. a different plan (an index scan, a parallel scan, a table rewritten by VACUUM FULL) meets them in a different order. "the first 3 rows" means nothing until you say first by what ([LIMIT and OFFSET](/learn/basics/limit-and-offset)).
+</Gotcha>
+
+<Deep title="why not push rows instead?">
+the pull model is Goetz Graefe's, from the Volcano system (1994), which is why it's also called the volcano model. it costs one function call per row per node, which was fine when disks were the bottleneck. newer engines flip it around: a scan pushes a whole batch of rows (a vector of a thousand values per column) through a pipeline of tight loops, and the CPU stays busy instead of jumping between nodes. duckdb works that way. postgres still pulls one row at a time; its JIT (`jit = on` past a cost threshold) compiles expressions and tuple deforming to machine code, not the pull loop itself. [column stores and vectorized execution](/learn/deep-dives/columnar-and-vectorized) has the comparison.
+</Deep>
+
+<Interview q="what is the iterator (volcano) model?">
+each operator in a plan implements open, next and close. the root calls next() on its child, which calls next() on its children, down to the scans, so rows are pulled up one at a time and nothing is computed until someone asks. that's what lets LIMIT stop a query early and makes operators composable. blocking operators (sort, hash build, hash aggregate) consume their whole input on the first next(), which shows up as a high startup cost. bonus point: the alternative is push-based, vectorized execution (batches of rows, pipelines compiled together), which is what modern analytical engines use for CPU efficiency.
+</Interview>
+
+<Keylines>
+- every plan node answers one question: next row, please?
+- rows are pulled up the tree one at a time; nothing runs until someone asks.
+- LIMIT stops asking, so streaming plans stop early.
+- Sort, Hash and aggregates block: they read all their input before their first row.
+- blocking work is what startup cost measures.
+</Keylines>

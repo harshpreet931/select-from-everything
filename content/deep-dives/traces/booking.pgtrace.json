@@ -1,0 +1,218 @@
+{
+ "v": 1,
+ "scenario": "content/deep-dives/traces/booking.scenario.sql",
+ "title": "the booking schema from the schema interview: what the constraints refuse, and what each tenant sees",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "hotels": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"name","type":"text"}]},
+  "hotels_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"hotels"},
+  "hotels_name_key": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"hotels"},
+  "rooms": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"hotel_id","type":"int4"},
+    {"name":"room_no","type":"text"},
+    {"name":"beds","type":"int4"}
+   ]
+  },
+  "rooms_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"rooms"},
+  "rooms_hotel_id_room_no_key": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"hotel_id","type":"int4"},{"name":"room_no","type":"text"}],
+   "on": "rooms"
+  },
+  "guests": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"email","type":"text"},{"name":"name","type":"text"}]
+  },
+  "guests_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"guests"},
+  "guests_email": {"kind":"index","am":"btree","columns":[{"name":"lower","type":"text"}],"on":"guests"},
+  "room_rates": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"room_id","type":"int4"},{"name":"valid","type":"daterange"},{"name":"price","type":"numeric"}]
+  },
+  "room_rates_pkey": {
+   "kind": "index",
+   "am": "gist",
+   "columns": [{"name":"room_id","type":"gbtreekey8"},{"name":"valid","type":"daterange"}],
+   "on": "room_rates"
+  },
+  "bookings": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"hotel_id","type":"int4"},
+    {"name":"room_id","type":"int4"},
+    {"name":"guest_id","type":"int4"},
+    {"name":"stay","type":"daterange"},
+    {"name":"status","type":"text"}
+   ]
+  },
+  "bookings_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"bookings"},
+  "bookings_room_id_stay_excl": {
+   "kind": "index",
+   "am": "gist",
+   "columns": [{"name":"room_id","type":"gbtreekey8"},{"name":"stay","type":"daterange"}],
+   "on": "bookings"
+  },
+  "bookings_guest": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"guest_id","type":"int4"},{"name":"lower","type":"date"}],
+   "on": "bookings"
+  }
+ },
+ "base": {"xid":772,"lsn":28091608},
+ "setup": "CREATE TABLE hotels (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL UNIQUE);\nCREATE TABLE rooms (\n  id       int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  hotel_id int NOT NULL REFERENCES hotels,\n  room_no  text NOT NULL,\n  beds     int NOT NULL CHECK (beds BETWEEN 1 AND 6),\n  UNIQUE (hotel_id, room_no)\n);\nCREATE TABLE guests (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, email text NOT NULL, name text NOT NULL);\nCREATE UNIQUE INDEX guests_email ON guests (lower(email));\nCREATE TABLE room_rates (\n  room_id int NOT NULL REFERENCES rooms,\n  valid   daterange NOT NULL,\n  price   numeric(8,2) NOT NULL CHECK (price > 0),\n  PRIMARY KEY (room_id, valid WITHOUT OVERLAPS)\n);\nCREATE TABLE bookings (\n  id       int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  hotel_id int NOT NULL REFERENCES hotels,\n  room_id  int NOT NULL REFERENCES rooms,\n  guest_id int NOT NULL REFERENCES guests,\n  stay     daterange NOT NULL CHECK (NOT isempty(stay)),\n  status   text NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed', 'cancelled')),\n  EXCLUDE USING gist (room_id WITH =, stay WITH &&) WHERE (status = 'confirmed')\n);\nCREATE INDEX bookings_guest ON bookings (guest_id, lower(stay));\nINSERT INTO hotels (name) VALUES ('harbour view'), ('the old mill');\nINSERT INTO rooms (hotel_id, room_no, beds) VALUES (1, '101', 2), (1, '102', 2), (2, '1', 4);\nINSERT INTO guests (email, name) VALUES ('ada@example.com', 'Ada Lovelace'), ('grace@example.com', 'Grace Hopper');\nINSERT INTO room_rates VALUES (1, '[2026-01-01,2026-12-01)', 120.00), (1, '[2026-12-01,2027-01-01)', 180.00);\nINSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 1, '[2026-12-20,2026-12-27)');\nINSERT INTO bookings (hotel_id, room_id, guest_id, stay, status) VALUES (1, 2, 2, '[2026-12-20,2026-12-27)', 'cancelled');\nINSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (2, 3, 2, '[2026-12-24,2026-12-26)');\nALTER TABLE bookings ENABLE ROW LEVEL SECURITY;\nCREATE POLICY tenant ON bookings USING (hotel_id = nullif(current_setting('app.hotel_id', true), '')::int);\nCREATE ROLE booking_app;\nGRANT SELECT, INSERT ON bookings TO booking_app;\nGRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO booking_app;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "INSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 2, '[2026-12-24,2026-12-29)')",
+   "note": "room 101 is already booked from the 20th to the 27th. an overlapping stay is refused by the exclusion constraint, with the conflicting row in the message.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23P01",
+    "message": "conflicting key value violates exclusion constraint \"bookings_room_id_stay_excl\"",
+    "detail": "Key (room_id, stay)=(1, [2026-12-24,2026-12-29)) conflicts with existing key (room_id, stay)=(1, [2026-12-20,2026-12-27))."
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 2, '[2026-12-27,2026-12-30)') RETURNING id, room_id, stay",
+   "note": "a stay that starts the day the last one ends doesn't overlap: [) ranges include the first day and exclude the last.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 1,
+    "columns": [{"name":"id","type":"int4"},{"name":"room_id","type":"int4"},{"name":"stay","type":"daterange"}],
+    "data": [["5","1","[2026-12-27,2026-12-30)"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 2, 1, '[2026-12-22,2026-12-25)') RETURNING id, room_id, stay",
+   "note": "room 102 has a booking for the same dates, but it was cancelled, and the constraint only looks at confirmed rows.",
+   "status": "ok",
+   "result": {
+    "command": "INSERT",
+    "rows": 1,
+    "columns": [{"name":"id","type":"int4"},{"name":"room_id","type":"int4"},{"name":"stay","type":"daterange"}],
+    "data": [["6","2","[2026-12-22,2026-12-25)"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "INSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 1, '[2026-12-31,2026-12-31)')",
+   "note": "an empty stay (checking out the day you check in) is refused by the CHECK.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23514",
+    "message": "new row for relation \"bookings\" violates check constraint \"bookings_stay_check\"",
+    "detail": "Failing row contains (7, 1, 1, 1, empty, confirmed)."
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO room_rates VALUES (1, '[2026-12-24,2026-12-26)', 250.00)",
+   "note": "rates use a temporal primary key: room 101 can't have two prices for the same night.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23P01",
+    "message": "conflicting key value violates exclusion constraint \"room_rates_pkey\"",
+    "detail": "Key (room_id, valid)=(1, [2026-12-24,2026-12-26)) conflicts with existing key (room_id, valid)=(1, [2026-12-01,2027-01-01))."
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SET ROLE booking_app;\nSELECT set_config('app.hotel_id', '1', false) IS NOT NULL AS set;\nSELECT id, hotel_id, room_id, stay, status FROM bookings ORDER BY id",
+   "note": "the app connects as booking_app with hotel 1 in a setting. row-level security shows it hotel 1's bookings only.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"hotel_id","type":"int4"},
+     {"name":"room_id","type":"int4"},
+     {"name":"stay","type":"daterange"},
+     {"name":"status","type":"text"}
+    ],
+    "data": [
+     ["1","1","1","[2026-12-20,2026-12-27)","confirmed"],
+     ["2","1","2","[2026-12-20,2026-12-27)","cancelled"],
+     ["5","1","1","[2026-12-27,2026-12-30)","confirmed"],
+     ["6","1","2","[2026-12-22,2026-12-25)","confirmed"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT set_config('app.hotel_id', '2', false) IS NOT NULL AS set;\nSELECT id, hotel_id, room_id, stay, status FROM bookings ORDER BY id",
+   "note": "the same query with hotel 2 in the setting: only the old mill's one booking.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"hotel_id","type":"int4"},
+     {"name":"room_id","type":"int4"},
+     {"name":"stay","type":"daterange"},
+     {"name":"status","type":"text"}
+    ],
+    "data": [["3","2","3","[2026-12-24,2026-12-26)","confirmed"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT set_config('app.hotel_id', '', false) IS NOT NULL AS set;\nSELECT id, hotel_id, room_id, stay, status FROM bookings ORDER BY id",
+   "note": "with no hotel set, the policy compares against NULL, which is never true: no rows, not all rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 0,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"hotel_id","type":"int4"},
+     {"name":"room_id","type":"int4"},
+     {"name":"stay","type":"daterange"},
+     {"name":"status","type":"text"}
+    ],
+    "data": []
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT set_config('app.hotel_id', '2', false) IS NOT NULL AS set;\nINSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 1, '[2027-01-02,2027-01-04)')",
+   "note": "hotel 2's app tries to write a booking for hotel 1. the policy's USING also checks new rows, and refuses.",
+   "status": "error",
+   "error": {"sqlstate":"42501","message":"new row violates row-level security policy for table \"bookings\""}
+  }
+ ]
+}

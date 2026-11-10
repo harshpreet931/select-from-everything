@@ -1,0 +1,269 @@
+{
+ "v": 1,
+ "scenario": "content/wal/traces/checkpoint-fpi.scenario.sql",
+ "title": "a checkpoint, its log lines, and the full-page image the next change writes",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {"notes":{"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]}},
+ "base": {"xid":759,"lsn":23202360},
+ "setup": "CREATE TABLE notes (id int, body text NOT NULL);\nINSERT INTO notes SELECT g, 'note ' || g || ': ' || repeat('.', 40) FROM generate_series(1, 60) AS g;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "CHECKPOINT",
+   "note": "CHECKPOINT writes every dirty buffer out, fsyncs the files, then logs where redo would start.",
+   "status": "ok",
+   "result": {"command":"CHECKPOINT","rows":null,"columns":[],"data":[]},
+   "wal": {
+    "insert": 23202568,
+    "flush": 23202568,
+    "redo": 23202360,
+    "checkpoint": 23202448,
+    "records": [
+     {
+      "lsn": 23202360,
+      "end": 23202392,
+      "prev": 23202264,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_REDO",
+      "len": 30,
+      "fpiLen": 0,
+      "desc": "wal_level replica",
+      "blocks": []
+     },
+     {
+      "lsn": 23202392,
+      "end": 23202448,
+      "prev": 23202360,
+      "xid": 0,
+      "rmgr": "Standby",
+      "type": "RUNNING_XACTS",
+      "len": 50,
+      "fpiLen": 0,
+      "desc": "nextXid 759 latestCompletedXid 758 oldestRunningXid 759",
+      "blocks": []
+     },
+     {
+      "lsn": 23202448,
+      "end": 23202568,
+      "prev": 23202392,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_ONLINE",
+      "len": 114,
+      "fpiLen": 0,
+      "desc": "redo 0/1620A38; tli 1; prev tli 1; fpw true; wal_level replica; xid 0:759; oid 24576; multi 1; offset 0; oldest xid 744 in DB 1; oldest multi 1 in DB 1; oldest/newest commit timestamp xid: 0/0; oldest running xid 759; online",
+      "blocks": []
+     }
+    ]
+   },
+   "log": [
+    "LOG:  checkpoint starting: immediate force wait",
+    "LOG:  checkpoint complete: wrote 165 buffers (1.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=<t> s, sync=<t> s, total=<t> s; sync files=72, longest=<t> s, average=<t> s; distance=883 kB, estimate=883 kB; lsn=0/1620A90, redo lsn=0/1620A38"
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "UPDATE notes SET body = 'changed once' WHERE id = 1",
+   "note": "the first change to page 0 since the checkpoint: the WAL record carries a copy of the whole page.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "wal": {
+    "insert": 23207792,
+    "flush": 23207792,
+    "redo": 23202360,
+    "checkpoint": 23202448,
+    "records": [
+     {
+      "lsn": 23202568,
+      "end": 23207752,
+      "prev": 23202448,
+      "xid": 759,
+      "rmgr": "Heap",
+      "type": "HOT_UPDATE",
+      "len": 5181,
+      "fpiLen": 5116,
+      "desc": "old_xmax: 759, old_off: 1, old_infobits: [], flags: 0x20, new_xmax: 0, new_off: 61",
+      "blocks": [{"rel":"notes","block":0,"fpi":true}]
+     },
+     {
+      "lsn": 23207752,
+      "end": 23207792,
+      "prev": 23202568,
+      "xid": 759,
+      "rmgr": "Transaction",
+      "type": "COMMIT",
+      "len": 34,
+      "fpiLen": 0,
+      "desc": "<time>",
+      "blocks": []
+     }
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE notes SET body = 'changed twice' WHERE id = 2",
+   "note": "a second change to the same page: the page is already in the log since the checkpoint, so only the change goes in.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "wal": {
+    "insert": 23207920,
+    "flush": 23207920,
+    "redo": 23202360,
+    "checkpoint": 23202448,
+    "records": [
+     {
+      "lsn": 23207792,
+      "end": 23207880,
+      "prev": 23207752,
+      "xid": 760,
+      "rmgr": "Heap",
+      "type": "HOT_UPDATE",
+      "len": 82,
+      "fpiLen": 0,
+      "desc": "old_xmax: 760, old_off: 2, old_infobits: [], flags: 0x20, new_xmax: 0, new_off: 62",
+      "blocks": [{"rel":"notes","block":0,"fpi":false}]
+     },
+     {
+      "lsn": 23207880,
+      "end": 23207920,
+      "prev": 23207792,
+      "xid": 760,
+      "rmgr": "Transaction",
+      "type": "COMMIT",
+      "len": 34,
+      "fpiLen": 0,
+      "desc": "<time>",
+      "blocks": []
+     }
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "obs",
+   "sql": "CHECKPOINT",
+   "note": "another checkpoint. the redo pointer moves past both updates.",
+   "status": "ok",
+   "result": {"command":"CHECKPOINT","rows":null,"columns":[],"data":[]},
+   "wal": {
+    "insert": 23208152,
+    "flush": 23208152,
+    "redo": 23207920,
+    "checkpoint": 23208032,
+    "records": [
+     {
+      "lsn": 23207920,
+      "end": 23207976,
+      "prev": 23207880,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_REDO",
+      "len": 30,
+      "fpiLen": 0,
+      "desc": "wal_level replica",
+      "blocks": []
+     },
+     {
+      "lsn": 23207976,
+      "end": 23208032,
+      "prev": 23207920,
+      "xid": 0,
+      "rmgr": "Standby",
+      "type": "RUNNING_XACTS",
+      "len": 50,
+      "fpiLen": 0,
+      "desc": "nextXid 761 latestCompletedXid 760 oldestRunningXid 761",
+      "blocks": []
+     },
+     {
+      "lsn": 23208032,
+      "end": 23208152,
+      "prev": 23207976,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_ONLINE",
+      "len": 114,
+      "fpiLen": 0,
+      "desc": "redo 0/1621FF0; tli 1; prev tli 1; fpw true; wal_level replica; xid 0:761; oid 24576; multi 1; offset 0; oldest xid 744 in DB 1; oldest multi 1 in DB 1; oldest/newest commit timestamp xid: 0/0; oldest running xid 761; online",
+      "blocks": []
+     }
+    ]
+   },
+   "log": [
+    "LOG:  checkpoint starting: immediate force wait",
+    "LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=<t> s, sync=<t> s, total=<t> s; sync files=2, longest=<t> s, average=<t> s; distance=5 kB, estimate=796 kB; lsn=0/1622060, redo lsn=0/1621FF0"
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "UPDATE notes SET body = 'changed again' WHERE id = 3",
+   "note": "the first change since the new checkpoint pays for a full page again.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "wal": {
+    "insert": 23213480,
+    "flush": 23213480,
+    "redo": 23207920,
+    "checkpoint": 23208032,
+    "records": [
+     {
+      "lsn": 23208152,
+      "end": 23213440,
+      "prev": 23208032,
+      "xid": 761,
+      "rmgr": "Heap",
+      "type": "HOT_UPDATE",
+      "len": 5285,
+      "fpiLen": 5220,
+      "desc": "old_xmax: 761, old_off: 3, old_infobits: [], flags: 0x20, new_xmax: 0, new_off: 63",
+      "blocks": [{"rel":"notes","block":0,"fpi":true}]
+     },
+     {
+      "lsn": 23213440,
+      "end": 23213480,
+      "prev": 23208152,
+      "xid": 761,
+      "rmgr": "Transaction",
+      "type": "COMMIT",
+      "len": 34,
+      "fpiLen": 0,
+      "desc": "<time>",
+      "blocks": []
+     }
+    ]
+   }
+  }
+ ]
+}

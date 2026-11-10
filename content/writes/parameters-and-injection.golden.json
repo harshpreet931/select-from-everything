@@ -1,0 +1,312 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "497531db918a14db": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS rows FROM (\nSELECT id, name FROM customers WHERE email = 'ada@example.com' ORDER BY id\n) AS app_query;\n\nSELECT count(*) AS rows FROM (\nSELECT id, name FROM customers WHERE email = '' OR 1=1 --' ORDER BY id\n) AS app_query;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "49b6a4204143d7d4",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b9eb15ef65e4d962",
+          "rows": [
+            ["2000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "045db4ff82b4542e": {
+      "db": "shop",
+      "sql": "SELECT id, name FROM customers WHERE email = ''; DROP TABLE customers; --' ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 0,
+          "digest": "e6d7cbf2aa717c20",
+          "rows": []
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "2BP01",
+            "message": "cannot drop table customers because other objects depend on it",
+            "detail": "constraint orders_customer_id_fkey on table orders depends on table customers",
+            "hint": "Use DROP ... CASCADE to drop the dependent objects too."
+          },
+          "digest": "6852cee33c47e994"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "2BP01",
+        "message": "cannot drop table customers because other objects depend on it",
+        "detail": "constraint orders_customer_id_fkey on table orders depends on table customers",
+        "hint": "Use DROP ... CASCADE to drop the dependent objects too.",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "7acb67d02b89f46d": {
+      "db": "shop",
+      "sql": "PREPARE login(text) AS\nSELECT id, name FROM customers WHERE email = $1 ORDER BY id;\n\nEXECUTE login('ada@example.com');\nEXECUTE login(''' OR 1=1 --');",
+      "statements": [
+        {
+          "tag": "PREPARE",
+          "command": "PREPARE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "d639b3b8f69700ae"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "82aec01a47b75ccf",
+          "rows": [
+            ["42", "Ada Lovelace"]
+          ]
+        },
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 0,
+          "digest": "c0378c93b48a7c9a",
+          "rows": []
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b84d6df453009bc6": {
+      "db": "shop",
+      "sql": "SELECT name, statement, parameter_types FROM pg_prepared_statements;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["statement", "text", 25],
+            ["parameter_types", "regtype[]", 2211]
+          ],
+          "rowCount": 1,
+          "digest": "533b9471dbc9d995",
+          "rows": [
+            ["login", "PREPARE login(text) AS\nSELECT id, name FROM customers WHERE email = $1 ORDER BY id;", "{text}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "49afb14eda7343c4": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS rows FROM (\nSELECT id, name FROM customers WHERE id = 42 OR 1=1 ORDER BY id\n) AS app_query;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "1799b5fcad6d13bf",
+          "rows": [
+            ["2000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "97da415eb1a1bf56": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS rows FROM (\nSELECT id, name FROM customers WHERE email = 'x\\' OR 1=1 --' ORDER BY id\n) AS app_query;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "1799b5fcad6d13bf",
+          "rows": [
+            ["2000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a618e8cc03545b75": {
+      "db": "shop",
+      "sql": "PREPARE search(text) AS SELECT count(*) FROM customers WHERE name LIKE $1 || '%';\nEXECUTE search('Ada');\nEXECUTE search('%');\n\nPREPARE search2(text) AS SELECT count(*) FROM customers WHERE starts_with(name, $1);\nEXECUTE search2('%');",
+      "statements": [
+        {
+          "tag": "PREPARE",
+          "command": "PREPARE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "d639b3b8f69700ae"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "3c20bf21079ed1b9",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "a8abfee1bfa2466d",
+          "rows": [
+            ["2000"]
+          ]
+        },
+        {
+          "tag": "PREPARE",
+          "command": "PREPARE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "70ca6560601c6755"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "7a314f705789cdd7",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "45203202a3e405b5": {
+      "db": "shop",
+      "sql": "PREPARE by_ids(int[]) AS\nSELECT string_agg(name, ', ' ORDER BY id) AS names FROM customers WHERE id = ANY($1);\n\nEXECUTE by_ids('{1,7,42}');",
+      "statements": [
+        {
+          "tag": "PREPARE",
+          "command": "PREPARE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "d639b3b8f69700ae"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["names", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "9c6ae6fb1339088a",
+          "rows": [
+            ["Maya Chen, Ming Li, Ada Lovelace"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "332c7c4f5e3c7bc5": {
+      "db": "shop",
+      "sql": "PREPARE count_rows(text) AS SELECT count(*) FROM $1;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42601",
+            "message": "syntax error at or near \"$1\"",
+            "position": 50
+          },
+          "digest": "844c9de8d994eaa5"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42601",
+        "message": "syntax error at or near \"$1\"",
+        "position": 50,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "63b2dbb0541f475a": {
+      "db": "school",
+      "sql": "SELECT id, name FROM students WHERE name LIKE 'Robert%' ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "588a265d8d5f9dac",
+          "rows": [
+            ["13", "Robert'); DROP TABLE students;--"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

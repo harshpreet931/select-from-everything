@@ -1,0 +1,137 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "8debe55d72d7fc79": {
+      "db": "lab",
+      "sql": "CREATE TABLE t (id int PRIMARY KEY, pad text NOT NULL);\nINSERT INTO t SELECT g, repeat('x', 200) FROM generate_series(1, 204) AS g ORDER BY g;\nDELETE FROM t WHERE id % 3 <> 0;\nSELECT pg_relation_size('t') AS heap_bytes, pg_relation_filenode('t') AS filenode,\n       (SELECT sum(live_items) FROM bt_page_stats('t_pkey', 1)) AS index_entries,\n       (SELECT count(*) FILTER (WHERE all_visible) FROM pg_visibility_map('t')) AS all_visible_pages;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 204",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 204,
+          "digest": "81273f0ed7776dfb"
+        },
+        {
+          "tag": "DELETE 136",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 136,
+          "digest": "8f5dce281651f820"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["heap_bytes", "int8", 20],
+            ["filenode", "oid", 26],
+            ["index_entries", "int8", 20],
+            ["all_visible_pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "eee007a2965a75da",
+          "rows": [
+            ["49152", "24576", "204", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8233b638e7f2867f": {
+      "db": "lab",
+      "sql": "VACUUM t;\nSELECT pg_relation_size('t') AS heap_bytes, pg_relation_filenode('t') AS filenode,\n       (SELECT sum(live_items) FROM bt_page_stats('t_pkey', 1)) AS index_entries,\n       (SELECT count(*) FILTER (WHERE all_visible) FROM pg_visibility_map('t')) AS all_visible_pages,\n       (SELECT sum(avail) FROM pg_freespace('t')) AS free_bytes;",
+      "statements": [
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b40b2a8273442d58"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["heap_bytes", "int8", 20],
+            ["filenode", "oid", 26],
+            ["index_entries", "int8", 20],
+            ["all_visible_pages", "int8", 20],
+            ["free_bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "81749e384fe590d9",
+          "rows": [
+            ["49152", "24576", "68", "6", "32320"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "961f6f28685f5716": {
+      "db": "lab",
+      "sql": "INSERT INTO t SELECT g, repeat('y', 200) FROM generate_series(1001, 1100) AS g;\nSELECT pg_relation_size('t') AS heap_bytes;",
+      "statements": [
+        {
+          "tag": "INSERT 0 100",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100,
+          "digest": "a14421b685844cc5"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["heap_bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "32d667826d669130",
+          "rows": [
+            ["49152"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8ce972d5a9779e72": {
+      "db": "lab",
+      "sql": "VACUUM FULL t;\nSELECT pg_relation_size('t') AS heap_bytes, pg_relation_filenode('t') AS filenode,\n       (SELECT count(*) FILTER (WHERE all_visible) FROM pg_visibility_map('t')) AS all_visible_pages;",
+      "statements": [
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b40b2a8273442d58"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["heap_bytes", "int8", 20],
+            ["filenode", "oid", 26],
+            ["all_visible_pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "eb286d21f9965284",
+          "rows": [
+            ["40960", "24585", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

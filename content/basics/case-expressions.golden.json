@@ -1,0 +1,204 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "66e7b8265d66ef8b": {
+      "db": "shop",
+      "sql": "SELECT name, price,\n       CASE WHEN price = 0 THEN 'free'\n            WHEN price < 25 THEN 'under 25'\n            WHEN price < 100 THEN 'under 100'\n            ELSE '100 and up'\n       END AS band\nFROM products\nWHERE id IN (4, 200, 1, 8, 5)\nORDER BY price;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["price", "numeric", 1700],
+            ["band", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "01c6731cf7b8eaef",
+          "rows": [
+            ["paper clips, free sample", "0.00", "free"],
+            ["left-handed teapot", "19.99", "under 25"],
+            ["chef's knife", "49.00", "under 100"],
+            ["cat tree", "89.00", "under 100"],
+            ["studio headphones", "129.99", "100 and up"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4e0451ab3c1b7e07": {
+      "db": "shop",
+      "sql": "SELECT id, status,\n       CASE status\n         WHEN 'delivered' THEN 'done'\n         WHEN 'cancelled' THEN 'done'\n         WHEN 'refunded'  THEN 'done'\n         ELSE 'in progress'\n       END AS stage\nFROM orders\nWHERE customer_id = 42\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["status", "text", 25],
+            ["stage", "text", 25]
+          ],
+          "rowCount": 7,
+          "digest": "1d28cd6034a7f57a",
+          "rows": [
+            ["880", "cancelled", "done"],
+            ["1455", "refunded", "done"],
+            ["6580", "delivered", "done"],
+            ["7787", "delivered", "done"],
+            ["8219", "delivered", "done"],
+            ["9615", "delivered", "done"],
+            ["9946", "placed", "in progress"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6bf4cbbc9ba33841": {
+      "db": "shop",
+      "sql": "SELECT CASE category WHEN NULL THEN 'none' ELSE category END AS simple,\n       CASE WHEN category IS NULL THEN 'none' ELSE category END AS searched\nFROM products\nWHERE id = 7;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["simple", "text", 25],
+            ["searched", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "2dcbb21b977744ea",
+          "rows": [
+            [null, "none"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e72fbc182b6c7cd0": {
+      "db": "shop",
+      "sql": "SELECT id, name,\n       city,\n       coalesce(city, 'unknown') AS coalesced,\n       coalesce(nullif(city, ''), 'unknown') AS cleaned\nFROM customers\nWHERE id IN (6, 11, 42)\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["city", "text", 25],
+            ["coalesced", "text", 25],
+            ["cleaned", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "aecf482aea4baaa7",
+          "rows": [
+            ["6", "José Silva", null, "unknown", "unknown"],
+            ["11", "Ana Lima", "", "", "unknown"],
+            ["42", "Ada Lovelace", "London", "London", "London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a1f0c1035504b347": {
+      "db": "empty",
+      "sql": "SELECT 10 / 0;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22012",
+            "message": "division by zero"
+          },
+          "digest": "441deb7f36bf060e"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22012",
+        "message": "division by zero",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "8163340fdc00061b": {
+      "db": "empty",
+      "sql": "SELECT 10 / nullif(0, 0) AS ratio;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["ratio", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "9e732ce75753ef1b",
+          "rows": [
+            [null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c3a319d4e27b5390": {
+      "db": "shop",
+      "sql": "SELECT name, CASE WHEN price > 100 THEN price ELSE 'cheap' END AS label\nFROM products;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22P02",
+            "message": "invalid input syntax for type numeric: \"cheap\"",
+            "position": 52
+          },
+          "digest": "e86998bfb56e7493"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22P02",
+        "message": "invalid input syntax for type numeric: \"cheap\"",
+        "position": 52,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "f1d3613f7a3cdf2d": {
+      "db": "shop",
+      "sql": "SELECT CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END\nFROM products;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22012",
+            "message": "division by zero"
+          },
+          "digest": "441deb7f36bf060e"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22012",
+        "message": "division by zero",
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

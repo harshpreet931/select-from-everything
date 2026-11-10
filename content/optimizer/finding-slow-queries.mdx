@@ -1,0 +1,176 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/statements.pgtrace.json";
+
+{/* pg_stat_statements needs shared_preload_libraries, which the browser's postgres can't do, so
+    the figures read traces/statements.scenario.sql, captured on a throwaway native postgres 18.6
+    (`pnpm pgtrace <file> --twice`). the auto_explain transcript was recorded with psql 18.6
+    against a throwaway native server loaded with the shop dataset. */}
+
+export const pss = trace.steps[3].result;
+export const rows = pss.data.map((r) => [r[0], r[1], r[2], r[3].length > 90 ? r[3].slice(0, 88) + " …" : r[3]]);
+export const n1 = pss.data.find((r) => r[3].startsWith("SELECT sum(qty)"));
+export const list = pss.data.find((r) => r[3].startsWith("SELECT id FROM orders"));
+export const join = pss.data.find((r) => r[3].startsWith("SELECT o.id"));
+
+<InShort>
+**pg_stat_statements** keeps a running total for every distinct statement the server runs: calls, rows, time, pages. sort it by total time and you know where the database spends its day. **auto_explain** writes the plan of any statement slower than a threshold to the log, so you see the plan it actually ran with.
+
+and the **N+1** pattern, invisible in any single query, is obvious there: one statement with thousands of calls and one row per call.
+</InShort>
+
+## the picture
+
+you know how everyone has a "slow query" story, and the query turns out to be fast? 2 ms, run 400,000 times an hour. no single execution is slow. the total is.
+
+think of a shop's receipts. looking at one receipt tells you nothing about where the money goes. a summary by product does: "milk, 900 sales, 1 each". pg_stat_statements is the summary by product, with each query's constants taken out so `WHERE id = 42` and `WHERE id = 43` count as one statement.
+
+here's an orders page loaded two ways, seen from a real server:
+
+<Figure wide caption={<>pg_stat_statements after the page loaded twice: once as one query for 100 orders plus <C k="dead">one query per order</C> for its items (an ORM's default, here sent by a DO block so one step can send 101 statements), and once as a single join. the per-order query: {n1[0]} calls, {n1[1]} rows, one row per call. timing columns are left out because they change every run.</>}>
+<ResultTable columns={[{ name: "calls", type: "int8" }, { name: "rows", type: "int8" }, { name: "pages", type: "int8" }, { name: "query", type: "text" }]} rows={rows} rowTones={rows.map((r) => (r[3].startsWith("SELECT sum(qty)") ? "dead" : r[3].startsWith("SELECT o.id") ? "live" : null))} dense />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+## pg_stat_statements
+
+it's an extension that ships with postgres, but it has to be loaded when the server starts, because it hooks into every backend:
+
+```text title="postgresql.conf"
+shared_preload_libraries = 'pg_stat_statements'
+```
+
+then restart, and `CREATE EXTENSION pg_stat_statements;` in the database you'll query it from. it can't run in this page: the browser's postgres is a single process with no server to restart, and the extension isn't built into it. that's why everything in this chapter's figures comes from a real server.
+
+on a server, the view has one row per (user, database, normalized query). the columns that matter most:
+
+- **calls** and **rows**: how many times, and how many rows in total.
+- **total_exec_time**, **mean_exec_time**, **max_exec_time**, **stddev_exec_time**: milliseconds. total is load, mean is latency.
+- **shared_blks_hit**, **shared_blks_read**: pages from the buffer pool and from outside it. reads are the I/O.
+- **total_plan_time**: planning, when `pg_stat_statements.track_planning` is on.
+- **query**: the text with constants replaced by `$1`, `$2`. that's what makes 400,000 calls one row.
+
+the two queries everyone keeps around:
+
+```sql
+-- where does the time go? (load)
+SELECT calls, round(total_exec_time) AS total_ms, round(mean_exec_time, 2) AS mean_ms, rows, query
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 10;
+
+-- what's slow per call? (latency)
+SELECT calls, round(mean_exec_time, 2) AS mean_ms, query
+FROM pg_stat_statements
+WHERE calls > 10
+ORDER BY mean_exec_time DESC
+LIMIT 10;
+```
+
+totals accumulate until `SELECT pg_stat_statements_reset()`. reset before a test, or compare two snapshots, so last month's traffic doesn't drown today's.
+
+<Gotcha title="nested statements are invisible by default">
+`pg_stat_statements.track` defaults to `top`: only statements the client sent. a slow query inside a function or a DO block shows up as the function call, with all its time. the capture above sets `track = all`, which is why the per-order query inside the DO block has its own row.
+</Gotcha>
+
+## N+1, from the database's side
+
+an ORM loads 100 orders, then touches `order.items` on each one, and each touch is a query. in the application's logs it's 101 fast queries. in pg_stat_statements it's this:
+
+<Figure caption={<>the same page, both ways, from the table above: statements the server had to parse, plan and run, and pages read. the N+1 version's pages are its 100 small queries plus the list query.</>}>
+<Bars data={[
+  { label: "N+1: statements", value: Number(n1[0]) + Number(list[0]), tone: "dead" },
+  { label: "one join: statements", value: Number(join[0]), tone: "live" },
+  { label: "N+1: pages", value: Number(n1[2]) + Number(list[2]), tone: "dead" },
+  { label: "one join: pages", value: Number(join[2]), tone: "live" },
+]} log />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+any one of those 100 calls, on its own, looks perfect:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF)
+SELECT sum(qty) FROM order_items WHERE order_id = 9999;
+```
+
+an index scan on the primary key, a handful of pages. nothing for EXPLAIN to improve, and nothing a slow query log would ever catch. the problem is the count, and only the summary shows it.
+
+the signature: **calls in the thousands, rows per call around 1**, a filter on a foreign key, and a twin query with `LIMIT $1` whose calls match the page loads. each call is cheap, but each one is a network round trip, a parse, a plan (unless prepared) and an executor start-up, and that overhead is most of the cost. the fix lives in the application (eager loading, a join, `WHERE order_id = ANY($1)`), which is [ORMs and N+1](/learn/scale/orms-and-n-plus-one)'s subject.
+
+<Predict question={<>a row in pg_stat_statements: <code>calls = 48,000, rows = 48,000, mean 0.05 ms</code>. what is it most likely?</>} options={["a slow query", "an N+1 lookup", "a bulk export"]} answer={1}>
+```text
+ calls  | rows  | mean_ms | query
+--------+-------+---------+-----------------------------------------
+  48000 | 48000 |    0.05 | SELECT * FROM order_items WHERE order_id = $1
+```
+<Explain>
+an N+1 lookup: one row per call, tens of thousands of calls, each one fast. it'll never show up in a slow query log. sorting by total_exec_time or calls finds it; sorting by mean doesn't.
+</Explain>
+</Predict>
+
+## auto_explain: the plan it actually ran
+
+pg_stat_statements tells you which statement. it doesn't keep plans. **auto_explain** logs the plan of every statement that runs longer than `auto_explain.log_min_duration`, with EXPLAIN ANALYZE numbers if you ask, at the moment it ran slowly: with the parameters, statistics and cache it had then, which a later EXPLAIN in psql may not reproduce.
+
+it can be loaded into a single session with `LOAD` (as a superuser), or for every session with `session_preload_libraries` or `shared_preload_libraries`. in the browser's postgres the module isn't there:
+
+```sql run errors=continue
+LOAD 'auto_explain';
+```
+
+on a real server, with the shop dataset, every statement logged and the log sent to the client so we can see it:
+
+```psql
+LOAD 'auto_explain';
+LOAD
+SET auto_explain.log_min_duration = 0;
+SET
+SET auto_explain.log_analyze = on;
+SET
+SET auto_explain.log_timing = off;
+SET
+SET auto_explain.log_level = notice;
+SET
+SELECT count(*) FROM orders WHERE customer_id = 42;
+NOTICE:  duration: 0.247 ms  plan:
+Query Text: SELECT count(*) FROM orders WHERE customer_id = 42;
+Aggregate  (cost=208.01..208.02 rows=1 width=8) (actual rows=1.00 loops=1)
+  ->  Seq Scan on orders  (cost=0.00..208.00 rows=5 width=0) (actual rows=7.00 loops=1)
+        Filter: (customer_id = 42)
+        Rows Removed by Filter: 9993
+ count
+-------
+     7
+(1 row)
+```
+
+<Provenance recorded="psql 18.6 against a throwaway postgres 18.6 server with the shop dataset; the duration changes every run" />
+
+in production you'd set `log_min_duration` to something like 250ms and leave log_level at its default (the server log). `log_analyze` makes every statement pay for instrumentation, not just the slow ones, so keep `log_timing` off and consider `auto_explain.sample_rate` on a busy server. `log_nested_statements` catches the queries inside functions.
+
+## the loop
+
+<Figure wide caption={<>the usual order of work, and the tool for each step. hover a stage.</>}>
+<Flow stages={[
+  { label: "find", sub: "pg_stat_statements", note: "sort by total_exec_time for load, by calls for chatty code, by mean for latency. pick the statement that matters." },
+  { label: "catch", sub: "auto_explain", note: "the plan it ran with when it was slow, with real row counts, from the log." },
+  { label: "reproduce", sub: "EXPLAIN (ANALYZE, BUFFERS)", note: "the same query and parameters in psql. compare estimated and actual rows, node by node." },
+  { label: "fix", sub: "estimates first", note: "statistics, rewrites, an index, the application's query pattern. settings last." },
+  { label: "check", sub: "reset and compare", note: "pg_stat_statements_reset(), let traffic run, compare calls and total time." },
+]} />
+</Figure>
+
+the reproduce step is [EXPLAIN ANALYZE](/learn/execution/explain-analyze). the fix step is most of this part: [when estimates go wrong](/learn/optimizer/misestimates), [extended statistics](/learn/optimizer/extended-statistics), [generic plans](/learn/optimizer/generic-plans) for the "fast in psql, slow in the app" case, [why an index isn't used](/learn/indexes/index-not-used), and [steering the planner](/learn/optimizer/steering-the-planner) for the last resort. two smaller tools fill gaps: `log_min_duration_statement` logs slow statements' text without plans, and `pg_stat_activity` shows what's running right now.
+
+<Interview q="the database is slow. where do you start?">
+pg_stat_statements, sorted by total_exec_time: the statements that take the most time overall, which is often a fast query called very often rather than one slow query. look at calls, rows per call and shared_blks_read too. then get a real plan for the top ones, from auto_explain if it's set up, or by running EXPLAIN (ANALYZE, BUFFERS) with realistic parameters, and look for the lowest node where estimated and actual rows diverge. bonus point: calls in the thousands with about one row per call is an N+1 pattern, and the fix is in the application, not the database.
+</Interview>
+
+<Keylines>
+- pg_stat_statements: one row per normalized statement, with calls, rows, time and pages. needs shared_preload_libraries.
+- sort by total time for load, by calls for chatty code, by mean for latency.
+- N+1 from the database's side: huge calls, about one row per call.
+- auto_explain logs the plan a slow statement actually ran with.
+- find, catch, reproduce, fix, check. settings come last.
+</Keylines>

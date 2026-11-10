@@ -1,0 +1,235 @@
+import { LifecycleStages } from "@/components/figures/execution/LifecycleStages";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov, resultOf } from "@/lib/db/captured";
+import { traceBTree } from "@/lib/db/fromTrace";
+import down from "./traces/insert-down.pgtrace.json";
+import planned from "./traces/insert-plan.pgtrace.json";
+
+{/* two native captures of the same INSERT on a throwaway postgres 18.6:
+    traces/insert-down (every probe that matters: xids, buffers, wal, heap, btree, vm, log) for the
+    stepper and the per-stage figures, and traces/insert-plan (debug_print_parse, _rewritten and
+    _plan through the log probe, plus a plain EXPLAIN) for the parse and plan stages. the run
+    blocks at the end repeat the INSERT on the browser engine. */}
+
+export const ins = down.steps[2];
+export const heapRec = ins.wal.records[0];
+export const btRec = ins.wal.records[1];
+export const commitRec = down.steps[3].wal.records[0];
+export const tree = traceBTree(down, 2, "notes_pkey");
+export const disk = resultOf(down, 6);
+export const blocks = resultOf(down, 7);
+export const insPlan = planOf(planned, 3);
+export const n = (x) => x.toLocaleString("en-US");
+
+<InShort>
+one `INSERT` into a table with a primary key touches almost every chapter of this book. it's **parsed** and **planned**, the executor writes a **tuple** into a heap page and an **entry** into the index, both changes go into the **WAL**, COMMIT flushes that WAL and flips two bits in the **commit log**, and a **checkpoint** finally writes the pages to the file.
+
+here's all of it, captured on a real postgres 18.6 server, one step at a time.
+</InShort>
+
+## the picture
+
+you know how an INSERT feels like one thing? you send a line of SQL, you get `INSERT 0 1` back, done. under that one line, postgres did a dozen separate jobs, and most of them were writing something down somewhere other than your table.
+
+think of posting a letter. a clerk reads the address and checks it's a real place (the parser and analyzer). someone picks the route (the planner). the letter goes into a pigeonhole (the heap page) and a card goes into the index drawer saying which pigeonhole (the index entry). every move is written in the day book first (the WAL). you get your receipt once the day book entry is in ink (COMMIT). the pigeonholes get emptied into the vault at the end of the shift (the checkpoint).
+
+the row is the one every chapter used, more or less: a table with an `int` key and a `text` body, two rows already in it, vacuumed, and a checkpoint to start clean.
+
+```sql
+CREATE TABLE notes (id int PRIMARY KEY, body text NOT NULL);
+INSERT INTO notes VALUES (1, 'the first note'), (2, 'the second note');
+VACUUM notes;
+CHECKPOINT;
+
+BEGIN;
+INSERT INTO notes VALUES (3, 'hello from the capstone');
+COMMIT;
+```
+
+<Figure caption={<>the whole trip, one stage per box. hover a stage for what it writes and where. everything left of COMMIT happens in memory; only the WAL flush and the checkpoint touch the disk.</>}>
+<Flow stages={[
+  { label: "parse + analyze", sub: "text → query tree", note: "the grammar, then the catalog: notes becomes relid 16466, 3 becomes an int4 constant, the text becomes a varlena." },
+  { label: "plan", sub: "→ ModifyTable", note: "nothing to search for, so the plan is a Result node that makes one row, under a ModifyTable that inserts it." },
+  { label: "heap", sub: "page 0, slot 3", note: "an xid is assigned on the first write. the tuple lands on page 0 with xmin = 759, and the visibility map bit for the page is cleared." },
+  { label: "index", sub: "leaf, off 3", note: "the unique check finds no other 3, and an entry (3) → (0,3) goes onto the leaf page." },
+  { label: "WAL", sub: "2 records", note: "Heap INSERT and Btree INSERT_LEAF, both with full-page images, because these are the first changes to those pages since the checkpoint. in wal_buffers, not on disk yet." },
+  { label: "COMMIT", sub: "flush + clog", note: "a commit record, the WAL flushed up to it, and xid 759 marked committed in pg_xact. only now does the client hear back." },
+  { label: "checkpoint", sub: "→ the data file", note: "the three dirty pages (heap, index leaf, visibility map) and the commit log page are written and fsynced. the redo pointer moves past our records." },
+]} />
+</Figure>
+
+## the whole trip, step by step
+
+here's the capture. on the left, the one session and what it ran. on the right, the heap page, the index, the WAL and the buffer pool, after every step, with what changed lit up. press play, or step through it.
+
+<Figure wide caption={<>one INSERT on a real postgres 18.6 server, eight steps. watch slot 3 appear on <code>notes</code> page 0 at the INSERT, the <C k="hot">new WAL records</C>, the flush pointer catch up at COMMIT, the <C k="meta">hint bit</C> show up when the row is first read, and the dirty frames (accent corners) go clean at the checkpoint.</>}>
+<PgStepper trace={down} panels={["lanes", "page:notes", "btree:notes_pkey", "wal", "pool"]} interval={2600} />
+</Figure>
+
+and here's where each step is explained properly:
+
+| step | what happens | the chapter |
+| --- | --- | --- |
+| 1 | CHECKPOINT: dirty pages out, redo pointer set | [checkpoints](/learn/wal/checkpoints) |
+| 2 | BEGIN: no xid, no snapshot work, nothing written | [transaction ids](/learn/mvcc/transaction-ids) |
+| 3 | INSERT: xid 759, heap tuple, index entry, two WAL records | [the 8 KB page](/learn/storage/the-page), [a real b-tree](/learn/index-internals/nbtree-pages), [WAL records](/learn/wal/wal-records) |
+| 4 | COMMIT: commit record, WAL flush, pg_xact | [what COMMIT waits for](/learn/wal/commit-path) |
+| 5 | first read: the clog lookup, then a hint bit | [the commit log and hint bits](/learn/mvcc/commit-log-and-hint-bits) |
+| 6 | CHECKPOINT: 3 buffers and 1 clog page written | [writing dirty pages back](/learn/storage/writing-pages-back) |
+| 7 | the page, read from the file itself | [the files behind a table](/learn/storage/files-and-forks) |
+| 8 | the INSERT's WAL, block by block | [WAL records](/learn/wal/wal-records) |
+
+the rest of the chapter takes the stages one at a time.
+
+## parse, analyze, rewrite, plan
+
+before anything is written, the text has to become something the executor can run. [the life of a query](/learn/execution/query-lifecycle) walks a SELECT through these stages. an INSERT goes the same way, and the server will log every tree it builds:
+
+<Figure wide caption={<>the same INSERT, logged by a real postgres 18.6 with <code>debug_print_parse</code>, <code>debug_print_rewritten</code> and <code>debug_print_plan</code> on. the trees are trimmed to the lines that matter. watch the two constants: <code>3</code> becomes the four bytes 3 0 0 0, and the text becomes a varlena whose first byte, 108, is its length (27) shifted left by two.</>}>
+<LifecycleStages
+  trace={planned}
+  step={1}
+  stages={[
+    { id: "parser", label: "parser", sub: "text → parse tree", note: "the parser only checks the grammar: INSERT INTO, a name, VALUES, a list of two expressions. it has no idea yet whether notes exists, or has two columns." },
+    { id: "analyzer", label: "analyzer", sub: "parse tree → query tree", keep: ["{QUERY", ":commandType", ":resultRelation", "{RANGETBLENTRY", ":rtekind", ":relid", ":relkind", "{TARGETENTRY", "{CONST", ":consttype", ":constvalue", ":resname"], note: "commandType 3 is an INSERT. notes is relid 16466, relkind r, a plain table. the two values became constants of type 23 (int4) and 25 (text), matched to the columns id and body by position." },
+    { id: "rewriter", label: "rewriter", sub: "query tree → rewritten tree", keep: ["{QUERY", ":commandType", ":resultRelation", "{RANGETBLENTRY", ":relid", ":relkind"], note: "no views, no rules on notes, so the rewriter hands the tree on unchanged. on a view with an INSTEAD rule, or an updatable view, this is where the INSERT would be pointed at the real table." },
+    { id: "planner", label: "planner", sub: "rewritten tree → plan", keep: ["{PLANNEDSTMT", "{MODIFYTABLE", "{RESULT", ":plan.total_cost", ":plan.plan_rows", "{CONST", ":constvalue", ":operation", ":resultRelations", ":relationOids"], note: "nothing to search, nothing to join. the plan is two nodes: a RESULT that produces one row from the constants, and a MODIFYTABLE (operation 3, insert) on top that writes it. total cost 0.01." },
+    { id: "executor", label: "executor", sub: "plan → INSERT 0 1", note: "the executor pulls one row from the Result and hands it to ModifyTable, which does everything in the rest of this chapter. the result is just a command tag." },
+  ]}
+/>
+</Figure>
+
+the same plan, the way EXPLAIN draws it. no scans at all: a VALUES list is a Result node, and the writing is ModifyTable's job ([reading EXPLAIN](/learn/execution/reading-explain)).
+
+<Figure caption={<>plain <code>EXPLAIN</code> of the INSERT, captured. ModifyTable expects 0 rows because it returns none (no RETURNING); the Result under it makes 1.</>}>
+<PlanTree plan={insPlan} show={["est", "cost"]} provenance={<Provenance trace={prov(planned)} />} />
+</Figure>
+
+## the heap page
+
+ModifyTable calls into the heap. the first thing it needs is a transaction id: BEGIN didn't take one (step 2 shows T1 in a transaction with no xid), because postgres only assigns one when a transaction first writes. this one gets **759**.
+
+then it needs a page with room. the table has one page, and page 0 has {n(8096 - 32)} bytes free (bigger tables ask the [free space map](/learn/storage/fsm-and-vm)). the new tuple goes in:
+
+<Figure wide caption={<>page 0 of <code>notes</code> right after the INSERT, from the capture. slot 3 is new: a 4-byte line pointer at the front, a 52-byte tuple at the back, with xmin 759 and <C k="meta">HEAP_XMAX_INVALID</C> and nothing else. 759 is still in progress here, so it's drawn dashed.</>}>
+<PageView page={ins.heap.notes[0]} xact={ins.xact} focus={3} hot={[3]} layout="auto" provenance="real postgres 18.6 output · a native server · traces/insert-down, after the INSERT" />
+</Figure>
+
+the page header tells the same story in two numbers. `pd_lower` went from 32 to 36: one more line pointer. `pd_upper` went from 8,096 to 8,040: 56 bytes, which is the 52-byte tuple rounded up to the 8-byte alignment ([inside a tuple](/learn/storage/tuple-layout) has the arithmetic). the tuple's header says xmin 759, xmax 0, ctid (0,3), its own address. nothing about committed: nobody knows that yet.
+
+one more thing changed, and it's easy to miss. VACUUM had marked page 0 all-visible in the [visibility map](/learn/storage/fsm-and-vm). a new tuple from an in-progress transaction is not visible to everyone, so the INSERT cleared that bit. from now on an index-only scan has to visit this page again until the next VACUUM ([index-only scans](/learn/indexes/index-only-scans)).
+
+## the index entry
+
+next, the primary key. it's a btree with one leaf (block 1; block 0 is the metapage). before inserting, nbtree checks uniqueness: it searches the leaf for another 3 that a live or in-progress transaction could still own, finds none, and adds the entry ([how a unique index says no](/learn/index-internals/unique-checks)).
+
+<Figure caption={<>the primary key after the INSERT, captured. one leaf page, three entries. the new one, key 3, points at <C k="ref">(0,3)</C>, the heap slot from the previous figure. an index entry is a key and a heap address, nothing else: no xmin, no xmax.</>}>
+<BTree view={tree} heap />
+<Provenance trace={prov(down)} />
+</Figure>
+
+that last point matters. the index doesn't know whether 759 committed. a reader that finds key 3 here still has to go to the heap and check the tuple's xmin, unless the visibility map vouches for the whole page ([a real b-tree, page by page](/learn/index-internals/nbtree-pages)). every extra index on the table would get one more entry here, and one more WAL record ([what indexes cost](/learn/indexes/index-costs)).
+
+## the WAL
+
+neither of those page changes is allowed to reach the disk before the WAL record that describes it. that's [the write-ahead rule](/learn/wal/write-ahead-rule). the INSERT wrote two records:
+
+<Figure wide caption={<>the WAL across the whole capture. step through: the checkpoint's records, then the INSERT's <C k="hot">Heap INSERT</C> and <C k="hot">Btree INSERT_LEAF</C> (past the flush pointer, dashed: only in wal_buffers), then the 34-byte commit that drags the flush pointer past all three.</>}>
+<WalStrip trace={down} />
+</Figure>
+
+look at the sizes. the Heap INSERT record is {n(heapRec.len)} bytes, and {n(heapRec.fpiLen)} of them are page images. the btree record is {n(btRec.len)} bytes, {n(btRec.fpiLen)} of them a copy of the leaf. these are the first changes to those pages since the checkpoint, so postgres logs each whole page once, in case the next write of it is torn ([torn pages and full-page writes](/learn/wal/full-page-writes)). the last step of the capture asks `pg_get_wal_block_info` which image is which:
+
+<Figure caption={<>the INSERT's WAL records, block by block. fork 0 is the main fork, fork 2 the visibility map. the heap page's image is small because postgres skips the empty hole between pd_lower and pd_upper; the visibility map page is logged whole.</>}>
+<ResultTable columns={blocks.columns} rows={blocks.rows} focusRows={[1]} />
+<Provenance trace={prov(down)} />
+</Figure>
+
+so the expensive part of this INSERT wasn't the row, or even the heap page: it was the {n(Number(blocks.rows[1][4]))}-byte image of the visibility map page whose bit it cleared. a second INSERT before the next checkpoint would carry no images at all, just the new tuple.
+
+and notice what the flush pointer did at the INSERT: nothing. it stayed at {n(ins.wal.flush)} while the insert pointer moved to {n(ins.wal.insert)}. the records are in memory. if the server died right now, they'd be gone, and that's fine, because nobody was told the row exists.
+
+<Predict question="COMMIT has returned. which of these is on disk now?" options={["the heap page and the WAL", "only the WAL", "only the heap page", "neither, yet"]} answer={1}>
+```sql
+BEGIN;
+INSERT INTO notes VALUES (3, 'hello from the capstone');
+COMMIT;   -- returned. what is durable?
+```
+<Explain>
+only the WAL. COMMIT writes its commit record and waits until the WAL is flushed up to it, which also flushes the two INSERT records before it. the heap page, the index leaf and the visibility map page are still dirty buffers in memory (step 4 shows them with accent corners). they reach the data files at the checkpoint, or when the background writer or an eviction gets to them. that's safe because the WAL has everything needed to redo them after a crash. see [what COMMIT waits for](/learn/wal/commit-path).
+</Explain>
+</Predict>
+
+## commit and the commit log
+
+COMMIT does three things, in this order: write a `Transaction COMMIT` record ({commitRec.len} bytes), flush the WAL up to its end (the flush pointer jumps to {n(down.steps[3].wal.flush)}), and set xid 759's two bits in `pg_xact`, the commit log, to committed. then it tells the client.
+
+that's the whole commit. the tuple on the page didn't change: its header still has no idea. so step 5, the first reader, does the work. it finds xmin 759, sees no hint, asks pg_xact, hears "committed", and writes that down on the tuple as `HEAP_XMIN_COMMITTED` (infomask 2,050 → 2,306), so nobody has to ask again. a SELECT that writes to a page: that's [hint bits](/learn/mvcc/commit-log-and-hint-bits). whether the reader then sees the row at all is the [visibility rules](/learn/mvcc/visibility-rules) applied to its [snapshot](/learn/mvcc/snapshots).
+
+```sql run db=lab session=clog
+CREATE TABLE inbox (id int PRIMARY KEY, body text NOT NULL);
+INSERT INTO inbox VALUES (3, 'hello from the capstone');
+SELECT xmin, pg_xact_status(xmin::text::xid8) AS status, id, body FROM inbox;
+```
+
+## the checkpoint, and the page on disk
+
+at step 6 an explicit CHECKPOINT runs. the log says it wrote 3 buffers and 1 SLRU buffer: the heap page, the index leaf, the visibility map page, and the pg_xact page holding 759's bits. each file is fsynced, then a checkpoint record goes into the WAL and the redo pointer moves from {n(down.steps[0].wal.redo)} to {n(down.steps[5].wal.redo)}, past everything this INSERT wrote. from now on, crash recovery never needs those records again ([checkpoints](/learn/wal/checkpoints), [crash recovery](/learn/wal/crash-recovery)).
+
+and the page is on disk. step 7 reads it from the file, with `pg_read_binary_file` on `pg_relation_filepath('notes')`, not through shared buffers, and hands the bytes to pageinspect:
+
+<Figure caption={<>page 0 of <code>notes</code>, read from the data file after the checkpoint. the new tuple is slot 3, and the page's LSN is <C k="meta">0/1624598</C>: the end of the Heap INSERT record, the last WAL record that changed this page.</>}>
+<ResultTable columns={disk.columns} rows={disk.rows} focusRows={[2]} />
+<Provenance trace={prov(down)} />
+</Figure>
+
+that LSN is the last link. 0/1624598 is {n(heapRec.end)}, exactly where the Heap INSERT record ends. redo uses it to decide whether a WAL record still has to be applied to this page: anything at or before the page's LSN is already in it. and the hint bit from step 5 made it to disk too, without a WAL record of its own, because checksums are off on this server (with checksums on it would have cost a `FPI_FOR_HINT`, see [data checksums](/learn/wal/checksums)).
+
+## your turn
+
+the browser runs the same INSERT on its own postgres. it's a lab engine (one session, checksums on, nobody else writing), so the LSNs differ, but the records are the same kinds:
+
+```sql run db=lab session=mine
+CREATE TABLE inbox (id int PRIMARY KEY, body text NOT NULL);
+INSERT INTO inbox VALUES (1, 'the first note'), (2, 'the second note');
+CHECKPOINT;
+SELECT set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;
+INSERT INTO inbox VALUES (3, 'hello from the capstone');
+SELECT resource_manager, record_type, record_length, fpi_length
+FROM pg_get_wal_records_info(current_setting('my.lsn')::pg_lsn, pg_current_wal_insert_lsn())
+ORDER BY start_lsn;
+```
+
+then the two pages it touched:
+
+```sql run session=mine
+SELECT lp, lp_off, lp_len, t_xmin, t_ctid FROM heap_page_items(get_raw_page('inbox', 0)) ORDER BY lp;
+SELECT itemoffset, ctid, data FROM bt_page_items('inbox_pkey', 1) ORDER BY itemoffset;
+```
+
+<Gotcha title="the first write after a checkpoint is the expensive one">
+the tuple was 52 bytes. the WAL for it was {n(heapRec.len + btRec.len + commitRec.len)} bytes, almost all of it page images, because it was the first change to each page since the checkpoint. the browser run above shows the other side: there the visibility map bit was never set (nobody ran VACUUM), so its Heap INSERT record was 242 bytes. on a busy table most writes land on pages already logged since the last checkpoint, and carry no image at all, just the change. right after every checkpoint, though, WAL volume jumps. checkpoints too close together (a small `max_wal_size`) make that jump happen all day. [checkpoints](/learn/wal/checkpoints) has the tuning.
+</Gotcha>
+
+<Deep title="what didn't happen">
+no data file was written during the transaction. not at INSERT, not at COMMIT. the only fsync before the checkpoint was the WAL's.
+
+no index entry carries visibility. the heap tuple is the only place that knows about 759, which is why a reader can't trust an index alone.
+
+the free space map wasn't touched: the buffer pool shows its three pages clean the whole time. postgres updates it lazily, mostly from VACUUM.
+
+nothing was locked that a reader would notice: an INSERT takes a RowExclusiveLock on the table, which conflicts with no other INSERT, UPDATE, DELETE or SELECT, and is released at COMMIT ([table lock modes](/learn/locking/table-lock-modes)). a second session inserting key 4 at the same time wouldn't wait for anything. one inserting key 3 would wait on 759 at the unique check.
+</Deep>
+
+<Interview q="walk me through what happens when you INSERT a row in postgres.">
+the parser checks the grammar, the analyzer resolves names against the catalog, the rewriter applies views and rules, and the planner builds a tiny plan: a ModifyTable over a Result. the executor assigns an xid (the first write in the transaction), finds a page with room through the free space map, and writes a new heap tuple with xmin set to that xid, clearing the page's visibility map bit. then it inserts one entry per index, checking uniqueness on the way. each page change is WAL-logged first, with a full-page image if it's the first change to that page since the last checkpoint. at COMMIT, postgres writes a commit record, flushes the WAL up to it (that's the only disk wait), marks the xid committed in pg_xact, and releases locks. the data pages are written later, by the checkpointer or the background writer. bonus point: the tuple doesn't learn it committed until a later reader checks pg_xact and sets a hint bit.
+</Interview>
+
+<Keylines>
+- an INSERT is parse → plan → heap tuple → index entries → WAL records, all in memory.
+- COMMIT's only disk wait is flushing the WAL up to the commit record. then pg_xact says committed.
+- the tuple learns it committed later, from the first reader, as a hint bit.
+- the first change to a page after a checkpoint logs the whole page.
+- the checkpoint writes the dirty pages to the data files, and the redo pointer moves past them.
+- the page's LSN on disk is the end of the last WAL record that changed it.
+</Keylines>

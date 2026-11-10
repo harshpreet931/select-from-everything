@@ -1,0 +1,753 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b2edf701b3d94cc3": {
+      "db": "events",
+      "sql": "SET TimeZone = 'UTC';\nCREATE TABLE ev (\n  id          bigint NOT NULL,\n  user_id     int NOT NULL,\n  kind        text NOT NULL,\n  occurred_at timestamptz NOT NULL,\n  amount      numeric(10,2)\n) PARTITION BY RANGE (occurred_at);\n\nCREATE TABLE ev_2026_03 PARTITION OF ev FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');\nCREATE TABLE ev_2026_04 PARTITION OF ev FOR VALUES FROM ('2026-04-01') TO ('2026-05-01');\nCREATE TABLE ev_2026_05 PARTITION OF ev FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');\n\nINSERT INTO ev SELECT id, user_id, kind, occurred_at, amount FROM events ORDER BY id;\nANALYZE ev;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "90488e4141c2d7df"
+        },
+        {
+          "tag": "INSERT 0 25000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 25000,
+          "digest": "d053e158c82fcace"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7720ec5d52c002cb"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a541da3b34390f20": {
+      "db": "events",
+      "sql": "SELECT tableoid::regclass AS partition, count(*) AS rows, min(occurred_at)::date AS first, max(occurred_at)::date AS last\nFROM ev\nGROUP BY tableoid\nORDER BY partition;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["partition", "regclass", 2205],
+            ["rows", "int8", 20],
+            ["first", "date", 1082],
+            ["last", "date", 1082]
+          ],
+          "rowCount": 3,
+          "digest": "368936cf9ffce396",
+          "rows": [
+            ["ev_2026_03", "8517", "2026-03-01", "2026-03-31"],
+            ["ev_2026_04", "7966", "2026-04-01", "2026-04-30"],
+            ["ev_2026_05", "8517", "2026-05-01", "2026-05-31"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "427ee0a284ee7c49": {
+      "db": "events",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT count(*) FROM ev\nWHERE occurred_at >= '2026-04-01' AND occurred_at < '2026-04-15';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "83f53cf7727d498e",
+          "rows": [
+            ["Aggregate"],
+            ["  ->  Seq Scan on ev_2026_04 ev"],
+            ["        Filter: ((occurred_at >= '2026-04-01 00:00:00+00'::timestamp with time zone) AND (occurred_at < '2026-04-15 00:00:00+00'::timestamp with time zone))"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7eaae31b4be239fa": {
+      "db": "events",
+      "sql": "PREPARE by_day(timestamptz) AS\n  SELECT count(*) FROM ev WHERE occurred_at >= $1 AND occurred_at < $1 + interval '1 day';\nSET plan_cache_mode = force_generic_plan;\nEXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF) EXECUTE by_day('2026-04-20');",
+      "statements": [
+        {
+          "tag": "PREPARE",
+          "command": "PREPARE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "d639b3b8f69700ae"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "48239a5dc4e9cdfe",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  ->  Append (actual rows=275.00 loops=1)"],
+            ["        Subplans Removed: 2"],
+            ["        ->  Seq Scan on ev_2026_04 ev_1 (actual rows=275.00 loops=1)"],
+            ["              Filter: ((occurred_at >= $1) AND (occurred_at < ($1 + '1 day'::interval)))"],
+            ["              Rows Removed by Filter: 7691"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "31c263afe246fbbd": {
+      "db": "events",
+      "sql": "RESET plan_cache_mode;\nEXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM ev\nWHERE occurred_at >= (SELECT max(occurred_at) FROM events) - interval '1 day';",
+      "statements": [
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6911cf78ee1eedca"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "67790f608003c0f7",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  InitPlan 1"],
+            ["    ->  Aggregate (actual rows=1.00 loops=1)"],
+            ["          ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+            ["  ->  Append (actual rows=276.00 loops=1)"],
+            ["        ->  Seq Scan on ev_2026_03 ev_1 (never executed)"],
+            ["              Filter: (occurred_at >= ((InitPlan 1).col1 - '1 day'::interval))"],
+            ["        ->  Seq Scan on ev_2026_04 ev_2 (never executed)"],
+            ["              Filter: (occurred_at >= ((InitPlan 1).col1 - '1 day'::interval))"],
+            ["        ->  Seq Scan on ev_2026_05 ev_3 (actual rows=276.00 loops=1)"],
+            ["              Filter: (occurred_at >= ((InitPlan 1).col1 - '1 day'::interval))"],
+            ["              Rows Removed by Filter: 8241"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5a00442784c8df78": {
+      "db": "events",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT count(*) FROM ev WHERE user_id = 17;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "860be5d9075a969f",
+          "rows": [
+            ["Aggregate"],
+            ["  ->  Append"],
+            ["        ->  Seq Scan on ev_2026_03 ev_1"],
+            ["              Filter: (user_id = 17)"],
+            ["        ->  Seq Scan on ev_2026_04 ev_2"],
+            ["              Filter: (user_id = 17)"],
+            ["        ->  Seq Scan on ev_2026_05 ev_3"],
+            ["              Filter: (user_id = 17)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d849e9a2a9a18fc1": {
+      "db": "events",
+      "sql": "CREATE TABLE ev_k (LIKE events INCLUDING DEFAULTS) PARTITION BY LIST (kind);\nCREATE TABLE ev_k_browse PARTITION OF ev_k FOR VALUES IN ('view', 'click');\nCREATE TABLE ev_k_buy    PARTITION OF ev_k FOR VALUES IN ('add_to_cart', 'purchase');\nCREATE TABLE ev_k_signup PARTITION OF ev_k FOR VALUES IN ('signup');\nINSERT INTO ev_k SELECT * FROM events ORDER BY id;\nANALYZE ev_k;\nSELECT tableoid::regclass AS partition, kind, count(*) FROM ev_k GROUP BY tableoid, kind ORDER BY partition, kind;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "INSERT 0 25000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 25000,
+          "digest": "c7858dad28b15c65"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "0158666dab518b98"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["partition", "regclass", 2205],
+            ["kind", "text", 25],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "51625806bff51275",
+          "rows": [
+            ["ev_k_browse", "click", "4884"],
+            ["ev_k_browse", "view", "15112"],
+            ["ev_k_buy", "add_to_cart", "2739"],
+            ["ev_k_buy", "purchase", "1765"],
+            ["ev_k_signup", "signup", "500"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f117917d073561bd": {
+      "db": "events",
+      "sql": "CREATE TABLE ev_h (LIKE events) PARTITION BY HASH (user_id);\nCREATE TABLE ev_h0 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 0);\nCREATE TABLE ev_h1 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 1);\nCREATE TABLE ev_h2 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 2);\nCREATE TABLE ev_h3 PARTITION OF ev_h FOR VALUES WITH (MODULUS 4, REMAINDER 3);\nINSERT INTO ev_h SELECT * FROM events ORDER BY id;\nCREATE TABLE users_h (user_id int PRIMARY KEY, events int NOT NULL) PARTITION BY HASH (user_id);\nCREATE TABLE users_h0 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 0);\nCREATE TABLE users_h1 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 1);\nCREATE TABLE users_h2 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 2);\nCREATE TABLE users_h3 PARTITION OF users_h FOR VALUES WITH (MODULUS 4, REMAINDER 3);\nINSERT INTO users_h SELECT user_id, count(*) FROM events GROUP BY user_id ORDER BY user_id;\nANALYZE ev_h, users_h;\nSELECT tableoid::regclass AS partition, count(*) AS rows, count(DISTINCT user_id) AS users FROM ev_h GROUP BY tableoid ORDER BY partition;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "90488e4141c2d7df"
+        },
+        {
+          "tag": "INSERT 0 25000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 25000,
+          "digest": "d053e158c82fcace"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c59f0a4b06f18cd1"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "40b0ffb200894dde"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c99f7971f41350e3"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "771e79df1f4f4e15"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "763511aae55d62f8"
+        },
+        {
+          "tag": "INSERT 0 500",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 500,
+          "digest": "459a2f42156c0201"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "183f81a5fa0ce57a"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["partition", "regclass", 2205],
+            ["rows", "int8", 20],
+            ["users", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "88d8c78bae119043",
+          "rows": [
+            ["ev_h0", "7248", "139"],
+            ["ev_h1", "6245", "120"],
+            ["ev_h2", "6283", "129"],
+            ["ev_h3", "5224", "112"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e1b02daba8e6c666": {
+      "db": "events",
+      "sql": "SET enable_partitionwise_aggregate = on;\nEXPLAIN (COSTS OFF)\nSELECT kind, count(*) FROM ev_k GROUP BY kind;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c8804bd595d76756",
+          "rows": [
+            ["Append"],
+            ["  ->  HashAggregate"],
+            ["        Group Key: ev_k.kind"],
+            ["        ->  Seq Scan on ev_k_buy ev_k"],
+            ["  ->  HashAggregate"],
+            ["        Group Key: ev_k_1.kind"],
+            ["        ->  Seq Scan on ev_k_browse ev_k_1"],
+            ["  ->  HashAggregate"],
+            ["        Group Key: ev_k_2.kind"],
+            ["        ->  Seq Scan on ev_k_signup ev_k_2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "38aa24e68b047f4e": {
+      "db": "events",
+      "sql": "SET enable_partitionwise_join = on;\nEXPLAIN (COSTS OFF)\nSELECT u.user_id, u.events, max(e.occurred_at)\nFROM users_h AS u JOIN ev_h AS e USING (user_id)\nGROUP BY u.user_id, u.events;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "782bbef4dd0b5d68",
+          "rows": [
+            ["HashAggregate"],
+            ["  Group Key: u.user_id"],
+            ["  ->  Append"],
+            ["        ->  Hash Join"],
+            ["              Hash Cond: (e_1.user_id = u_1.user_id)"],
+            ["              ->  Seq Scan on ev_h0 e_1"],
+            ["              ->  Hash"],
+            ["                    ->  Seq Scan on users_h0 u_1"],
+            ["        ->  Hash Join"],
+            ["              Hash Cond: (e_2.user_id = u_2.user_id)"],
+            ["              ->  Seq Scan on ev_h1 e_2"],
+            ["              ->  Hash"],
+            ["                    ->  Seq Scan on users_h1 u_2"],
+            ["        ->  Hash Join"],
+            ["              Hash Cond: (e_3.user_id = u_3.user_id)"],
+            ["              ->  Seq Scan on ev_h2 e_3"],
+            ["              ->  Hash"],
+            ["                    ->  Seq Scan on users_h2 u_3"],
+            ["        ->  Hash Join"],
+            ["              Hash Cond: (e_4.user_id = u_4.user_id)"],
+            ["              ->  Seq Scan on ev_h3 e_4"],
+            ["              ->  Hash"],
+            ["                    ->  Seq Scan on users_h3 u_4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "87b046f1fe4c1d76": {
+      "db": "events",
+      "sql": "INSERT INTO ev VALUES (25001, 42, 'view', '2026-06-01 09:00+00', NULL);",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23514",
+            "message": "no partition of relation \"ev\" found for row",
+            "detail": "Partition key of the failing row contains (occurred_at) = (2026-06-01 09:00:00+00).",
+            "schema": "public",
+            "table": "ev"
+          },
+          "digest": "621543ccf1a04af7"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23514",
+        "message": "no partition of relation \"ev\" found for row",
+        "detail": "Partition key of the failing row contains (occurred_at) = (2026-06-01 09:00:00+00).",
+        "schema": "public",
+        "table": "ev",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "406e722495696c9b": {
+      "db": "events",
+      "sql": "CREATE TABLE ev_default PARTITION OF ev DEFAULT;\nINSERT INTO ev VALUES (25001, 42, 'view', '2026-06-01 09:00+00', NULL);\nSELECT tableoid::regclass AS partition, id FROM ev WHERE id = 25001;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["partition", "regclass", 2205],
+            ["id", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "dadcf2468e42e7e4",
+          "rows": [
+            ["ev_default", "25001"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "608e344389b5bebb": {
+      "db": "events",
+      "sql": "CREATE TABLE ev_2026_06 PARTITION OF ev FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23514",
+            "message": "updated partition constraint for default partition \"ev_default\" would be violated by some row",
+            "schema": "public",
+            "table": "ev_default"
+          },
+          "digest": "f6237e69e75c1ec4"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23514",
+        "message": "updated partition constraint for default partition \"ev_default\" would be violated by some row",
+        "schema": "public",
+        "table": "ev_default",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "c28c04aff3554960": {
+      "db": "events",
+      "sql": "ALTER TABLE ev ADD PRIMARY KEY (id);",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "0A000",
+            "message": "unique constraint on partitioned table must include all partitioning columns",
+            "detail": "PRIMARY KEY constraint on table \"ev\" lacks column \"occurred_at\" which is part of the partition key."
+          },
+          "digest": "f08e80eef89d9059"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "0A000",
+        "message": "unique constraint on partitioned table must include all partitioning columns",
+        "detail": "PRIMARY KEY constraint on table \"ev\" lacks column \"occurred_at\" which is part of the partition key.",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "6fa1ecf2f15386d7": {
+      "db": "events",
+      "sql": "ALTER TABLE ev ADD PRIMARY KEY (id, occurred_at);\nCREATE INDEX ev_user_idx ON ev (user_id);\nSELECT tablename, indexname FROM pg_indexes WHERE tablename LIKE 'ev%' ORDER BY tablename, indexname;",
+      "statements": [
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "629b316cd6a106b5"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "SELECT 11",
+          "command": "SELECT",
+          "columns": [
+            ["tablename", "name", 19],
+            ["indexname", "name", 19]
+          ],
+          "rowCount": 11,
+          "digest": "b53554cdec8a5cfa",
+          "rows": [
+            ["ev", "ev_pkey"],
+            ["ev", "ev_user_idx"],
+            ["ev_2026_03", "ev_2026_03_pkey"],
+            ["ev_2026_03", "ev_2026_03_user_id_idx"],
+            ["ev_2026_04", "ev_2026_04_pkey"],
+            ["ev_2026_04", "ev_2026_04_user_id_idx"],
+            ["ev_2026_05", "ev_2026_05_pkey"],
+            ["ev_2026_05", "ev_2026_05_user_id_idx"],
+            ["ev_default", "ev_default_pkey"],
+            ["ev_default", "ev_default_user_id_idx"],
+            ["events", "events_pkey"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "96152591826798a0": {
+      "db": "events",
+      "sql": "ALTER TABLE ev DETACH PARTITION ev_2026_03 CONCURRENTLY;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "55000",
+            "message": "cannot detach partitions concurrently when a default partition exists"
+          },
+          "digest": "6bd04bfa2121dc6c"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "55000",
+        "message": "cannot detach partitions concurrently when a default partition exists",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "1ba68b3d90adcc69": {
+      "db": "events",
+      "sql": "DELETE FROM ev_default;\nDROP TABLE ev_default;\nALTER TABLE ev DETACH PARTITION ev_2026_03 CONCURRENTLY;\nSELECT count(*) AS still_in_ev FROM ev WHERE occurred_at < '2026-04-01';\nSELECT count(*) AS now_standalone FROM ev_2026_03;",
+      "statements": [
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "379ad7620834a00b"
+        },
+        {
+          "tag": "DROP TABLE",
+          "command": "DROP TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "db2f761f8c2f8249"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "473cf6d7179df0b7"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["still_in_ev", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "5fde66ce5b603fbb",
+          "rows": [
+            ["0"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["now_standalone", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "bfd5d69300010ab1",
+          "rows": [
+            ["8517"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f4adfb7e06673be4": {
+      "db": "events",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT count(*) FROM ev WHERE occurred_at::date = '2026-04-20';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a93485e8c7460439",
+          "rows": [
+            ["Aggregate"],
+            ["  ->  Append"],
+            ["        ->  Seq Scan on ev_2026_04 ev_1"],
+            ["              Filter: ((occurred_at)::date = '2026-04-20'::date)"],
+            ["        ->  Seq Scan on ev_2026_05 ev_2"],
+            ["              Filter: ((occurred_at)::date = '2026-04-20'::date)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

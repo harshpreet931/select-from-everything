@@ -1,0 +1,160 @@
+import { WindowFrame } from "@/components/figures/analytics/WindowFrame";
+import { frameLab } from "@/components/figures/analytics/frames";
+import { resultOf, prov } from "@/lib/db/captured";
+import trace from "./traces/lag-and-lead.pgtrace.json";
+
+{/* the arrow figure and the running-total bars read traces/lag-and-lead.scenario.sql, captured
+    on PGlite: the shop's revenue per month. each arrow is lag(month) or lead(month) over the
+    same window, so the row an arrow points at is the row postgres read. */}
+
+export const F = ["lag(revenue)", "lag(revenue, 2)", "lead(revenue)"];
+export const shift = frameLab(trace, F, 0, { key: "month", frame: "read_from", show: ["month", "revenue"], out: ["value"] });
+export const totals = frameLab(trace, ["running total", "3-month moving total"], 4, { key: "month", frame: "frame", show: ["month", "revenue"], out: ["total"] });
+export const running = resultOf(trace, 3).rows.map(([m, , t]) => ({ label: m.slice(0, 7), value: Math.round(Number(t)) }));
+
+<InShort>
+**lag(x)** is the value of x on the row before this one, in the window's order. **lead(x)** is the row after. both take an offset and a default: `lag(x, 2, 0)` is two rows back, or 0 if there's no such row.
+
+a **running total** is `sum(x) OVER (ORDER BY ...)`: the default frame runs from the first row to this one.
+</InShort>
+
+## the picture
+
+you know how in a spreadsheet you write `=B3-B2` and drag it down, and every row compares itself with the row above? SQL rows don't have row numbers you can point at, and a self join on "the previous month" is a mouthful. lag is that `B2`.
+
+think of a queue where everyone can turn around and read the badge of the person behind them (lag), or tap the shoulder of the person in front (lead). the queue's order is the window's ORDER BY. the first person in line has nobody behind, so they read nothing: NULL.
+
+<Figure wide caption={<>step through the months and switch the function. the <C k="ref">arrow</C> points at the row that was read, and that row's revenue lands in <code>value</code>. the arrow is real: each run also selected <code>lag(month)</code>, the month postgres actually read.</>}>
+<WindowFrame {...shift} options={[{ key: "value", values: F }]} draw="arrow" startRow={3} rowLabel="month" trace={prov(trace)} />
+</Figure>
+
+lag and lead don't care about [frames](/learn/analytics/window-frames). they count rows in the whole partition, in the window's order, and that's all.
+
+## the month before
+
+revenue per month is a view, so the queries stay short (cancelled and refunded orders don't count):
+
+```sql run db=shop session=monthly
+CREATE VIEW monthly AS
+SELECT date_trunc('month', o.ordered_at)::date AS month,
+       sum(oi.qty * oi.unit_price) AS revenue
+FROM orders AS o
+JOIN order_items AS oi ON oi.order_id = o.id
+WHERE o.status NOT IN ('cancelled', 'refunded')
+GROUP BY 1;
+
+SELECT month, revenue,
+       revenue - lag(revenue) OVER w AS change,
+       round(100 * (revenue / lag(revenue) OVER w - 1), 1) AS pct
+FROM monthly
+WINDOW w AS (ORDER BY month)
+ORDER BY month;
+```
+
+february dropped 6.0% (it's a short month), and june fell off a cliff because the data ends partway through it. july's change is NULL: nothing to compare with, and anything minus NULL is NULL ([three-valued logic](/learn/basics/null-and-three-valued-logic) again).
+
+the third argument replaces that NULL. it's only used when the row doesn't exist, never when it exists and holds a NULL:
+
+```sql run session=monthly
+SELECT month,
+       lag(revenue, 1, 0) OVER (ORDER BY month) AS prev_or_zero,
+       lead(month)        OVER (ORDER BY month) AS next_month
+FROM monthly
+ORDER BY month
+LIMIT 3;
+```
+
+<Note title="postgres 19: IGNORE NULLS">
+when the row exists but its value is NULL, lag returns that NULL. postgres 19 <Since v={19} preview /> adds `lag(x) IGNORE NULLS OVER (...)` (and the same for lead, first_value, last_value and nth_value), which skips back to the last row where x wasn't NULL. on 18, people do it with a running count of non-NULLs and a first_value per group.
+</Note>
+
+## a sum of every row so far
+
+swap lag for an aggregate and give the window an ORDER BY, and each row sums everything up to itself:
+
+<Figure caption={<>revenue so far, month by month: <code>sum(revenue) OVER (ORDER BY month)</code>. each bar is the one before plus that month. the last one is the year's total, 4,166,616.</>}>
+<Bars data={running} />
+</Figure>
+
+```sql run session=monthly
+SELECT month, revenue,
+       sum(revenue) OVER (ORDER BY month) AS running_total,
+       sum(revenue) OVER (PARTITION BY extract(year FROM month) ORDER BY month) AS year_to_date
+FROM monthly
+ORDER BY month;
+```
+
+the second column restarts in january: PARTITION BY the year makes each year its own window. and a moving total is the same idea with a frame that also *forgets*: the last three months, not all of them.
+
+<Figure wide caption={<>step through the months and switch the frame. the running total's <C k="live">frame</C> grows by a month every row. the moving one slides: always this month and the two before, so its total stays near three months' worth.</>}>
+<WindowFrame {...totals} options={[{ key: "sum", values: ["running total", "3-month moving total"] }]} startRow={5} rowLabel="month" trace={prov(trace)} />
+</Figure>
+
+```sql run session=monthly
+SELECT month,
+       round(avg(revenue) OVER (ORDER BY month ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)) AS avg_3_months
+FROM monthly
+ORDER BY month
+LIMIT 4;
+```
+
+why `ROWS` there? because a frame can count rows or measure values, and it matters the moment your data has ties or holes. [window frames](/learn/analytics/window-frames) is that story; here's the short version.
+
+<Gotcha title="a running total over a column with ties">
+the default frame isn't "up to this row". it's "up to this row *and every row tied with it*". order the shop's orders by day, and every order on the same day gets the whole day's total at once:
+
+```sql run db=shop
+SELECT id, ordered_at::date AS day,
+       count(*) OVER (ORDER BY ordered_at::date) AS by_day,
+       count(*) OVER (ORDER BY ordered_at::date, id
+                      ROWS UNBOUNDED PRECEDING) AS by_row
+FROM orders
+ORDER BY id
+LIMIT 5;
+```
+
+order 1 is already at 27, because 27 orders were placed on 2025-07-01 and they're all peers. if you want one step per row, say ROWS, and order by something unique.
+</Gotcha>
+
+## the row before isn't yesterday
+
+lag reads the previous *row*. if a day has no row, the previous row is two days ago, and lag won't tell you.
+
+<Predict options={["1 day", "2 days", "NULL"]} answer={1}>
+```sql
+-- events has no rows at all on 2026-04-14
+SELECT * FROM (
+  SELECT day, day - lag(day) OVER (ORDER BY day) AS gap
+  FROM (SELECT DISTINCT occurred_at::date AS day FROM events) AS d
+) AS g
+WHERE day = '2026-04-15';
+```
+<Explain>
+2 days. the window runs over every day, and the row before the 15th is the 13th, because the 14th has no row. lag doesn't know about calendars, only about rows. (the WHERE is outside on purpose: put it next to the window and it would run first, leaving lag one lonely row and a NULL.)
+</Explain>
+</Predict>
+
+or skip the WHERE and sort by the gap, so the hole floats to the top:
+
+```sql run db=events
+SELECT day, day - lag(day) OVER (ORDER BY day) AS gap
+FROM (SELECT DISTINCT occurred_at::date AS day FROM events) AS d
+ORDER BY gap DESC NULLS LAST, day
+LIMIT 3;
+```
+
+2026-04-15 is 2 days after the day before it, every other day is 1. that's the start of [gaps and islands](/learn/analytics/gaps-and-islands). and when you want "yesterday" to mean yesterday, make a row for every day first, with a [calendar from generate_series](/learn/analytics/generate-series).
+
+<Docs href="https://www.postgresql.org/docs/18/functions-window.html" title="window functions">lag(value, offset, default) and lead are "evaluated at the row that is offset rows before (after) the current row within the partition"; the default is used when there's no such row. the manual also notes that lag and lead, like the ranking functions, ignore the frame.</Docs>
+
+<Interview q="how do you compute month-over-month growth in SQL?">
+aggregate to one row per month, then `revenue / lag(revenue) OVER (ORDER BY month) - 1`. lag reads the previous row in the window's order; the first month gets NULL (or a default, as lag's third argument). bonus point: check that every month has a row first, because lag reads the previous row, not the previous month. if a month can be missing, join to a generate_series calendar, or use a self join on month - interval '1 month'.
+</Interview>
+
+<Keylines>
+- lag(x, n, default) reads x from n rows back in the window's order. lead reads ahead.
+- no row there means the default (NULL unless you say otherwise).
+- sum(x) OVER (ORDER BY ...) is a running total. PARTITION BY restarts it.
+- the default frame includes ties: for one step per row, use ROWS and a unique order.
+- the previous row isn't the previous day. fill the calendar first.
+</Keylines>

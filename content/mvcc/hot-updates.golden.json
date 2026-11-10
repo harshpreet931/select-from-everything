@@ -1,0 +1,227 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "77f52cb95d9e53bb": {
+      "db": "lab",
+      "sql": "CREATE INDEX accounts_owner ON accounts (owner);\nUPDATE accounts SET balance = balance + 1 WHERE id = 1;\nUPDATE accounts SET owner = 'alicia' WHERE id = 2;\nUPDATE accounts SET owner = owner WHERE id = 3;\nSELECT lp, t_ctid, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags\nFROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0b180bc9b96cf94b"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "982af26933a33534"
+        },
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_ctid", "tid", 27],
+            ["raw_flags", "text[]", 1009]
+          ],
+          "rowCount": 6,
+          "digest": "fe704b3d460a9c38",
+          "rows": [
+            ["1", "(0,4)", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMAX_COMMITTED,HEAP_HOT_UPDATED}"],
+            ["2", "(0,5)", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMAX_COMMITTED}"],
+            ["3", "(0,6)", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_HOT_UPDATED}"],
+            ["4", "(0,4)", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMAX_INVALID,HEAP_UPDATED,HEAP_ONLY_TUPLE}"],
+            ["5", "(0,5)", "{HEAP_HASVARWIDTH,HEAP_XMIN_COMMITTED,HEAP_XMAX_INVALID,HEAP_UPDATED}"],
+            ["6", "(0,6)", "{HEAP_HASVARWIDTH,HEAP_XMAX_INVALID,HEAP_UPDATED,HEAP_ONLY_TUPLE}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a006cffad5d0b4c5": {
+      "db": "lab",
+      "sql": "SELECT itemoffset, ctid, data FROM bt_page_items('accounts_owner', 1) ORDER BY itemoffset;\nSELECT pg_stat_force_next_flush();\nSELECT n_tup_upd, n_tup_hot_upd, n_tup_newpage_upd\nFROM pg_stat_user_tables WHERE relname = 'accounts';",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "5154afcf44f1487a",
+          "rows": [
+            ["1", "(0,1)", "0d 61 6c 69 63 65 00 00"],
+            ["2", "(0,5)", "0f 61 6c 69 63 69 61 00"],
+            ["3", "(0,2)", "09 62 6f 62 00 00 00 00"],
+            ["4", "(0,3)", "0d 63 61 72 6f 6c 00 00"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "bdfab559805fd973",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_tup_upd", "int8", 20],
+            ["n_tup_hot_upd", "int8", 20],
+            ["n_tup_newpage_upd", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "3636686e4492f88f",
+          "rows": [
+            ["3", "2", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "04e457496833d153": {
+      "db": "lab",
+      "sql": "CREATE TABLE ff100 (id int PRIMARY KEY, hits int NOT NULL);\nCREATE TABLE ff90 (id int PRIMARY KEY, hits int NOT NULL) WITH (fillfactor = 90);\nCREATE TABLE idx100 (id int PRIMARY KEY, hits int NOT NULL);\nCREATE INDEX idx100_hits ON idx100 (hits);\nINSERT INTO ff100 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;\nINSERT INTO ff90 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;\nINSERT INTO idx100 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;\nCREATE PROCEDURE bump(t regclass, n int) LANGUAGE plpgsql AS $$\nBEGIN\n  FOR i IN 1..n LOOP\n    EXECUTE format('UPDATE %s SET hits = hits + 1 WHERE id = 1', t);\n    COMMIT;\n  END LOOP;\nEND $$;\nCALL bump('ff100', 1000);\nCALL bump('ff90', 1000);\nCALL bump('idx100', 1000);\nSELECT pg_stat_force_next_flush();\nSELECT relname, n_tup_hot_upd AS hot, n_tup_newpage_upd AS new_page,\n       pg_relation_size(relid) AS heap_bytes, pg_indexes_size(relid) AS index_bytes\nFROM pg_stat_user_tables WHERE relname IN ('ff100', 'ff90', 'idx100') ORDER BY relname;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "INSERT 0 226",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 226,
+          "digest": "40f814471746fc90"
+        },
+        {
+          "tag": "INSERT 0 226",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 226,
+          "digest": "dc7178a828f6d8d7"
+        },
+        {
+          "tag": "INSERT 0 226",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 226,
+          "digest": "18b694108cd4124e"
+        },
+        {
+          "tag": "CREATE PROCEDURE",
+          "command": "CREATE PROCEDURE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "45eff5e635b5916b"
+        },
+        {
+          "tag": "CALL",
+          "command": "CALL",
+          "columns": null,
+          "rowCount": null,
+          "digest": "627a2c131fd14c13"
+        },
+        {
+          "tag": "CALL",
+          "command": "CALL",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b4644ab327bce7d5"
+        },
+        {
+          "tag": "CALL",
+          "command": "CALL",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b1cd808e687d9548"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "c2e0a47dd996636a",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["hot", "int8", 20],
+            ["new_page", "int8", 20],
+            ["heap_bytes", "int8", 20],
+            ["index_bytes", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "ef8895c566901107",
+          "rows": [
+            ["ff100", "999", "1", "16384", "16384"],
+            ["ff90", "1000", "0", "16384", "16384"],
+            ["idx100", "0", "4", "40960", "57344"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,150 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ef8d0daa74d83b94": {
+      "db": "empty",
+      "sql": "SELECT backend_type, pid = pg_backend_pid() AS is_me FROM pg_stat_activity ORDER BY backend_type;\nSHOW max_connections;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["backend_type", "text", 25],
+            ["is_me", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "86ed8a8d9ae56fbf",
+          "rows": [
+            ["standalone backend", "t"]
+          ]
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["max_connections", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "fc50584dbe42cf42",
+          "rows": [
+            ["100"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d42c3b326cfe3093": {
+      "db": "empty",
+      "sql": "BEGIN;\nSET LOCAL statement_timeout = '50ms';\nSHOW statement_timeout;\nCOMMIT;\nSHOW statement_timeout;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["statement_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "70f2989a2fab171e",
+          "rows": [
+            ["50ms"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7f3480ce95d80d83"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["statement_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "3d5d842f1367c54f",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "335ab2190152d01c": {
+      "db": "empty",
+      "sql": "SET statement_timeout = '50ms';\nPREPARE order_total(int) AS SELECT $1 * 2;\nDISCARD ALL;\nSHOW statement_timeout;\nEXECUTE order_total(21);",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "PREPARE",
+          "command": "PREPARE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "68ddddeb79940193"
+        },
+        {
+          "tag": "DISCARD ALL",
+          "command": "DISCARD ALL",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7c07c57e888506e2"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["statement_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b4a625899f65d9ec",
+          "rows": [
+            ["0"]
+          ]
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "26000",
+            "message": "prepared statement \"order_total\" does not exist"
+          },
+          "digest": "18a7b95010b44069"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "26000",
+        "message": "prepared statement \"order_total\" does not exist",
+        "statement": 4
+      },
+      "txn": "I"
+    }
+  }
+}

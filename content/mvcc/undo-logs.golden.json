@@ -1,0 +1,73 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "456900395cbf06f1": {
+      "db": "lab",
+      "sql": "SELECT pg_relation_size('notes') AS bytes;\nBEGIN;\nUPDATE notes SET body = body || '!';\nROLLBACK;\nSELECT pg_relation_size('notes') AS bytes;\nSELECT pg_xact_status(t_xmin::text::xid8) AS written_by, count(*) AS tuples\nFROM generate_series(0, pg_relation_size('notes') / 8192 - 1) AS b,\n     heap_page_items(get_raw_page('notes', b::int))\nWHERE lp_flags = 1\nGROUP BY 1 ORDER BY 1;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "96c4404f0d354a5e",
+          "rows": [
+            ["40960"]
+          ]
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5693d3fc01d98245"
+        },
+        {
+          "tag": "UPDATE 400",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 400,
+          "digest": "a1dbf89454a0e5e4"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8948f71c140383d6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["bytes", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "8a2059cdf9824406",
+          "rows": [
+            ["73728"]
+          ]
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["written_by", "text", 25],
+            ["tuples", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "57db4ee2054445ac",
+          "rows": [
+            ["aborted", "400"],
+            ["committed", "400"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

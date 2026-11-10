@@ -1,0 +1,145 @@
+import { FileTree } from "@/components/figures/storage/FileTree";
+import { SegmentMath } from "@/components/figures/storage/SegmentMath";
+import labFiles from "./traces/lab-files.pgtrace.json";
+
+export const where = labFiles.steps[0].result.data[0];
+export const what = { base: "one directory per database, named by its oid", global: "catalogs shared by every database", pg_wal: "the write-ahead log", pg_xact: "the commit log: two bits per transaction", pg_multixact: "multixact state, for rows locked by several transactions", pg_tblspc: "links to tablespaces", PG_VERSION: "the major version, as text" };
+export const dirTree = `\ndata directory/\n${labFiles.steps[2].result.data.map((r) => `    ${r[0]}${r[1] === "t" ? "/" : ""} // ${what[r[0]]}`).join("\n")}\n`;
+
+<InShort>
+a table is a handful of ordinary files in the data directory, named not by the table's name but by a number, its **relfilenode**. the rows are in the **main fork**. next to it sit the **free space map** (`_fsm`) and the **visibility map** (`_vm`), and every file is cut into **1 GB segments**: `16486`, `16486.1`, `16486.2`, and so on.
+
+`pg_relation_filepath()` tells you which file is which, and the browser engine lets you list them.
+</InShort>
+
+## the picture
+
+you know how `CREATE TABLE` gives you a table, and somewhere on the server's disk a file appears? it's not called `notes`. it's called something like `16486`.
+
+think of an archive where every drawer is labelled with a number, never a name, and a ledger at the front says which number belongs to which name (the catalog). in each drawer there's the main folder with the documents (the main fork), a sticky note saying roughly how much room is left in each section (the free space map), and a checklist of sections already inspected (the visibility map). when a folder gets too thick, it's split: volume 1, volume 2, volume 3 (segments).
+
+here are the lab's `notes` table and everything that belongs to it, listed from the data directory:
+
+<Figure caption={<>every file of notes, as <code>pg_ls_dir()</code> and <code>pg_stat_file()</code> saw them. the names are numbers; the notes say what each one is.</>}>
+<FileTree trace={labFiles} dir="base/5" />
+</Figure>
+
+five files for one small table. the heap itself (5 pages), its free space map, an index for the primary key, and a toast table with its own index, empty because no note is big enough to need it ([TOAST](/learn/storage/toast) is what that's for).
+
+## the name is a number
+
+the catalog maps names to files. `pg_class` has two numbers for every table: its **oid**, its identity forever, and its **relfilenode**, the name of its file right now:
+
+```sql run db=lab
+SELECT oid, relname, relfilenode, pg_relation_filepath(oid) AS path
+FROM pg_class WHERE relname IN ('notes', 'notes_pkey') ORDER BY relname;
+SELECT oid, datname FROM pg_database ORDER BY oid;
+```
+
+`base/5/16486`: the `base` directory holds one directory per database, named by the database's oid (5 is `postgres`, the database the browser runs in), and inside it one file per relation, named by its relfilenode. for notes they're the same number. they don't have to be.
+
+<Predict question="you TRUNCATE notes. does it keep its file, 16486?" options={["yes, emptied in place", "no, it gets a new file", "the file is deleted, no new one"]} answer={1}>
+```sql
+SELECT relfilenode FROM pg_class WHERE relname = 'notes';  -- 16486
+TRUNCATE notes;
+SELECT relfilenode FROM pg_class WHERE relname = 'notes';  -- ?
+```
+<Explain>
+it gets a new file. TRUNCATE doesn't delete rows: it creates a new, empty file, points the catalog at it, and drops the old file when the transaction commits. that's why TRUNCATE is instant on a billion rows, and why it can be rolled back: until commit, the old file is still there. VACUUM FULL and CLUSTER work the same way, writing the table into a new file.
+</Explain>
+</Predict>
+
+```sql run db=lab
+SELECT oid, relfilenode, pg_relation_filepath('notes') FROM pg_class WHERE relname = 'notes';
+TRUNCATE notes;
+SELECT oid, relfilenode, pg_relation_filepath('notes') FROM pg_class WHERE relname = 'notes';
+SELECT pg_filenode_relation(0, 16486) AS old_file_belongs_to;
+```
+
+same oid, new relfilenode, and the old number now belongs to nobody. (anything that has to survive a rewrite, like a foreign key or a grant, refers to the oid.)
+
+## forks
+
+a relation's files share the relfilenode and differ by suffix. each one is a **fork**:
+
+- **main**, no suffix: the table's pages, or the index's.
+- **fsm**, `_fsm`: the [free space map](/learn/storage/fsm-and-vm), roughly how much room each page has.
+- **vm**, `_vm`: the [visibility map](/learn/storage/fsm-and-vm), two bits per page.
+- **init**, `_init`: only for unlogged tables and their indexes. an empty copy that replaces the main fork after a crash.
+
+the free space and visibility maps are created when they're first needed. the lab's notes were never vacuumed, so it has no visibility map yet. VACUUM makes one:
+
+```sql run db=lab
+SELECT f AS file, (pg_stat_file('base/5/' || f)).size AS bytes
+FROM pg_ls_dir('base/5') AS f WHERE f LIKE '16486%' ORDER BY f;
+VACUUM notes;
+SELECT f AS file, (pg_stat_file('base/5/' || f)).size AS bytes
+FROM pg_ls_dir('base/5') AS f WHERE f LIKE '16486%' ORDER BY f;
+SELECT pg_relation_size('notes', 'main') AS main, pg_relation_size('notes', 'fsm') AS fsm,
+       pg_relation_size('notes', 'vm') AS vm, pg_total_relation_size('notes') AS everything;
+```
+
+`16486_vm` appears, one 8 KB page. `pg_relation_size()` reads one fork, and `pg_total_relation_size()` adds up every fork of the table, its indexes and its toast table: 98,304 bytes for 40,960 bytes of rows.
+
+## 1 GB segments
+
+no file grows past 1 GB. when a fork fills its first gigabyte, the next block goes into a new file with `.1` on the end, then `.2`, and so on. so finding block *b* is plain arithmetic:
+
+<Figure caption={<>pick a block number. with 8 KB blocks and 1 GB segments, each file holds 131,072 blocks, so the block number divided by 131,072 says which file, and the remainder says where in it.</>}>
+<SegmentMath relfilenode={where[1]} blockSize={Number(where[2])} segmentBytes={1024 * 1024 * 1024} blocks={[0, 4, 131071, 131072, 262150, 400000]} />
+</Figure>
+
+both sizes are compile-time settings, and these are the defaults:
+
+```sql run db=lab
+SHOW block_size;
+SHOW segment_size;
+```
+
+the browser can't hold a gigabyte, so here's one on a native postgres 18.6: an unlogged table, filled with rows of 2,000 characters until it's just over 1 GB:
+
+```sql native
+CREATE UNLOGGED TABLE big (pad text);
+ALTER TABLE big ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO big SELECT repeat('x', 2000) FROM generate_series(1, 530000);
+SELECT pg_relation_size('big') / 8192 AS pages;
+SELECT replace(f, pg_relation_filenode('big')::text, '<relfilenode>') AS file,
+       (pg_stat_file(regexp_replace(pg_relation_filepath('big'), '[0-9]+$', '') || f)).size AS bytes
+FROM pg_ls_dir(regexp_replace(pg_relation_filepath('big'), '/[0-9]+$', '')) AS f
+WHERE f LIKE pg_relation_filenode('big') || '%'
+ORDER BY f;
+```
+
+the first segment is exactly 1,073,741,824 bytes, 131,072 pages, and the rest spill into `.1`. the free space map got big enough to notice, and there's the `_init` fork, empty: an unlogged table's main fork is replaced by that empty copy after a crash, because without WAL there's nothing to rebuild it from. (`SET STORAGE PLAIN` keeps the 2,000-character values from being compressed, so the rows stay big.)
+
+## the rest of the data directory
+
+`base/` is one part of the data directory. the browser engine's has the same layout as any postgres server:
+
+<Figure caption={<>the top of the data directory, as <code>pg_ls_dir('.')</code> lists it in the browser engine. a native server has the same entries and a few more.</>}>
+<Tree>{dirTree}</Tree>
+</Figure>
+
+```sql run db=lab
+SELECT d AS entry FROM pg_ls_dir('.') AS d
+WHERE d IN ('base', 'global', 'pg_wal', 'pg_xact', 'pg_multixact', 'pg_tblspc', 'PG_VERSION')
+ORDER BY d;
+```
+
+`global/` holds the catalogs shared by all databases (`pg_database` itself lives there). `pg_wal/` is the [write-ahead log](/learn/wal/write-ahead-rule). `pg_xact/` is the [commit log](/learn/mvcc/commit-log-and-hint-bits), two bits per transaction. `pg_tblspc/` has links to tablespaces, other directories you can put tables in.
+
+<Gotcha title="copying the files is not a backup">
+it's tempting to back up a table by copying `base/5/16486`. it doesn't work. the file is only consistent with the rest of the cluster: the commit log decides which of its rows are real, the WAL may hold changes the file doesn't have yet, and its pages can be half-written while the server runs. back up with `pg_dump` (logical) or `pg_basebackup` (physical, with the WAL to make it consistent). see [backups and point-in-time recovery](/learn/wal/backups-and-pitr).
+</Gotcha>
+
+<Interview q="where does postgres store a table on disk?">
+in the data directory, under base/&lt;database oid&gt;/&lt;relfilenode&gt;. pg_relation_filepath() gives the path. the main fork holds the pages; the _fsm and _vm forks next to it are the free space map and visibility map, and unlogged relations have an _init fork. each fork is split into 1 GB segment files (relfilenode, relfilenode.1, ...). bonus point: the relfilenode isn't the oid. TRUNCATE, VACUUM FULL, CLUSTER and some ALTER TABLEs write a new file and switch the catalog over at commit, which is why they're transactional and why the old file vanishes all at once.
+</Interview>
+
+<Keylines>
+- a table is files named by its relfilenode, in base/&lt;database oid&gt;/.
+- forks: main (the pages), _fsm, _vm, and _init for unlogged tables.
+- each fork is cut into 1 GB segments: 131,072 pages per file.
+- TRUNCATE and VACUUM FULL write a new file: same oid, new relfilenode.
+- the files are only consistent with the WAL and the commit log. never back up by copying them.
+</Keylines>

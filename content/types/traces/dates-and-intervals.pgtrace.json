@@ -1,0 +1,101 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/dates-and-intervals.scenario.sql",
+ "title": "month ends under + interval '1 month', an interval's three fields, and iso weeks across a new year",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {},
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT d::date AS start,\n       (d + interval '1 month')::date AS plus_1,\n       (d + interval '1 month' + interval '1 month')::date AS plus_1_plus_1,\n       (d + interval '2 months')::date AS plus_2\nFROM generate_series(date '2026-01-28', date '2026-01-31', interval '1 day') AS d\nORDER BY d",
+   "note": "the last four days of january, a month later, a month after that, and two months later in one go.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"start","type":"date"},
+     {"name":"plus_1","type":"date"},
+     {"name":"plus_1_plus_1","type":"date"},
+     {"name":"plus_2","type":"date"}
+    ],
+    "data": [
+     ["2026-01-28","2026-02-28","2026-03-28","2026-03-28"],
+     ["2026-01-29","2026-02-28","2026-03-28","2026-03-29"],
+     ["2026-01-30","2026-02-28","2026-03-28","2026-03-30"],
+     ["2026-01-31","2026-02-28","2026-03-28","2026-03-31"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT i AS \"interval\",\n       (extract(year FROM i) * 12 + extract(month FROM i))::int AS months,\n       extract(day FROM i)::int AS days,\n       i - make_interval(months => (extract(year FROM i) * 12 + extract(month FROM i))::int, days => extract(day FROM i)::int) AS \"time\",\n       justify_interval(i) AS justified\nFROM (VALUES (1, interval '36 hours'), (2, interval '1 day 12 hours'), (3, interval '1 month'), (4, interval '30 days'),\n             (5, interval '1 month -1 hour'), (6, interval '1 year 2 months 3 days 04:05:06')) AS v (n, i)\nORDER BY n",
+   "note": "six intervals, the three fields each one is stored as, and what justify_interval makes of it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [
+     {"name":"interval","type":"interval"},
+     {"name":"months","type":"int4"},
+     {"name":"days","type":"int4"},
+     {"name":"time","type":"interval"},
+     {"name":"justified","type":"interval"}
+    ],
+    "data": [
+     ["36:00:00","0","0","36:00:00","1 day 12:00:00"],
+     ["1 day 12:00:00","0","1","12:00:00","1 day 12:00:00"],
+     ["1 mon","1","0","00:00:00","1 mon"],
+     ["30 days","0","30","00:00:00","1 mon"],
+     ["1 mon -01:00:00","1","0","-01:00:00","29 days 23:00:00"],
+     ["1 year 2 mons 3 days 04:05:06","14","3","04:05:06","1 year 2 mons 3 days 04:05:06"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT d::date AS day,\n       to_char(d, 'Dy') AS dow,\n       date_trunc('week', d)::date AS week_start,\n       extract(week FROM d)::int AS iso_week,\n       extract(isoyear FROM d)::int AS iso_year,\n       extract(year FROM d)::int AS year\nFROM generate_series(date '2026-12-28', date '2027-01-05', interval '1 day') AS d\nORDER BY d",
+   "note": "nine days across a new year: the day, its week (date_trunc starts weeks on monday), the iso week number, and the year it belongs to.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"day","type":"date"},
+     {"name":"dow","type":"text"},
+     {"name":"week_start","type":"date"},
+     {"name":"iso_week","type":"int4"},
+     {"name":"iso_year","type":"int4"},
+     {"name":"year","type":"int4"}
+    ],
+    "data": [
+     ["2026-12-28","Mon","2026-12-28","53","2026","2026"],
+     ["2026-12-29","Tue","2026-12-28","53","2026","2026"],
+     ["2026-12-30","Wed","2026-12-28","53","2026","2026"],
+     ["2026-12-31","Thu","2026-12-28","53","2026","2026"],
+     ["2027-01-01","Fri","2026-12-28","53","2026","2027"],
+     ["2027-01-02","Sat","2026-12-28","53","2026","2027"],
+     ["2027-01-03","Sun","2026-12-28","53","2026","2027"],
+     ["2027-01-04","Mon","2027-01-04","1","2027","2027"],
+     ["2027-01-05","Tue","2027-01-04","1","2027","2027"]
+    ]
+   }
+  }
+ ]
+}

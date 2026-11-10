@@ -1,0 +1,169 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "d4189cd54543040c": {
+      "db": "school",
+      "sql": "SELECT name, dept, salary,\n       salary - round(avg(salary) OVER (PARTITION BY dept)) AS vs_dept\nFROM instructors\nORDER BY dept, salary DESC;",
+      "statements": [
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["dept", "text", 25],
+            ["salary", "numeric", 1700],
+            ["vs_dept", "numeric", 1700]
+          ],
+          "rowCount": 8,
+          "digest": "5987281ee810914c",
+          "rows": [
+            ["Hannah Okoye", "CS", "98000.00", "9250.00"],
+            ["Marco Rossi", "CS", "91000.00", "2250.00"],
+            ["Lena Fischer", "CS", "87000.00", "-1750.00"],
+            ["Sofia Petrova", "CS", "79000.00", "-9750.00"],
+            ["Oliver Grant", "HIST", "72000.00", "0.00"],
+            ["Tomás Ortega", "MATH", "85000.00", "1000.00"],
+            ["Yuki Tanaka", "MATH", "83000.00", "-1000.00"],
+            ["Amara Diallo", "PHYS", "90000.00", "0.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "879b7dee443dfed7": {
+      "db": "school",
+      "sql": "SELECT name, dept, salary\nFROM instructors\nWHERE rank() OVER (PARTITION BY dept ORDER BY salary DESC) = 1;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P20",
+            "message": "window functions are not allowed in WHERE",
+            "position": 50
+          },
+          "digest": "6a09dc93e62c4a50"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P20",
+        "message": "window functions are not allowed in WHERE",
+        "position": 50,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "85802771b03aa7cb": {
+      "db": "school",
+      "sql": "SELECT name, dept, salary\nFROM (\n  SELECT name, dept, salary,\n         rank() OVER (PARTITION BY dept ORDER BY salary DESC) AS dept_rank\n  FROM instructors\n) AS ranked\nWHERE dept_rank = 1\nORDER BY dept;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["dept", "text", 25],
+            ["salary", "numeric", 1700]
+          ],
+          "rowCount": 4,
+          "digest": "22cf98c51d9e8b93",
+          "rows": [
+            ["Hannah Okoye", "CS", "98000.00"],
+            ["Oliver Grant", "HIST", "72000.00"],
+            ["Tomás Ortega", "MATH", "85000.00"],
+            ["Amara Diallo", "PHYS", "90000.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c5ac7a1d6811b4e4": {
+      "db": "school",
+      "sql": "SELECT dept,\n       count(*) AS courses,\n       round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct\nFROM courses\nGROUP BY dept\nORDER BY dept;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["dept", "text", 25],
+            ["courses", "int8", 20],
+            ["pct", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "017c171c4d2e0289",
+          "rows": [
+            ["CS", "5", "41.7"],
+            ["GEN", "1", "8.3"],
+            ["HIST", "1", "8.3"],
+            ["MATH", "3", "25.0"],
+            ["PHYS", "2", "16.7"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a4641de8fe2833cb": {
+      "db": "school",
+      "sql": "SELECT name, dept, salary,\n       rank()      OVER w AS dept_rank,\n       first_value(name) OVER w AS top_of_dept\nFROM instructors\nWINDOW w AS (PARTITION BY dept ORDER BY salary DESC)\nORDER BY dept, salary DESC;",
+      "statements": [
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["dept", "text", 25],
+            ["salary", "numeric", 1700],
+            ["dept_rank", "int8", 20],
+            ["top_of_dept", "text", 25]
+          ],
+          "rowCount": 8,
+          "digest": "3d3536c4ec8d60b0",
+          "rows": [
+            ["Hannah Okoye", "CS", "98000.00", "1", "Hannah Okoye"],
+            ["Marco Rossi", "CS", "91000.00", "2", "Hannah Okoye"],
+            ["Lena Fischer", "CS", "87000.00", "3", "Hannah Okoye"],
+            ["Sofia Petrova", "CS", "79000.00", "4", "Hannah Okoye"],
+            ["Oliver Grant", "HIST", "72000.00", "1", "Oliver Grant"],
+            ["Tomás Ortega", "MATH", "85000.00", "1", "Tomás Ortega"],
+            ["Yuki Tanaka", "MATH", "83000.00", "2", "Tomás Ortega"],
+            ["Amara Diallo", "PHYS", "90000.00", "1", "Amara Diallo"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "50e5de14ffc367c6": {
+      "db": "school",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT name, rank() OVER w, first_value(name) OVER w\nFROM instructors\nWINDOW w AS (PARTITION BY dept ORDER BY salary DESC)\nORDER BY dept, salary DESC;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "51495b7c7f5aeefd",
+          "rows": [
+            ["WindowAgg"],
+            ["  Window: w AS (PARTITION BY dept ORDER BY salary)"],
+            ["  ->  Sort"],
+            ["        Sort Key: dept, salary DESC"],
+            ["        ->  Seq Scan on instructors"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

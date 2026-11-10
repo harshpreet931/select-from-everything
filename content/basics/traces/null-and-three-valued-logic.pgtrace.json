@@ -1,0 +1,113 @@
+{
+ "v": 1,
+ "scenario": "content/basics/traces/null-and-three-valued-logic.scenario.sql",
+ "title": "NULL and three-valued logic: the truth tables, from postgres itself",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "u": {"kind":"table","am":"heap","columns":[{"name":"x","type":"int4"}]},
+  "u_x_key": {"kind":"index","am":"btree","columns":[{"name":"x","type":"int4"}],"on":"u"}
+ },
+ "base": {"xid":755,"lsn":25858056},
+ "setup": "CREATE TABLE u (x int UNIQUE);\nINSERT INTO u VALUES (NULL), (NULL);\n\n-- every figure on the null page reads one of these results, so what it draws is what postgres\n-- answered, not a table typed in by hand. each one is a single SELECT over a VALUES list.",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT v.n, v.city,\n       v.city = 'London' AS \"eq\", NOT (v.city = 'London') AS \"not eq\",\n       v.city <> 'London' AS \"ne\", NOT (v.city <> 'London') AS \"not ne\",\n       v.city = NULL AS \"eqnull\", NOT (v.city = NULL) AS \"not eqnull\",\n       v.city IS NULL AS \"isnull\", NOT (v.city IS NULL) AS \"not isnull\",\n       v.city IS DISTINCT FROM 'London' AS \"distinct\", NOT (v.city IS DISTINCT FROM 'London') AS \"not distinct\",\n       v.city IN ('London', 'Paris') AS \"in\", NOT (v.city IN ('London', 'Paris')) AS \"not in\",\n       v.city NOT IN ('London', NULL) AS \"notinnull\", NOT (v.city NOT IN ('London', NULL)) AS \"not notinnull\"\nFROM (VALUES (1, 'London'), (2, 'Paris'), (3, ''), (4, 'Lagos'), (5, NULL)) AS v (n, city)\nORDER BY v.n",
+   "note": "the five cities on the gate: London, Paris, an empty string, Lagos and NULL, against every condition and its NOT.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"n","type":"int4"},
+     {"name":"city","type":"text"},
+     {"name":"eq","type":"bool"},
+     {"name":"not eq","type":"bool"},
+     {"name":"ne","type":"bool"},
+     {"name":"not ne","type":"bool"},
+     {"name":"eqnull","type":"bool"},
+     {"name":"not eqnull","type":"bool"},
+     {"name":"isnull","type":"bool"},
+     {"name":"not isnull","type":"bool"},
+     {"name":"distinct","type":"bool"},
+     {"name":"not distinct","type":"bool"},
+     {"name":"in","type":"bool"},
+     {"name":"not in","type":"bool"},
+     {"name":"notinnull","type":"bool"},
+     {"name":"not notinnull","type":"bool"}
+    ],
+    "data": [
+     ["1","London","t","f","f","t",null,null,"f","t","f","t","t","f","f","t"],
+     ["2","Paris","f","t","t","f",null,null,"f","t","t","f","t","f",null,null],
+     ["3","","f","t","t","f",null,null,"f","t","t","f","f","t",null,null],
+     ["4","Lagos","f","t","t","f",null,null,"f","t","t","f","f","t",null,null],
+     ["5",null,null,null,null,null,null,null,"t","f","t","f",null,null,null,null]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT a, b, a AND b AS \"a AND b\", a OR b AS \"a OR b\", NOT a AS \"NOT a\"\nFROM (VALUES (1, true), (2, false), (3, NULL)) AS x (i, a)\nCROSS JOIN (VALUES (1, true), (2, false), (3, NULL)) AS y (j, b)\nORDER BY i, j",
+   "note": "AND, OR and NOT over true, false and unknown: every combination.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"a","type":"bool"},
+     {"name":"b","type":"bool"},
+     {"name":"a AND b","type":"bool"},
+     {"name":"a OR b","type":"bool"},
+     {"name":"NOT a","type":"bool"}
+    ],
+    "data": [
+     ["t","t","t","t","f"],
+     ["t","f","f","t","f"],
+     ["t",null,null,"t","f"],
+     ["f","t","f","t","t"],
+     ["f","f","f","f","t"],
+     ["f",null,"f",null,"t"],
+     [null,"t",null,"t",null],
+     [null,"f","f",null,null],
+     [null,null,null,null,null]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT n, place, verdict FROM (VALUES\n  (1, 'NULL = NULL', coalesce((NULL::int = NULL::int)::text, 'unknown')),\n  (2, 'NULL <> NULL', coalesce((NULL::int <> NULL::int)::text, 'unknown')),\n  (3, 'NULL IS NOT DISTINCT FROM NULL', (NULL::int IS NOT DISTINCT FROM NULL::int)::text),\n  (4, 'GROUP BY', (SELECT count(*) FROM (SELECT x FROM (VALUES (NULL::int), (NULL)) AS t (x) GROUP BY x) AS g)::text || ' bucket'),\n  (5, 'SELECT DISTINCT', (SELECT count(*) FROM (SELECT DISTINCT x FROM (VALUES (NULL::int), (NULL)) AS t (x)) AS d)::text || ' row'),\n  (6, 'UNION', (SELECT count(*) FROM (SELECT NULL::int UNION SELECT NULL::int) AS u)::text || ' row'),\n  (7, 'count(DISTINCT x)', (SELECT count(DISTINCT x) FROM (VALUES (NULL::int), (NULL)) AS t (x))::text || ' values'),\n  (8, 'ORDER BY x', (SELECT string_agg(coalesce(x::text, 'null'), ', ' ORDER BY x) FROM (VALUES (NULL::int), (2), (NULL), (1)) AS t (x))),\n  (9, 'a UNIQUE column', (SELECT count(*) FROM u WHERE x IS NULL)::text || ' NULLs stored')\n) AS s (n, place, verdict)\nORDER BY n",
+   "note": "two NULLs, asked whether they're the same, in nine places. u is a table with a UNIQUE column that took two NULLs without complaint.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [{"name":"n","type":"int4"},{"name":"place","type":"text"},{"name":"verdict","type":"text"}],
+    "data": [
+     ["1","NULL = NULL","unknown"],
+     ["2","NULL <> NULL","unknown"],
+     ["3","NULL IS NOT DISTINCT FROM NULL","true"],
+     ["4","GROUP BY","1 bucket"],
+     ["5","SELECT DISTINCT","1 row"],
+     ["6","UNION","1 row"],
+     ["7","count(DISTINCT x)","0 values"],
+     ["8","ORDER BY x","1, 2, null, null"],
+     ["9","a UNIQUE column","2 NULLs stored"]
+    ]
+   }
+  }
+ ]
+}

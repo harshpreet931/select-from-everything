@@ -1,0 +1,137 @@
+import { SortKeys } from "@/components/figures/basics/SortKeys";
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { prov, resultOf, runsOf } from "@/components/figures/basics/captured";
+import trace from "./traces/order-by.pgtrace.json";
+
+{/* every figure reads traces/order-by.scenario.sql (PGlite, school's 12 courses): three ORDER BY
+    lists, six NULL placements, and one ORDER BY run with and without LIMIT. */}
+
+export const keyRuns = Object.fromEntries([["dept", ["dept"]], ["dept, credits", ["dept", "credits"]], ["dept, credits, code", ["dept", "credits", "code"]]].map(([k, ks], i) => [k, { ...resultOf(trace, i), keys: ks }]));
+export const nulls = runsOf(trace, ["ASC | default", "ASC | NULLS FIRST", "ASC | NULLS LAST", "DESC | default", "DESC | NULLS FIRST", "DESC | NULLS LAST"], 3);
+export const ties = runsOf(trace, ["none", "3"], 9);
+export const source = prov(trace);
+
+<InShort>
+a table has **no order**. rows come back in whatever order the plan happens to produce them, and **ORDER BY** is the only thing that promises one. it sorts by its keys left to right, ascending unless you say DESC, and in postgres NULLs sort as if they were bigger than everything.
+
+rows that tie on every key come back in any order. so keep adding keys until nothing ties.
+</InShort>
+
+## the picture
+
+you know how `SELECT * FROM courses` seems to come back in the order the rows went in? that's not a feature, it's a coincidence. postgres read the table front to back and handed rows over as it found them. change the plan, update a row, and the coincidence ends ([LIMIT, OFFSET and FETCH FIRST](/learn/basics/limit-and-offset) catches it in the act).
+
+ORDER BY is how you say what you actually want. think of sorting a pile of exam papers: by department first, then within a department by credits. papers that match on both stay in whatever order they were in the pile, because you never told anyone how to break that tie.
+
+<Figure wide caption={<>add sort keys one at a time. <C k="hot">hot</C> brackets are ties: rows equal on every key so far, whose order is postgres's choice. by the third key nothing ties, and the order is fully decided.</>}>
+<SortKeys runs={keyRuns} trace={source} />
+</Figure>
+
+look at MATH under `ORDER BY dept`. postgres returned MATH201, MATH301, MATH101: not alphabetical, not insertion order, just the order its sort left them in. that's allowed, because all three have the same dept. you asked for nothing more.
+
+## one key at a time
+
+ORDER BY takes a list. the first key decides, the second only breaks ties in the first, the third only breaks ties in the second, and so on. each key gets its own direction, and `DESC` belongs to the one key right before it:
+
+```sql run db=school
+SELECT code, dept, credits
+FROM courses
+ORDER BY credits DESC, code;
+```
+
+credits high to low, and within the same credits, code A to Z (ASC is the default, so it can go unsaid). the senior thesis has 6 credits, so it leads.
+
+a sort key doesn't have to be a column you select, or a column at all. any expression works, computed per row just for sorting:
+
+```sql run db=school
+SELECT code, title
+FROM courses
+ORDER BY length(title) DESC, code
+LIMIT 3;
+```
+
+ORDER BY can also name a SELECT alias or position (`ORDER BY 2`), because it runs after SELECT. [the logical order](/learn/basics/logical-order) has the fine print on that, including why the alias has to stand alone.
+
+## ties
+
+a tie means "any order is correct". and postgres takes that literally: the order of tied rows depends on how it sorted, and it doesn't always sort the same way.
+
+<Figure caption={<>the same <code>ORDER BY dept</code>, with and without a LIMIT. the five CS courses tie, and they come out in a different order: with LIMIT 3, postgres switches to a sort that only keeps the best 3 rows, and ties fall where they fall.</>}>
+<RunSwitch options={[{ key: "LIMIT", values: ["none", "3"] }]} runs={ties} hot={["ORDER BY dept"]} trace={source} />
+</Figure>
+
+the plans say why. the whole table gets a quicksort, the LIMIT version a top-N heapsort that never holds more than 3 rows:
+
+```sql run db=school
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT code, dept FROM courses ORDER BY dept;
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT code, dept FROM courses ORDER BY dept LIMIT 3;
+```
+
+two algorithms, two answers, both correct. a bigger table, a parallel sort or an index can each change it again. this is why every multi-row query in this book ends with a **total order**: keys that tell every row apart, usually by ending with the primary key (`ORDER BY dept, code`). it costs nothing, and the answer stops depending on luck. [sorting](/learn/execution/sorting) has the algorithms.
+
+## where the NULLs go
+
+<Predict options={["three audio products", "three toys", "the three with no category"]} answer={2}>
+```sql
+SELECT name, category
+FROM products
+ORDER BY category DESC, id
+LIMIT 3;
+```
+<Explain>
+postgres sorts NULL as if it were larger than any value. so in ascending order NULLs come last, and in DESC they come first: the wooden train and the two other products with no category lead, before toys. not what most people expect from "biggest category first".
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT name, category
+FROM products
+ORDER BY category DESC, id
+LIMIT 3;
+```
+
+`NULLS FIRST` and `NULLS LAST` override that, per key. here's every combination on the one course with no instructor:
+
+<Figure caption={<>flip the direction and the NULL placement. by default the senior thesis sits at the end going up and at the start going down. NULLS FIRST and NULLS LAST pin it wherever you say, whichever way the rest is sorted.</>}>
+<RunSwitch options={[{ key: "direction", values: ["ASC", "DESC"] }, { key: "nulls", values: ["default", "NULLS FIRST", "NULLS LAST"] }]} runs={nulls} hot={["NULLS FIRST", "NULLS LAST", "DESC"]} trace={source} />
+</Figure>
+
+the standard leaves the default up to each database, and they disagree. postgres treats NULL as the biggest value. mysql and sqlite treat it as the smallest, so NULLs come *first* when you sort ascending ([mysql](https://dev.mysql.com/doc/refman/8.4/en/working-with-null.html), [sqlite](https://www.sqlite.org/lang_select.html)). if it matters, write NULLS FIRST or NULLS LAST and stop depending on the default. [NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) explains why NULLs get sorted together at all, when `NULL = NULL` isn't even true.
+
+## text sorts by bytes here
+
+the postgres in this page uses the **C collation**: text sorts by the bytes of its characters. every capital letter comes before every lower-case one, and accented letters come after all of them:
+
+```sql run
+SELECT x
+FROM (VALUES ('apple'), ('Banana'), ('cherry'), ('Zoë'), ('zoe')) AS t (x)
+ORDER BY x;
+```
+
+Banana and Zoë before apple. a real server can sort the way a dictionary does, with a language's collation. here's the same list on a postgres 18.6 server, sorted with ICU's english rules (this one can't run in the browser):
+
+```sql native
+SELECT x
+FROM (VALUES ('apple'), ('Banana'), ('cherry'), ('Zoë'), ('zoe')) AS t (x)
+ORDER BY x COLLATE "en-US-x-icu";
+```
+
+case and accents only break ties there, after the letters themselves. if you need case not to matter here, sort by `lower(x)` and keep `x` as a tie-breaker. why postgres lets each database, column or query pick its own collation is in [text, varchar and collations](/learn/types/text-and-collation).
+
+<Gotcha title="an ORDER BY inside doesn't count outside">
+an ORDER BY in a subquery, a CTE or a view sorts that inner result. the query around it is free to scramble it again, and nothing in SQL says it won't. postgres usually keeps the order when it can, which is exactly what makes the bug hard to spot: it works, until a join or a GROUP BY around it changes the plan. put the ORDER BY on the outermost query, where the rows leave.
+</Gotcha>
+
+<Interview q="if I don't write ORDER BY, do I get the rows in insertion order?">
+no. without ORDER BY the order is whatever the plan produces: often physical order in the table, which updates and vacuum change, or index order, or the order a hash table or parallel workers hand rows over. ORDER BY is the only guarantee. bonus point: even with ORDER BY, rows that tie on every key can come back in any order, and the same query can return them differently with and without a LIMIT, so end the list with a unique key.
+</Interview>
+
+<Keylines>
+- a table has no order. ORDER BY is the only promise you get.
+- keys are applied left to right; each one only breaks the ties of the ones before it.
+- DESC belongs to one key. ASC is the default.
+- ties come back in any order, even between two runs of similar queries. end with a unique key.
+- postgres sorts NULL as the biggest value. NULLS FIRST and NULLS LAST say it out loud.
+</Keylines>

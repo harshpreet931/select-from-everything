@@ -1,0 +1,103 @@
+import { LsmModel } from "@/components/figures/index-internals/LsmModel";
+import { BloomFilter } from "@/components/figures/index-internals/BloomFilter";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* postgres has no LSM tree, so nothing here is captured from it. the LSM stepper is a model,
+    the bloom filter is computed live, and the false positive table is computed by postgres in
+    the run block. sources: O'Neil, Cheng, Gawlick and O'Neil, "The Log-Structured Merge-Tree
+    (LSM-Tree)", Acta Informatica 33, 1996; the RocksDB wiki pages "Leveled Compaction",
+    "Universal Compaction" and "RocksDB Bloom Filter". */}
+
+<InShort>
+an **LSM tree** (log-structured merge tree) never updates a page in place. writes go to a sorted **memtable** in memory; when it's full it's written out, in one sequential write, as an immutable sorted file (an **SSTable**). background **compaction** merges those files into bigger ones, level by level. writes are cheap and sequential; a read may have to look in several files, which is what **bloom filters** are for: a few bits per key that say "definitely not in this file". postgres doesn't use one. RocksDB, LevelDB, Cassandra and many newer stores do.
+</InShort>
+
+## the picture
+
+you know how a [b-tree](/learn/index-internals/b-plus-trees) finds a leaf and changes it in place, [splitting](/learn/index-internals/page-splits) when it fills? every insert is a random write to some page somewhere in the index. on spinning disks that was slow; on SSDs, rewriting 8 KB to change 20 bytes wears the flash. an LSM tree turns every write into an append.
+
+think of a busy office's inbox. new papers go into a tray on the desk, sorted as they arrive (the memtable). when the tray is full, the whole stack is clipped together and dropped in a filing drawer, untouched from then on (an SSTable). every so often someone takes a few clipped stacks and merges them into one sorted folder, throwing out papers that newer ones replaced (compaction). to find something you check the tray, then the stacks newest first, then the folders.
+
+step through one. four keys a file, a merge whenever L0 holds two files:
+
+<Figure wide caption={<>an LSM tree, one operation at a time. a put goes to the memtable; a full memtable is <C k="hot">flushed</C> to L0 as a sorted, immutable file; two L0 files get compacted into L1. a delete is a <C k="dead">tombstone</C> that hides older values until compaction drops both. the gets at the end show the read path: newest first.</>}>
+<LsmModel />
+</Figure>
+
+## writes are sequential, and then written again
+
+<Figure caption={<>the write path of an LSM tree, left to right. hover a stage. everything after the memtable happens in the background, and every arrow after the flush rewrites data that's already on disk.</>}>
+<Flow stages={[
+  { label: "put(k, v)", sub: "a write", note: "the application's write. no read happens first." },
+  { label: "WAL", sub: "append", note: "a sequential append, for durability. replayed into a new memtable after a crash." },
+  { label: "memtable", sub: "memory", note: "a sorted structure in memory (often a skip list). reads check it first." },
+  { label: "L0", sub: "flush", note: "the full memtable written out as one sorted, immutable file. L0 files may overlap." },
+  { label: "L1 … Ln", sub: "compaction", note: "merges into bigger, non-overlapping sorted runs. each level about 10x the one above in leveled compaction." },
+]} />
+<Provenance drawn="the textbook design, after O'Neil et al. 1996 and the RocksDB wiki" />
+</Figure>
+
+an LSM write is: append a record to a write-ahead log (for durability), insert into the memtable, done. no page is read, nothing on disk is modified. the memtable flush is one big sequential write of a sorted file.
+
+the bill comes later, in compaction. every byte you write gets rewritten each time a compaction merges the file it's in. that ratio, bytes written to disk per byte written by the application, is **write amplification**. there are two families of compaction, and they put the cost in different places (the RocksDB wiki's terms):
+
+| | leveled | tiered (RocksDB calls it universal) |
+| --- | --- | --- |
+| shape | each level below L0 is one sorted run of non-overlapping files, each level about 10x the one above | each level holds several sorted runs, merged when there are enough of them |
+| a key lives in | at most one file per level | possibly every run on a level |
+| write amplification | higher: a file is rewritten every time it's merged into the next level | lower, the reason it exists |
+| read amplification | lower: one file per level to check | higher: more sorted runs to check |
+| space amplification | lower: few stale copies | higher: old versions survive until runs merge |
+
+that's the triangle every storage engine sits in: **read**, **write** and **space** amplification. you can lower any two at the cost of the third. a b-tree updates in place (low space, low read), and pays for it with random writes. an LSM tree buys cheap writes with reads and background work.
+
+## reads, and the filter that says no
+
+<Predict question="a leveled LSM tree with a memtable, 4 L0 files and 3 more levels. you look up a key that doesn't exist. how many places must be checked?" options={["1", "about 8", "only the last level"]} answer={1}>
+```text
+get("no-such-key")
+```
+<Explain>
+all of them: the memtable, each of the 4 overlapping L0 files, and one file in each of the 3 levels below. a key that isn't there is the worst case, because nothing stops the search early. that's the case bloom filters exist for: each file keeps a few bits per key, and most files can answer "definitely not here" without a disk read.
+</Explain>
+</Predict>
+
+a **bloom filter** (Bloom, 1970) is a bit array and k hash functions. adding a key sets k bits. looking one up checks those k bits: if any is 0, the key was never added, **definitely**. if all are 1, it **maybe** was: other keys may have set those bits. so it has false positives, never false negatives, and the false positive rate depends only on bits per key and k.
+
+<Figure caption={<>a 48-bit bloom filter holding six keys. pick k and a key to look up: the <C k="hot">checked bits</C> decide "maybe" or "definitely not". 170 was never added; try it. then slide bits per key to see the rate a real filter would get, computed from the formula.</>}>
+<BloomFilter />
+</Figure>
+
+the rate, for n keys in m bits with k hashes, is (1 − e<sup>−kn/m</sup>)<sup>k</sup>, best at k = (m/n) ln 2. postgres can do the arithmetic:
+
+```sql run
+SELECT bits_per_key, k,
+       round((100 * (1 - exp(-k / bits_per_key)) ^ k)::numeric, 3) AS false_positive_pct
+FROM (SELECT b::numeric AS bits_per_key, round(b * ln(2)) AS k
+      FROM unnest(ARRAY[5, 10, 16, 20]) AS b) AS x
+ORDER BY bits_per_key;
+```
+
+10 bits per key, 7 hashes: 0.82%. that's RocksDB's default ballpark: its wiki quotes about 1% at 9.9 bits per key, and 0.84% for a standard bloom filter at 10. one byte and a quarter per key, and 99 of every 100 lookups for a missing key skip the file. every extra 5 bits per key cuts the rate about tenfold.
+
+## why postgres doesn't
+
+postgres was designed around update-in-place pages: a heap for rows and b-trees that point into it. MVCC keeps old row versions *in the heap* ([an UPDATE is an INSERT](/learn/mvcc/update-is-insert)), VACUUM cleans up, and the WAL makes in-place page changes durable. an LSM engine would replace most of that, and reads (the common case for most postgres workloads) would get more expensive. the write-heavy cases where LSM shines (ingesting huge streams of keys, write-bound SSDs) are where engines like RocksDB, and MySQL's MyRocks storage engine on top of it, are used instead.
+
+postgres borrowed the good parts in places, though. GIN's [pending list](/learn/index-internals/gin) is an LSM idea: buffer writes, merge them in bulk. [BRIN](/learn/index-internals/brin) has a bloom operator class, and the `bloom` contrib extension builds a whole index out of per-row signatures.
+
+<Gotcha title="compaction is real I/O, just later">
+an LSM benchmark that only runs for a minute measures the memtable. sustained writes have to pay compaction, which competes with reads for disk and CPU, and if it falls behind, L0 fills up and engines throttle or stall writes on purpose. compare engines under sustained load, with the data bigger than memory.
+</Gotcha>
+
+<Deep title="where the LSM tree comes from">
+O'Neil, Cheng, Gawlick and O'Neil described it in "The Log-Structured Merge-Tree (LSM-Tree)" (Acta Informatica, 1996): a small component in memory, larger components on disk, and rolling merges between them, for workloads with far more inserts than lookups (their example was a history table of bank transactions). Google's Bigtable paper (2006) gave the in-memory part the name memtable and the on-disk files the name SSTable, and LevelDB, then RocksDB, made the leveled design the common one.
+</Deep>
+
+<Keylines>
+- an LSM tree writes to a sorted memtable, then flushes immutable sorted files (SSTables): every write is sequential.
+- compaction merges files level by level; rewriting data again and again is write amplification.
+- leveled compaction favours reads and space, tiered favours writes. read, write, space: pick two.
+- a missing key has to be checked everywhere, so each file keeps a bloom filter: 10 bits a key, about 1% false positives.
+- postgres updates pages in place; its GIN pending list and BRIN bloom borrow LSM ideas.
+</Keylines>

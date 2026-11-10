@@ -1,0 +1,240 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ad7bdb4837a7cdbc": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS join_rows\nFROM customers AS c JOIN orders AS o ON o.customer_id = c.id\nWHERE c.id = 1;\n\nSELECT c.name\nFROM customers AS c\nWHERE c.id = 1\n  AND EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["join_rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "77d9c47f6d71032a",
+          "rows": [
+            ["57"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "d154b4b5511ef072",
+          "rows": [
+            ["Maya Chen"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3d79b54692dd68a5": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS joined FROM customers AS c JOIN orders AS o ON o.customer_id = c.id;\n\nSELECT count(*) AS have_ordered\nFROM customers AS c\nWHERE EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["joined", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "68d04df3aa05e670",
+          "rows": [
+            ["10000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["have_ordered", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "0cb1ea7c4db5578b",
+          "rows": [
+            ["1962"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1144478482f8b1d8": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS never_ordered\nFROM customers AS c\nWHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);\n\nSELECT c.id, c.name\nFROM customers AS c\nWHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id)\nORDER BY c.id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["never_ordered", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b67e511c530ba045",
+          "rows": [
+            ["38"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "c98ca3ca6d69fac7",
+          "rows": [
+            ["7", "Ming Li"],
+            ["475", "Diego Mehta"],
+            ["518", "Kofi Park"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "85d090f6819b54a4": {
+      "db": "school",
+      "sql": "SELECT s.id, s.name\nFROM students AS s\nWHERE NOT EXISTS (SELECT 1 FROM enrollments AS e WHERE e.student_id = s.id)\nORDER BY s.id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "aec256145c8cc679",
+          "rows": [
+            ["40", "Sam Rivera"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e8e0d9afdbf2b134": {
+      "db": "school",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT i.name FROM instructors AS i\nWHERE EXISTS (SELECT 1 FROM courses AS c WHERE c.instructor_id = i.id);\n\nEXPLAIN (COSTS OFF)\nSELECT i.name FROM instructors AS i\nWHERE i.id IN (SELECT c.instructor_id FROM courses AS c);\n\nEXPLAIN (COSTS OFF)\nSELECT i.name FROM instructors AS i\nWHERE NOT EXISTS (SELECT 1 FROM courses AS c WHERE c.instructor_id = i.id);\n\nEXPLAIN (COSTS OFF)\nSELECT i.name FROM instructors AS i\nLEFT JOIN courses AS c ON c.instructor_id = i.id\nWHERE c.instructor_id IS NULL;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "eea903d8cde482e8",
+          "rows": [
+            ["Hash Right Semi Join"],
+            ["  Hash Cond: (c.instructor_id = i.id)"],
+            ["  ->  Seq Scan on courses c"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on instructors i"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "0dfa8d3f01cbbe89",
+          "rows": [
+            ["Hash Right Semi Join"],
+            ["  Hash Cond: (c.instructor_id = i.id)"],
+            ["  ->  Seq Scan on courses c"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on instructors i"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "9da3c91d4dc5d25c",
+          "rows": [
+            ["Hash Anti Join"],
+            ["  Hash Cond: (i.id = c.instructor_id)"],
+            ["  ->  Seq Scan on instructors i"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on courses c"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7fbeef1fdfdeadbd",
+          "rows": [
+            ["Hash Anti Join"],
+            ["  Hash Cond: (i.id = c.instructor_id)"],
+            ["  ->  Seq Scan on instructors i"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on courses c"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "244330a47ff16885": {
+      "db": "school",
+      "sql": "SELECT s.id, s.name\nFROM students AS s\nWHERE NOT EXISTS (\n  SELECT 1 FROM courses AS c\n  WHERE c.dept = 'CS'\n    AND NOT EXISTS (\n      SELECT 1 FROM enrollments AS e\n      WHERE e.student_id = s.id AND e.course_code = c.code))\nORDER BY s.id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "3712ad268514bc6b",
+          "rows": [
+            ["7", "Priya Nair"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f6b15f20e25aea51": {
+      "db": "school",
+      "sql": "SELECT s.id, s.name\nFROM students AS s\nJOIN enrollments AS e ON e.student_id = s.id\nJOIN courses AS c ON c.code = e.course_code\nWHERE c.dept = 'CS'\nGROUP BY s.id\nHAVING count(DISTINCT c.code) = (SELECT count(*) FROM courses WHERE dept = 'CS')\nORDER BY s.id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "3712ad268514bc6b",
+          "rows": [
+            ["7", "Priya Nair"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

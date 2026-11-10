@@ -1,0 +1,168 @@
+import { IndexOrScan } from "@/components/figures/indexes/IndexOrScan";
+import { ScanPath } from "@/components/figures/indexes/ScanPath";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/selectivity.pgtrace.json";
+
+{/* every number in the figures comes from traces/selectivity.scenario.sql, captured on PGlite
+    (`pnpm pgtrace <file> --engine=pglite --twice`): the same table the run buttons build, the
+    plans postgres picked at six selectivities, and a sweep that forced each scan in turn and kept
+    its estimated cost and its buffer count. */}
+
+export const sweep = trace.steps[15].result.data.filter((r) => r[1] === "4");
+export const at = (col, n, scan) => sweep.find((r) => r[0] === col && r[2] === String(n) && r[3] === scan);
+export const cost = (col, n, scan) => at(col, n, scan)[5];
+export const pages = (col, n, scan) => Number(at(col, n, scan)[6]).toLocaleString("en-US");
+export const tablePages = trace.steps[17].result.data[0][0];
+export const receipt = trace.steps[18].result.data[0].map(Number);
+
+<InShort>
+an index makes a query faster when the query wants **a few rows**. when it wants a lot of them, reading the whole table front to back is cheaper. postgres picks between a **seq scan**, a **bitmap scan** and an **index scan** by estimated cost, and the number that decides it is **selectivity**: the fraction of rows that match.
+
+on the table below, a plain index scan stops paying off at about 1% of the rows.
+</InShort>
+
+## the picture
+
+you know how you add an index, run the query, and postgres ignores it? it isn't broken. it did the arithmetic and the index lost.
+
+think of a cookbook with an index at the back. you want every recipe with saffron: three of them, so you look up saffron and flip to three pages. now you want every recipe with salt. that's half the book, and flipping to the back, then to page 212, then back, then page 37, takes far longer than reading the book cover to cover and marking the salty ones as you go (a seq scan).
+
+slide the selectivity. the table has 30,000 rows on {tablePages} pages, and every point is a real plan from the postgres on this page.
+
+<Figure wide caption={<>slide the number of matching rows from 1 to half the table. the <C k="hot">picked</C> scan changes twice: index scan for one row, bitmap scan from 30 rows to 20%, seq scan at 50%. the pages-touched bars are what each scan really cost in page reads. switch to the column stored in table order and the index scan wins everywhere.</>}>
+<IndexOrScan trace={trace} rows={30000} />
+</Figure>
+
+three things to notice on the scattered column:
+
+- **the index scan's page count grows with the rows.** it fetches one heap page per matching row: {pages("k", 300, "Index Scan")} pages for 300 rows, {pages("k", 15000, "Index Scan")} for 15,000. the table only has {tablePages}.
+- **the seq scan never changes.** {pages("k", 1, "Seq Scan")} pages, whether one row matches or all of them.
+- **the bitmap scan sits in between.** it never reads a page twice, so it tops out at the size of the table, plus a few index pages.
+
+## the table
+
+the figure's table is built right here. 30,000 rows is the most `ANALYZE` reads in full (the [statistics](/learn/optimizer/statistics) are exact, so the plans come out the same on every run). `k` is 0 to 29,999 shuffled, so `k < 300` matches exactly 300 rows, scattered all over the file. `k_sorted` holds the same numbers in table order.
+
+```sql run session=sel
+CREATE TABLE t (id int PRIMARY KEY, k int NOT NULL, k_sorted int NOT NULL, pad text NOT NULL);
+INSERT INTO t
+SELECT i, (i * 7919) % 30000, i - 1, repeat('x', 100)
+FROM generate_series(1, 30000) AS i
+ORDER BY i;
+CREATE INDEX t_k ON t (k);
+CREATE INDEX t_k_sorted ON t (k_sorted);
+VACUUM ANALYZE t;
+SELECT pg_relation_size('t') / 8192 AS pages, pg_relation_size('t_k') / 8192 AS index_pages;
+```
+
+the `pad` column is there to make rows a realistic size, about 55 to a page.
+
+## three ways to read a table
+
+- **seq scan**: read every page in order and test every row. the cost doesn't depend on how many rows match.
+- **index scan**: walk the index to the first matching key, then for each entry, fetch the heap page its address points to. one page fetch per row, in key order.
+- **bitmap scan**: walk the index first and only collect addresses, into a bitmap of pages. then read those pages in page order, each one once (a Bitmap Index Scan feeding a Bitmap Heap Scan).
+
+the difference between the last two is the order. here are the 30 rows with `k < 30`, and the page each one lives on:
+
+<Figure wide caption={<>the 30 rows with <code>k &lt; 30</code> and their heap pages, on a strip of the table's {tablePages} pages. in index order the scan jumps across the whole file, back and forth. the bitmap scan sorts the same addresses by page first, and sweeps forward.</>}>
+<ScanPath trace={trace} step={16} pagesStep={17} />
+</Figure>
+
+on a spinning disk every one of those jumps is a seek. on an SSD a jump is cheap but still not free, and either way the index scan fetches a page once per row, even when it already fetched that page a moment ago. [seq, index and bitmap scans](/learn/execution/scans) has the machinery (the lossy bitmap, `Recheck Cond`, prefetching).
+
+## where it flips
+
+the planner doesn't run all three. it estimates each one in made-up cost units and keeps the cheapest. at 1%, the bitmap scan wins:
+
+```sql run session=sel
+EXPLAIN SELECT * FROM t WHERE k < 300;
+```
+
+turn bitmap scans off and you see the next-best plan. not the index scan: the seq scan. the index scan's estimate has crossed the cost of reading everything:
+
+```sql run session=sel
+SET enable_bitmapscan = off;
+EXPLAIN SELECT * FROM t WHERE k < 300;
+SET enable_seqscan = off;
+EXPLAIN SELECT * FROM t WHERE k < 300;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+```
+
+the seq scan's {cost("k", 300, "Seq Scan")} is easy to check by hand, from the table's size in `pg_class` and three settings:
+
+```sql run session=sel
+SELECT relpages AS pages, reltuples::int AS rows,
+       relpages * current_setting('seq_page_cost')::numeric AS page_cost,
+       reltuples::int * current_setting('cpu_tuple_cost')::numeric AS row_cost,
+       reltuples::int * current_setting('cpu_operator_cost')::numeric AS filter_cost
+FROM pg_class WHERE relname = 't';
+```
+
+<Figure caption={<>the seq scan's estimate, rebuilt from its parts: every page at <code>seq_page_cost</code> 1.0, every row at <code>cpu_tuple_cost</code> 0.01, and one <code>k &lt; 300</code> test per row at <code>cpu_operator_cost</code> 0.0025. they add up to the {receipt[5]} EXPLAIN printed. none of them depends on how many rows match.</>}>
+<Bars data={[
+  { label: `${receipt[0]} pages`, value: receipt[2] },
+  { label: `${receipt[1].toLocaleString("en-US")} rows`, value: receipt[3] },
+  { label: `${receipt[1].toLocaleString("en-US")} comparisons`, value: receipt[4] },
+  { label: "total, as EXPLAIN prints it", value: receipt[5], tone: "hot" },
+]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+the index scan's {cost("k", 300, "Index Scan")} is mostly 300 heap fetches at `random_page_cost` 4, each one a page the planner assumes is out of order. [the cost model](/learn/optimizer/cost-model) prices both by hand, including the bit of the index scan's arithmetic that guesses how many of those fetches hit pages already in cache.
+
+<Predict question="k < 1500 matches 5% of the rows. which scan does postgres pick?" options={["index scan", "bitmap scan", "seq scan"]} answer={1}>
+```sql
+EXPLAIN SELECT * FROM t WHERE k < 1500;
+```
+<Explain>
+the bitmap scan, at an estimated {cost("k", 1500, "Bitmap Heap Scan")} against {cost("k", 1500, "Seq Scan")} for the seq scan. 1,500 scattered rows land on almost every page, so the bitmap scan reads nearly the whole table ({pages("k", 1500, "Bitmap Heap Scan")} pages, index included), but in page order and each page once. the index scan would have fetched {pages("k", 1500, "Index Scan")} pages.
+</Explain>
+</Predict>
+
+## the crossover is a guess
+
+a rule like "an index helps below 5%" can't be right in general, because the crossover depends on things the rule doesn't mention.
+
+**where the rows live.** flip the figure to `k_sorted`: the index scan wins at every point, all the way to half the table. matching rows sit next to each other, so consecutive index entries point into the same page, and 15,000 rows cost {pages("k_sorted", 15000, "Index Scan")} page reads. the planner knows this from the column's `correlation` in [pg_stats](/learn/optimizer/statistics): close to 1 or -1 means table order follows the column. an append-only table and its timestamp column is the everyday case.
+
+**what a random read costs.** `random_page_cost` defaults to 4: the planner prices a page fetched out of order at four sequential ones. the manual explains the 4 this way: a random read from storage really costs far more than four sequential ones, but most random reads are expected to be served from cache. on SSDs, or a database that fits in memory, a random read is close to a sequential one, and lowering it (1.1 is a common pick) makes the planner use indexes for bigger results. here's the 50% point both ways:
+
+```sql run session=sel
+EXPLAIN SELECT * FROM t WHERE k < 15000;
+SET random_page_cost = 1.1;
+EXPLAIN SELECT * FROM t WHERE k < 15000;
+RESET random_page_cost;
+```
+
+seq scan at 4, bitmap scan at 1.1. switch the figure to 1.1 to see the costs move. it's a statement about your hardware, so set it per tablespace or server after measuring, not per query to win one plan ([steering the planner](/learn/optimizer/steering-the-planner)).
+
+<Docs href="https://www.postgresql.org/docs/18/runtime-config-query.html#GUC-RANDOM-PAGE-COST" title="random_page_cost">the manual says the default of 4.0 assumes most random reads are served from cache, and that lowering it makes sense when the data is likely to be fully cached. setting it below seq_page_cost isn't physically sensible.</Docs>
+
+<Gotcha title="in this browser, every page is a hit">
+the pages-touched numbers are `Buffers: shared hit + read`: how many times the scan asked the buffer pool for a page. in the browser, the whole table is in memory, so all of them are hits and the slow plans are only a little slower. on a server with a cold cache, the index scan's {pages("k", 15000, "Index Scan")} requests become thousands of random reads. the planner prices the server's case, not the browser's.
+</Gotcha>
+
+## tiny tables
+
+below a few pages, nothing beats reading the table. `products` is 5 pages. here's a lookup by its primary key, the most index-friendly query there is:
+
+```sql run db=shop
+EXPLAIN SELECT name FROM products WHERE id = 200;
+```
+
+a seq scan. reading 5 pages and checking 200 rows is cheaper, in the planner's units, than descending an index and then fetching the page anyway. the left-handed teapot comes back either way. this is also why index experiments on small tables mislead: build the table big enough first, as above.
+
+<Interview q="you created an index and postgres still does a seq scan. why?">
+because the planner estimated the seq scan as cheaper. that's right when the query matches a big fraction of the table (with scattered rows, a plain index scan loses past about 1% on the table in this chapter, because it fetches one heap page per row in random order), and postgres has the bitmap scan for the middle ground. it's wrong when the estimate is wrong: stale statistics, a function or cast that hides the column, a random_page_cost tuned for spinning disks on an SSD. check EXPLAIN ANALYZE for estimated vs actual rows first. bonus point: correlation, since an index on a column stored in table order stays cheap for much bigger results.
+</Interview>
+
+<Keylines>
+- selectivity decides it: few rows, index; most rows, seq scan; in between, a bitmap scan.
+- an index scan fetches one heap page per row, in key order. that's what loses past a few percent.
+- a bitmap scan sorts the addresses first, so each page is read once, in order.
+- the crossover moves with correlation and random_page_cost. measure, don't memorize a percentage.
+- the planner prices disk reads even when everything is cached.
+</Keylines>

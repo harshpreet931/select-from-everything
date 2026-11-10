@@ -1,0 +1,133 @@
+import { RowsPerPage } from "@/components/figures/storage/RowsPerPage";
+import notesPages from "./traces/notes-pages.pgtrace.json";
+
+export const pages = notesPages.steps[0].result.data.map((r) => ({ page: Number(r[0]), rows: Number(r[1]), first: Number(r[2]), last: Number(r[3]) }));
+export const pagesSource = { engine: notesPages.engine, scenario: notesPages.scenario };
+
+<InShort>
+memory answers in about a tenth of a microsecond. an SSD answers a random read in tens of microseconds: on the machine this was measured on, hundreds of times slower. but most of an SSD's time goes on the request, not the bytes: reading 8 KB costs the same as 4 KB, and 64 KB only 1.6 times as much.
+
+so databases never read a row. they read a fixed-size block, a **page** (8 KB in postgres), and every table and index is a file of them. ask for one row, and its whole page comes with it.
+</InShort>
+
+## the picture
+
+you know how fetching one row by its id is fast, and reading a whole table is slow, even though both are just "reading the table"? the difference isn't the rows. it's how many trips to storage each one makes.
+
+think of a warehouse across town. the drive is what costs you: half an hour there, half an hour back. once you're there, carrying out a box of books takes hardly longer than carrying out one. so nobody drives over for a single book. you bring the box, and if the next book you want happens to be in it, you already have it. the box is a page.
+
+here's how long the drive is, measured on one machine:
+
+<Figure wide caption={<>log scale: each step right is 10× longer. the first five are measured on this mac (an M4 Pro, its built-in APPLE SSD AP0512Z, macOS); the hard disk seek is a classic estimate from Peter Norvig's table. memory is <C k="live">fast</C>, a random SSD read is the one to look at.</>}>
+<Bars log unit="ns" data={[
+  { label: "RAM, one random read (a cache line)", value: 122, tone: "live" },
+  { label: "RAM, copy 8 KB from a random spot", value: 437 },
+  { label: "OS page cache, read 8 KB (pread)", value: 1000 },
+  { label: "SSD, in order, 1 MB at a time (per 8 KB)", value: 2800 },
+  { label: "SSD, read 8 KB at random", value: 82000, tone: "hot" },
+  { label: "hard disk, one seek (Norvig)", value: 8000000 },
+]} />
+<div className="text-right text-[10px] leading-4 text-faint">measured on this mac with the program in "how these were measured" below, medians · hard disk: norvig.com/21-days.html</div>
+</Figure>
+
+two gaps matter. memory against a random SSD read: 122 ns against 82 µs, about 670 times. and a random SSD read against reading the same SSD in order: 82 µs against 2.8 µs per 8 KB. storage loves big, sequential, predictable reads, and punishes small scattered ones. a database's whole storage layer is shaped around those two facts.
+
+## the cost is the trip, not the bytes
+
+the same SSD, random reads of different sizes, one at a time:
+
+<Figure caption={<>median of 5,000 random reads per size, from a 4 GiB file opened with F_NOCACHE (so the OS cache can't help). 8 KB costs what 4 KB costs.</>}>
+<Bars unit="µs" data={[
+  { label: "4 KB", value: 72 },
+  { label: "8 KB", value: 72, tone: "hot" },
+  { label: "16 KB", value: 82 },
+  { label: "64 KB", value: 114 },
+  { label: "256 KB", value: 145 },
+  { label: "1 MB", value: 331 },
+]} />
+<div className="text-right text-[10px] leading-4 text-faint">measured on this mac, medians of 5,000 reads per size · a second run was within 5%</div>
+</Figure>
+
+doubling from 4 KB to 8 KB is free. 64 KB, eight times the data, takes 1.6 times as long. that's the shape of every storage device: a large fixed cost per request (finding the data, the command round trip, on a hard disk the seek), and a small cost per byte after that. so the unit of I/O should be big enough that the fixed cost is shared by a lot of useful data, and small enough that a random lookup doesn't drag in megabytes it won't use. postgres picked 8 KB.
+
+<Deep title="how these were measured">
+two small C programs, compiled with `cc -O2`, run on an idle M4 Pro with 24 GB of RAM, macOS, the internal SSD. RAM: chase pointers through a random cycle over 1 GiB (each hop is one dependent load, so nothing can be prefetched), and `memcpy` 8 KB from random spots of the same buffer. OS cache: `pread` 8 KB at random aligned offsets of a 2 GiB file that was just written and read back. SSD: `pread` at random aligned offsets of a 4 GiB file opened with `F_NOCACHE` and `F_RDAHEAD` off, written the same way so it was never cached, 20,000 reads for the ladder and 5,000 per size for the sweep, median reported. three runs of the ladder agreed within 4%, including the random 8 KB SSD read, at 80.6, 82.0 and 82.1 µs. the size sweep, a separate program run separately, got 72 µs for the same read: the SSD's own mood varies that much between runs. treat them as one machine's numbers, not a law: a server SSD, a cloud volume and a laptop will all differ, but the ratios hold roughly everywhere.
+
+```c
+// the heart of the SSD measurement
+int fd = open(path, O_RDONLY);
+fcntl(fd, F_NOCACHE, 1);   // don't serve from or fill the OS cache
+fcntl(fd, F_RDAHEAD, 0);   // no read-ahead
+for (int i = 0; i < reps; i++) {
+  double t0 = now();
+  pread(fd, buf, 8192, (rnd() % blocks) * 8192);
+  lat[i] = now() - t0;
+}
+// sort lat, report lat[reps / 2]
+```
+</Deep>
+
+## so, pages
+
+in postgres every table and index is a file cut into 8 KB pages, numbered from 0. a row lives on one page, and the page is the smallest thing that's ever read or written:
+
+```sql run db=lab
+SHOW block_size;
+SELECT pg_relation_size('notes') AS bytes, pg_relation_size('notes') / 8192 AS pages,
+       count(*) AS rows
+FROM notes;
+```
+
+the lab's 400 notes are 5 pages: 40,960 bytes. so how much does reading one of them cost? pick a row:
+
+<Figure wide caption={<>slide the id. the <C k="hot">page</C> it lives on is what gets read, and every other row on that page comes along. pages 0 to 3 hold 97 rows each, page 4 the last 12.</>}>
+<RowsPerPage pages={pages} source={pagesSource} />
+</Figure>
+
+<Predict question="the whole table (400 rows), or one row by its primary key: how many pages does each read?" options={["400 and 1", "5 and 1", "5 and 2", "400 and 2"]} answer={2}>
+```sql
+SELECT * FROM notes;                 -- 400 rows
+SELECT * FROM notes WHERE id = 200;  -- 1 row, through the index
+```
+<Explain>
+5 and 2. the whole table is 5 pages, and a seq scan reads each once. the single row needs 2: the index's one leaf page (400 keys fit in a single page, so the leaf is also the root), then the heap page it points at. on a bigger table the index is taller and the lookup reads 3 or 4. either way, reading 400 rows cost two and a half times what reading one did.
+</Explain>
+</Predict>
+
+```sql run db=lab
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM notes;
+```
+
+```sql run db=lab
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM notes WHERE id = 200;
+```
+
+each block starts from a cold copy, and the `Buffers:` line counts pages: `read=5` for all 400 rows, `read=2` for one. (`dirtied=5` is the scan setting [hint bits](/learn/mvcc/commit-log-and-hint-bits) on pages nobody had read since they were written, and the `Planning:` reads are the catalog and the index's metapage.) this is why the planner thinks in pages, not rows, and why a query that reads a few percent of a table through an index can lose to just reading the whole thing in order ([when postgres uses an index](/learn/indexes/index-or-scan)). and it's why everything in this part of the book, from [the layout of a page](/learn/storage/the-page) to [the cache in front of the disk](/learn/storage/buffer-pool), is about pages.
+
+## why 8 KB, and not 4 or 16
+
+8 KB is a compile-time choice in postgres (`--with-blocksize`), and almost nobody changes it. it sits between the sizes around it:
+
+```sql run db=lab
+SHOW block_size;
+SHOW wal_block_size;
+SHOW segment_size;
+```
+
+on this mac the SSD reports 4,096-byte blocks and the OS manages memory in 16 KB pages (`diskutil info` and `sysctl hw.pagesize` say so), so a postgres page is two device blocks and half an OS page. other engines pick differently: InnoDB's default page is 16 KB ([mysql 8.4 manual](https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_page_size)), sqlite's is 4 KB since version 3.12.0 ([sqlite docs](https://www.sqlite.org/pragma.html#pragma_page_size)). bigger pages mean more rows per read and shallower indexes. smaller pages mean less waste when you only wanted one row, and less to write when one row changes. there's no free lunch, just a choice made decades ago that has held up.
+
+<Gotcha title="the OS page cache is in the way, in a good way">
+in the ladder, an 8 KB read from the OS page cache took 1 µs, 80 times faster than the SSD. postgres reads through that cache like any program, so a "read" in EXPLAIN is often a 1 µs memory copy, not an 80 µs trip to the SSD. it makes benchmarks lie: run a query twice and the second is fast because of a cache, not your index. measure cold and warm, and say which.
+</Gotcha>
+
+<Interview q="why do databases read and write in pages instead of rows?">
+because storage has a large fixed cost per request and a small cost per byte. a random 8 KB read from an SSD costs about as much as a 4 KB one, and a hard disk's seek dwarfs the transfer entirely. moving fixed-size blocks amortizes that cost, lets the buffer cache and the OS manage memory in uniform units, and gives every row a stable physical address (page, slot). bonus point: it also explains why access patterns matter more than row counts: one row through an index costs several page reads, and a sequential scan reads rows by the hundred per page, in order, which storage is much faster at.
+</Interview>
+
+<Keylines>
+- a random SSD read is hundreds of times slower than memory: 82 µs against 122 ns on this mac.
+- the cost is per request: 8 KB costs what 4 KB costs, 64 KB only 1.6× more.
+- so postgres reads and writes 8 KB pages, never single rows.
+- reading one row reads its whole page, and an index lookup reads several.
+- EXPLAIN's Buffers counts pages. the planner thinks in pages too.
+</Keylines>

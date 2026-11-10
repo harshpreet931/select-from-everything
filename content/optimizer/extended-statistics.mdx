@@ -1,0 +1,143 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/city-country.pgtrace.json";
+
+{/* the figures read traces/city-country.scenario.sql, captured on PGlite with the shop dataset
+    (`pnpm pgtrace <file> --engine=pglite --twice`). for each kind of statistics object it has
+    an estimate-vs-actual step and an EXPLAIN ANALYZE step per query; steps 22-24 are the
+    expression statistics. */}
+
+export const Q = {
+  "WHERE": "SELECT * FROM customers\nWHERE city = 'Stockholm' AND country = 'SE';",
+  "GROUP BY": "SELECT city, country, count(*)\nFROM customers\nGROUP BY city, country;",
+};
+export const at = { none: [0, 2], dependencies: [5, 7], ndistinct: [11, 13], mcv: [17, 19] };
+export const runs = Object.fromEntries(Object.entries(at).flatMap(([k, [w, g]]) => [["WHERE", w], ["GROUP BY", g]].map(([q, i]) => [
+  `${k} | ${q}`,
+  { ...resultOf(trace, i), sql: (k === "none" ? "-- no extended statistics\n" : `CREATE STATISTICS cc (${k}) ON city, country FROM customers;\nANALYZE customers;\n\n`) + Q[q], plan: planOf(trace, i + 1) },
+])));
+export const expr = [trace.steps[22].result.data[0], trace.steps[24].result.data[0]];
+
+<InShort>
+postgres keeps statistics per column, so it can't know that two columns **move together**. `CREATE STATISTICS` tells it which ones do, and the next ANALYZE collects statistics about the combination. three kinds: **dependencies** (one column mostly determines another), **ndistinct** (how many distinct combinations exist) and **mcv** (the most common combinations, with their frequencies).
+
+on customers, city and country turn a 1-row estimate for Stockholm in Sweden into the real 35.
+</InShort>
+
+## the picture
+
+you know how the planner multiplies conditions as if they were unrelated ([when estimates go wrong](/learn/optimizer/misestimates))? every customer in Stockholm is in Sweden, and postgres has no idea.
+
+think of a seating chart that only says "35 of 2,000 guests are from Stockholm" and, separately, "35 of 2,000 are Swedish". to know they're the same 35 people, someone has to look at both columns of the guest list at once. that's what a statistics object asks ANALYZE to do.
+
+here's the same two queries without one, and with each kind:
+
+<Figure wide caption={<>pick a kind of statistics object and a query. without one, Stockholm in Sweden is estimated at 1 row (<C k="dead">35x off</C>) and the grouping at 200 groups instead of 41. dependencies and mcv fix the WHERE; ndistinct fixes the GROUP BY. each kind helps one kind of question.</>}>
+<RunPick options={[{ key: "statistics", values: ["none", "dependencies", "ndistinct", "mcv"] }, { key: "query", values: ["WHERE", "GROUP BY"] }]} runs={runs} trace={prov(trace)} hot={["Stockholm", "SE", "GROUP BY city, country", "dependencies", "ndistinct", "mcv"]} />
+</Figure>
+
+## the three kinds
+
+```sql run db=shop session=cc
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT * FROM customers WHERE city = 'Stockholm' AND country = 'SE';
+```
+
+1 estimated, 35 actual: 35/2,000 for the city times 35/2,000 for the country times 2,000 rows is 0.6, rounded up to 1.
+
+**dependencies** measures how often knowing one column tells you the other, as a degree from 0 to 1:
+
+```sql run session=cc
+CREATE STATISTICS customers_city_country (dependencies) ON city, country FROM customers;
+ANALYZE customers;
+SELECT dependencies FROM pg_stats_ext WHERE statistics_name = 'customers_city_country';
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT * FROM customers WHERE city = 'Stockholm' AND country = 'SE';
+```
+
+the columns are listed by number (4 is city, 5 is country). `4 => 5` is 0.97: city determines country for almost every row (the NULL cities break it). `5 => 4` is 0.09: knowing the country says little about the city, since the US has five. with the degree in hand, the planner stops multiplying in the full country selectivity, and the estimate becomes 34.
+
+dependencies are small and cheap, but they only apply to equality (and IN) conditions on plain columns, and they assume the values you ask for are compatible: ask for Paris in the US and they predict 65 rows, the share of Paris, as if the country didn't matter.
+
+**mcv** stores the most common *combinations* and their exact frequencies, like a column's MCV list but for tuples:
+
+```sql run session=cc
+DROP STATISTICS customers_city_country;
+CREATE STATISTICS customers_city_country (mcv) ON city, country FROM customers;
+ANALYZE customers;
+SELECT m.values, m.frequency
+FROM pg_statistic_ext AS s
+JOIN pg_statistic_ext_data AS d ON d.stxoid = s.oid,
+     pg_mcv_list_items(d.stxdmcv) AS m
+WHERE s.stxname = 'customers_city_country'
+ORDER BY m.frequency DESC, m.index
+LIMIT 5;
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT * FROM customers WHERE city = 'Paris' AND country = 'US';
+```
+
+the Paris in the US query, which dependencies would get wrong, comes out at 1 (as low as an estimate goes): the pair isn't in the list, and the list knows it. mcv also handles ranges, `OR` and `IS NULL`, which dependencies don't. it's the biggest of the three to store.
+
+**ndistinct** counts distinct combinations, for GROUP BY and DISTINCT:
+
+```sql run session=cc
+DROP STATISTICS customers_city_country;
+CREATE STATISTICS customers_city_country (ndistinct) ON city, country FROM customers;
+ANALYZE customers;
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+SELECT city, country, count(*) FROM customers GROUP BY city, country;
+```
+
+41 groups, exactly. without it, the planner had no count for pairs at all and fell back to 200. a group count that's 5x too high decides between a HashAggregate and a sort, and how much memory the hash table gets.
+
+<Predict question="a statistics object with only (dependencies). which estimate does it fix?" options={["WHERE a = 1 AND b = 2", "GROUP BY a, b", "WHERE a < 10 AND b < 10"]} answer={0}>
+```sql
+CREATE STATISTICS s (dependencies) ON a, b FROM t;
+```
+<Explain>
+the equality one. dependencies only apply to equality and IN conditions on the columns. a GROUP BY needs ndistinct, and ranges need mcv. with no kind listed, CREATE STATISTICS builds all three, which is the usual choice unless the table is huge and you know which one you need.
+</Explain>
+</Predict>
+
+## statistics on an expression
+
+since postgres 14 a statistics object can cover an expression, which gives the planner what an [expression index](/learn/indexes/partial-and-expression) would, without the index:
+
+```sql run db=shop
+EXPLAIN SELECT * FROM customers WHERE lower(city) = 'paris';
+CREATE STATISTICS customers_city_lower ON (lower(city)) FROM customers;
+ANALYZE customers;
+EXPLAIN SELECT * FROM customers WHERE lower(city) = 'paris';
+```
+
+<Figure caption={<>the estimate for <code>lower(city) = 'paris'</code> before and after statistics on the expression, against the real count. before, it's the default guess: 0.005 × 2,000 = 10.</>}>
+<Bars data={[
+  { label: "estimate, no statistics", value: Number(expr[0][0]), tone: "dead" },
+  { label: "estimate, with statistics", value: Number(expr[1][0]), tone: "live" },
+  { label: "real count", value: Number(expr[0][1]) },
+]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+## what it doesn't do
+
+- **only within one table.** there's no statistics object across a join, so `orders` joined to `customers` on correlated columns still multiplies.
+- **only after ANALYZE.** creating the object stores nothing until the next ANALYZE (or autovacuum's), like any statistics.
+- **only the combinations you declare.** postgres won't find correlated columns for you. the clue is a misestimate on a multi-column WHERE, and the test is the query above with and without the object.
+- **pg_upgrade doesn't keep them.** since postgres 18 pg_upgrade carries ordinary statistics over, but extended statistics need an ANALYZE after the upgrade.
+
+<Gotcha title="more columns, more cost">
+one object can cover up to 8 columns, and ndistinct and dependencies are computed for every subset of them. an object on 8 columns asks ANALYZE for a lot of combinations. declare the groups that actually appear together in WHERE clauses, a few columns each.
+</Gotcha>
+
+<Interview q="two filters on correlated columns give a 30x underestimate. how do you fix it without hints?">
+CREATE STATISTICS on the columns, then ANALYZE. for equality filters, dependencies is enough: it stores how strongly one column determines the other, and the planner stops multiplying the selectivities. mcv stores the most common combinations exactly and handles ranges and OR. for GROUP BY on both, ndistinct. check pg_stats_ext and EXPLAIN ANALYZE before and after. bonus point: extended statistics only work within one table; for a correlated join there's nothing to declare, and you'd look at rewriting or materializing the intermediate result.
+</Interview>
+
+<Keylines>
+- per-column statistics can't describe pairs, so correlated columns get multiplied.
+- CREATE STATISTICS + ANALYZE collects statistics on the combination.
+- dependencies: equality filters. ndistinct: GROUP BY and DISTINCT. mcv: exact common pairs, ranges, OR.
+- statistics on expressions (postgres 14+) give the planner what an expression index would.
+- one table only, declared by you, filled by ANALYZE.
+</Keylines>

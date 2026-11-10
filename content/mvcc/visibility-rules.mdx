@@ -1,0 +1,113 @@
+import { VisibilityFlow } from "@/components/figures/mvcc/VisibilityFlow";
+import cases from "./traces/visibility-cases.pgtrace.json";
+
+export const read = cases.steps[8];
+export const rSnap = read.xids.R.snap;
+
+<InShort>
+for every tuple a query touches, postgres answers one question: **is this version visible to me?** it looks at the tuple's **xmin** and **xmax**, asks the **commit log** how those transactions ended, and checks them against the reader's **snapshot**. eight checks, always in the same order, and the first one that applies decides.
+</InShort>
+
+## the picture
+
+you know how a page can hold three versions of the same row, and a query still returns exactly one? something picks. it isn't the newest version, or the oldest. it's whichever one this reader's snapshot says was current.
+
+think of a ledger where every line has "written by" and "struck out by" in the margin, and a reader holding a list of whose signatures to trust. a line counts if its writer is trusted and its striker isn't. that's it. the eight checks are just that sentence with the edge cases spelled out: aborted writers, your own lines, strikes that are only bookmarks (row locks).
+
+the capture behind this chapter builds one row per case on a real postgres 18.6 server. three sessions write, commit, roll back or stay open, and then a repeatable read transaction R takes its snapshot, writes a little itself, and reads the whole table:
+
+<Figure wide caption={<>how the cases were made. step through: T3 and T2 are still open when R takes its snapshot, and T1's last insert <C k="live">commits</C> after it. the side panel shows what's committed after each step.</>}>
+<SessionLanes sessions={cases.sessions} trace={cases} side="db" />
+</Figure>
+
+pick a version, and pick who's reading:
+
+<Figure wide caption={<>pick a version and a reader. the checks run top to bottom; the <C k="hot">hot</C> one decides. underneath, every version's prediction next to what postgres actually returned to that reader. "a new transaction" is the capture's rows probe, a fresh transaction reading the same page.</>}>
+<VisibilityFlow trace={cases} step={8} rel="cases" session="R" label="what" />
+</Figure>
+
+the predictions come from `src/lib/db/visibility.ts`, this book's model of postgres's `HeapTupleSatisfiesMVCC()`, and they match the server for both readers: six rows for R, seven for a new transaction, not the same six and seven. the model leaves one thing out (command ids, below), which is why it's a model.
+
+## the eight checks
+
+in the order postgres runs them, with the row from the capture that hits each one:
+
+1. **xmin aborted?** then this version never existed. invisible. *row 5: inserted, then rolled back.*
+2. **xmin is me?** my own insert: visible, unless I also deleted it. *row 10 visible, row 9 (inserted by someone else, deleted by R) is check 5.*
+3. **xmin not done at snapshot time?** in the snapshot's in-progress list, or at or past its xmax: the insert hasn't happened for me. invisible. *row 6 (T3 still running) and row 7 (committed after the snapshot).*
+4. **no xmax, or xmax only locked it?** visible. *row 1, and row 8 (locked FOR UPDATE, not deleted).*
+5. **xmax is me?** I deleted it. invisible. *row 9.*
+6. **xmax aborted?** the delete never happened. visible. *row 4.*
+7. **xmax not done at snapshot time?** the delete hasn't happened for me yet. visible. *row 3, deleted by T3, which is still running.*
+8. **otherwise:** deleted by a transaction that committed before my snapshot. invisible. *row 2.*
+
+R's snapshot was {rSnap.xmin}:{rSnap.xmax}:{rSnap.xip.join(",")}. T3 (761) and T2 (762) were running, 763 had committed, and 764 committed after R started. that's why row 11 (by 763) is visible to R and row 7 (by 764) isn't, though both committed: one was done when R looked, the other wasn't.
+
+<Figure wide caption={<>the same page as R saw it: <C k="live">green</C> is visible to R's snapshot. pick a slot for its header: xmin and xmax by commit status, and the infomask flags, including the <C k="meta">hint bits</C> earlier readers left behind.</>}>
+<PageView page={read.heap.cases[0]} xact={read.xact} snap={rSnap} me={read.xids.R.xid} who="R" focus={5} fields={["id", "what"]} provenance="real postgres 18.6 output · a native server · traces/visibility-cases, R's read" />
+</Figure>
+
+<Predict question="T3 deleted row 3 and is still running. a brand new transaction reads the table. does it see row 3?" options={["yes", "no", "it waits for T3"]} answer={0}>
+```sql
+/* T3 */ BEGIN; DELETE FROM cases WHERE id = 3;   -- still open
+/* new */ SELECT * FROM cases WHERE id = 3;        -- ?
+```
+<Explain>
+yes. T3 hasn't committed, so for any snapshot taken now its delete hasn't happened: check 7, xmax not done, visible. and nobody waits: readers never wait for writers. only another writer that wants row 3 would wait for T3.
+</Explain>
+</Predict>
+
+## your own changes
+
+checks 2 and 5 are the only ones the browser engine can show on its own. inside one transaction:
+
+```sql run db=lab session=mine
+BEGIN;
+INSERT INTO accounts VALUES (4, 'dave', 10.00);
+DELETE FROM accounts WHERE id = 3;
+SELECT ctid, xmin, xmax, owner FROM accounts ORDER BY id;
+SELECT lp, t_xmin, t_xmax FROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;
+COMMIT;
+```
+
+the page has four tuples. our SELECT returns three: dave, because his xmin is us (check 2), and not carol, because her xmax is us (check 5). no snapshot was consulted for either; "is it mine?" comes first.
+
+## the part the model leaves out: command ids
+
+"mine" isn't the whole story. a statement must not see the rows it is itself writing, or `INSERT INTO t SELECT * FROM t` would chase its own tail forever. postgres numbers the statements inside a transaction (command ids), stores the inserting one in the tuple as `cmin`, and a version written by a *later* command of your own transaction is invisible to an earlier one.
+
+```sql run db=lab session=cid
+CREATE TABLE nums (n int);
+INSERT INTO nums VALUES (1), (2), (3);
+INSERT INTO nums SELECT n + 10 FROM nums;
+SELECT count(*) FROM nums;
+BEGIN;
+INSERT INTO nums VALUES (100);
+INSERT INTO nums VALUES (200);
+SELECT cmin, xmin, n FROM nums WHERE n >= 100 ORDER BY n;
+COMMIT;
+```
+
+the doubling insert read the 3 rows that existed when it started and added 3, not more. and inside the transaction, the two inserts got command ids 0 and 1. `visibility.ts` treats every write of your own transaction as visible, which is only wrong mid-statement, and none of the captured readers is.
+
+## the shortcut: hint bits
+
+every check that asks "aborted?" or "committed?" is a lookup in the commit log, `pg_xact`, and doing that for every tuple of every scan would be slow. so the first reader to find out writes the answer into the tuple header: `HEAP_XMIN_COMMITTED`, `HEAP_XMIN_INVALID`, `HEAP_XMAX_COMMITTED`, `HEAP_XMAX_INVALID`. in the page above, the tuples written in setup carry `HEAP_XMIN_COMMITTED`; row 5's tuple carries `HEAP_XMIN_INVALID` (aborted); the ones by still-running transactions carry nothing yet. readers check the hint bits first and only fall back to the commit log when they're missing. that, and why it makes a SELECT write to disk, is [the commit log and hint bits](/learn/mvcc/commit-log-and-hint-bits).
+
+<Gotcha title="visible to you is not the same as alive">
+a version can be invisible to every new reader and still be needed: an old repeatable read snapshot may still see it. and a version can be visible to nobody new but not yet removable. VACUUM doesn't use your snapshot, it uses the oldest one anyone holds. that's a different question with a different answer: [the xmin horizon](/learn/mvcc/xmin-horizon).
+</Gotcha>
+
+the rules here are what makes isolation levels work. [read committed](/learn/transactions/read-committed) is these checks with a new snapshot per statement; [repeatable read and serializable](/learn/transactions/isolation-levels) are the same checks with one snapshot per transaction, plus, for serializable, extra bookkeeping on top ([SSI](/learn/locking/ssi)).
+
+<Interview q="how does postgres decide which version of a row a query sees?">
+for each tuple it checks xmin and xmax against the reader's snapshot and the commit log. the version is visible if its xmin committed before the snapshot (or is the reader's own transaction), and its xmax is zero, only a lock, aborted, still running at snapshot time, or newer than the snapshot. if xmax committed before the snapshot, it's deleted for this reader. the first matching rule wins, in a fixed order: aborted xmin, own xmin, xmin still running, no xmax, own xmax, aborted xmax, xmax still running, else deleted. bonus point: within your own transaction, command ids keep a statement from seeing its own writes, and hint bits in the header save a commit log lookup once someone has done it.
+</Interview>
+
+<Keylines>
+- visible = xmin committed before my snapshot (or is me) and xmax didn't commit before it.
+- eight checks in a fixed order, and the first one that applies decides.
+- "mine" comes before the snapshot. command ids decide within a transaction.
+- a row lock in xmax doesn't hide the row. an aborted xmax doesn't either.
+- the model's predictions match the real server, row for row, for two different readers.
+</Keylines>

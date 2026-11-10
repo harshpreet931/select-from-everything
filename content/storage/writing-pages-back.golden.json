@@ -1,0 +1,82 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "fda19a72b0c8f5d0": {
+      "db": "empty",
+      "sql": "SELECT name, setting, unit FROM pg_settings\nWHERE name IN ('checkpoint_timeout', 'max_wal_size', 'checkpoint_completion_target',\n               'bgwriter_delay', 'bgwriter_lru_maxpages', 'bgwriter_lru_multiplier')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25],
+            ["unit", "text", 25]
+          ],
+          "rowCount": 6,
+          "digest": "726bbb0fec4005ed",
+          "rows": [
+            ["bgwriter_delay", "200", "ms"],
+            ["bgwriter_lru_maxpages", "100", null],
+            ["bgwriter_lru_multiplier", "2", null],
+            ["checkpoint_completion_target", "0.9", null],
+            ["checkpoint_timeout", "300", "s"],
+            ["max_wal_size", "1024", "MB"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "a30396fc86b3211b": {
+      "db": "lab",
+      "sql": "SELECT backend_type, count(*) FROM pg_stat_activity GROUP BY backend_type ORDER BY backend_type;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["backend_type", "text", 25],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "53a7cc6e098c0be9",
+          "rows": [
+            ["standalone backend", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b948b955189d2d35": {
+      "db": "empty",
+      "sql": "SELECT backend_type, count(*) FROM pg_stat_activity GROUP BY backend_type ORDER BY backend_type;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["backend_type", "text", 25],
+            ["count", "int8", 20]
+          ],
+          "rowCount": 6,
+          "digest": "a0409573c9ec2fa6",
+          "rows": [
+            ["background writer", "1"],
+            ["checkpointer", "1"],
+            ["client backend", "2"],
+            ["io worker", "3"],
+            ["logical replication launcher", "1"],
+            ["walwriter", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    }
+  }
+}

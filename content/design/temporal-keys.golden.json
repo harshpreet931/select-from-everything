@@ -1,0 +1,237 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "9c85e7f8fb5202dd": {
+      "db": "empty",
+      "sql": "CREATE TABLE bookings (room int, during daterange, PRIMARY KEY (room, during WITHOUT OVERLAPS));\n\nSELECT conname, contype, conperiod, pg_get_constraintdef(oid) AS def\nFROM pg_constraint WHERE conrelid = 'bookings'::regclass AND contype = 'p';\nSELECT am.amname FROM pg_class AS c JOIN pg_am AS am ON am.oid = c.relam WHERE c.relname = 'bookings_pkey';",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["conname", "name", 19],
+            ["contype", "char", 18],
+            ["conperiod", "bool", 16],
+            ["def", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "47e90a5468439ca7",
+          "rows": [
+            ["bookings_pkey", "p", "t", "PRIMARY KEY (room, during WITHOUT OVERLAPS)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["amname", "name", 19]
+          ],
+          "rowCount": 1,
+          "digest": "071f8c8f7b46b808",
+          "rows": [
+            ["gist"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7f7f2517aac17cd0": {
+      "db": "empty",
+      "sql": "CREATE TABLE bookings (room int, during daterange, PRIMARY KEY (room, during WITHOUT OVERLAPS));",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42704",
+            "message": "data type integer has no default operator class for access method \"gist\"",
+            "hint": "You must specify an operator class for the index or define a default operator class for the data type."
+          },
+          "digest": "359c624ffcca8e93"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42704",
+        "message": "data type integer has no default operator class for access method \"gist\"",
+        "hint": "You must specify an operator class for the index or define a default operator class for the data type.",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "7b97bb32545d6093": {
+      "db": "empty",
+      "sql": "CREATE TABLE departments (\n  id    int       NOT NULL,\n  name  text      NOT NULL,\n  valid daterange NOT NULL,\n  PRIMARY KEY (id, valid WITHOUT OVERLAPS)\n);\nCREATE TABLE assignments (\n  employee text      NOT NULL,\n  dept_id  int       NOT NULL,\n  valid    daterange NOT NULL,\n  PRIMARY KEY (employee, valid WITHOUT OVERLAPS),\n  FOREIGN KEY (dept_id, PERIOD valid) REFERENCES departments (id, PERIOD valid)\n);\n-- the department was renamed on april 1: two versions, back to back.\nINSERT INTO departments VALUES (7, 'research', '[2026-01-01,2026-04-01)'), (7, 'research and data', '[2026-04-01,2026-07-01)');\n-- ada's assignment spans the rename. no single version covers it; both together do.\nINSERT INTO assignments VALUES ('ada', 7, '[2026-02-01,2026-05-01)');\n\nSELECT 'dept 7' AS who, name AS what, lower(valid), upper(valid) FROM departments\nUNION ALL\nSELECT employee, 'in dept ' || dept_id, lower(valid), upper(valid) FROM assignments\nORDER BY 3, 1;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "9bac3d1aed28504a"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["who", "text", 25],
+            ["what", "text", 25],
+            ["lower", "date", 1082],
+            ["upper", "date", 1082]
+          ],
+          "rowCount": 3,
+          "digest": "69a644115180a607",
+          "rows": [
+            ["dept 7", "research", "2026-01-01", "2026-04-01"],
+            ["ada", "in dept 7", "2026-02-01", "2026-05-01"],
+            ["dept 7", "research and data", "2026-04-01", "2026-07-01"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7f2a57991169c6c2": {
+      "db": "empty",
+      "sql": "CREATE TABLE departments (id int, name text, valid daterange, PRIMARY KEY (id, valid WITHOUT OVERLAPS));\nCREATE TABLE assignments (employee text, dept_id int, valid daterange,\n  FOREIGN KEY (dept_id, PERIOD valid) REFERENCES departments (id, PERIOD valid));\nINSERT INTO departments VALUES (7, 'research', '[2026-01-01,2026-04-01)'), (7, 'research and data', '[2026-04-01,2026-07-01)');\nINSERT INTO assignments VALUES ('grace', 7, '[2026-06-01,2026-08-01)');\nINSERT INTO assignments VALUES ('ada', 7, '[2026-02-01,2026-05-01)');\nDELETE FROM departments WHERE name = 'research';",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "9bac3d1aed28504a"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23503",
+            "message": "insert or update on table \"assignments\" violates foreign key constraint \"assignments_dept_id_valid_fkey\"",
+            "detail": "Key (dept_id, valid)=(7, [2026-06-01,2026-08-01)) is not present in table \"departments\".",
+            "schema": "public",
+            "table": "assignments",
+            "constraint": "assignments_dept_id_valid_fkey"
+          },
+          "digest": "8d9707e24fda710d"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23503",
+            "message": "update or delete on table \"departments\" violates foreign key constraint \"assignments_dept_id_valid_fkey\" on table \"assignments\"",
+            "detail": "Key (id, valid)=(7, [2026-01-01,2026-04-01)) is still referenced from table \"assignments\".",
+            "schema": "public",
+            "table": "assignments",
+            "constraint": "assignments_dept_id_valid_fkey"
+          },
+          "digest": "03df3f620b3b993f"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23503",
+        "message": "insert or update on table \"assignments\" violates foreign key constraint \"assignments_dept_id_valid_fkey\"",
+        "detail": "Key (dept_id, valid)=(7, [2026-06-01,2026-08-01)) is not present in table \"departments\".",
+        "schema": "public",
+        "table": "assignments",
+        "constraint": "assignments_dept_id_valid_fkey",
+        "statement": 3
+      },
+      "txn": "I"
+    },
+    "d697e7a88393e914": {
+      "db": "empty",
+      "sql": "CREATE TABLE departments (id int, valid daterange, PRIMARY KEY (id, valid WITHOUT OVERLAPS));\nCREATE TABLE assignments (dept_id int, valid daterange,\n  FOREIGN KEY (dept_id, PERIOD valid) REFERENCES departments (id, PERIOD valid) ON DELETE CASCADE);",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "0A000",
+            "message": "unsupported ON DELETE action for foreign key constraint using PERIOD"
+          },
+          "digest": "77c328b04af8664e"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "0A000",
+        "message": "unsupported ON DELETE action for foreign key constraint using PERIOD",
+        "statement": 1
+      },
+      "txn": "I"
+    }
+  }
+}

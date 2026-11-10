@@ -1,0 +1,260 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "e6d36fe76ff3d2b6": {
+      "db": "empty",
+      "sql": "CREATE EXTENSION vector;\nSELECT extversion FROM pg_extension WHERE extname = 'vector';\nCREATE TABLE items AS\nSELECT g AS id,\n       (SELECT array_agg((hashint4(g * 64 + d) % 1000) / 1000.0 ORDER BY d)\n        FROM generate_series(1, 32) AS d)::vector(32) AS v\nFROM generate_series(1, 10000) AS g;\nCREATE TABLE queries AS\nSELECT q AS qid,\n       (SELECT array_agg((hashint4(-q * 64 - d) % 1000) / 1000.0 ORDER BY d)\n        FROM generate_series(1, 32) AS d)::vector(32) AS v\nFROM generate_series(1, 50) AS q;\nANALYZE items;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id FROM items ORDER BY v <-> (SELECT v FROM queries WHERE qid = 1) LIMIT 10;",
+      "statements": [
+        {
+          "tag": "CREATE EXTENSION",
+          "command": "CREATE EXTENSION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "be6ac943c13ae45e"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["extversion", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "158d56a9a88ec432",
+          "rows": [
+            ["0.8.6"]
+          ]
+        },
+        {
+          "tag": "SELECT 10000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "2a5c22c0794dc736"
+        },
+        {
+          "tag": "SELECT 50",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 50,
+          "digest": "5c18873c6241fda7"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e9ea2cf09baac279"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "130caf4f8d9c32dc",
+          "rows": [
+            ["Limit (actual rows=10.00 loops=1)"],
+            ["  Buffers: shared hit=261"],
+            ["  InitPlan 1"],
+            ["    ->  Seq Scan on queries (actual rows=1.00 loops=1)"],
+            ["          Filter: (qid = 1)"],
+            ["          Rows Removed by Filter: 49"],
+            ["          Buffers: shared hit=2"],
+            ["  ->  Sort (actual rows=10.00 loops=1)"],
+            ["        Sort Key: ((items.v <-> (InitPlan 1).col1))"],
+            ["        Sort Method: top-N heapsort  Memory: 25kB"],
+            ["        Buffers: shared hit=261"],
+            ["        ->  Seq Scan on items (actual rows=10000.00 loops=1)"],
+            ["              Buffers: shared hit=258"],
+            ["Planning:"],
+            ["  Buffers: shared hit=29"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "802fbbc67411c9f2": {
+      "db": "empty",
+      "sql": "CREATE TABLE truth AS\nSELECT qid, (SELECT array_agg(id ORDER BY d, id)\n             FROM (SELECT id, i.v <-> q.v AS d FROM items AS i ORDER BY d, id LIMIT 10) AS nn) AS ids\nFROM queries AS q;\n-- recall@10 over the 50 queries, with one setting changed for the duration\nCREATE FUNCTION recall(setting text DEFAULT NULL, val int DEFAULT NULL)\nRETURNS numeric LANGUAGE plpgsql AS $$\nDECLARE r record; hits int := 0; got int[];\nBEGIN\n  IF setting IS NOT NULL THEN PERFORM set_config(setting, val::text, true); END IF;\n  FOR r IN SELECT t.ids, q.v FROM truth AS t JOIN queries AS q USING (qid) LOOP\n    SELECT array_agg(id) INTO got FROM (SELECT id FROM items ORDER BY v <-> r.v LIMIT 10) AS s;\n    hits := hits + (SELECT count(*) FROM unnest(r.ids) AS x WHERE x = ANY (got));\n  END LOOP;\n  RETURN round(hits / 500.0, 3);\nEND $$;\nSELECT recall() AS exact_recall;",
+      "statements": [
+        {
+          "tag": "SELECT 50",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 50,
+          "digest": "baa2805f98dd7cc4"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e913721f0f0ddd54"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["exact_recall", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "25cdbd9162050d9c",
+          "rows": [
+            ["1.000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "9d9a3eb6bd42c18f": {
+      "db": "empty",
+      "sql": "CREATE INDEX items_hnsw ON items USING hnsw (v vector_l2_ops);\nSELECT ef AS ef_search, recall('hnsw.ef_search', ef)\nFROM unnest(ARRAY[10, 20, 40, 100, 200]) AS ef\nORDER BY ef;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["ef_search", "int4", 23],
+            ["recall", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "8a6bb6131978f9ed",
+          "rows": [
+            ["10", "0.680"],
+            ["20", "0.868"],
+            ["40", "0.954"],
+            ["100", "0.990"],
+            ["200", "0.998"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "b25a614c4d66a380": {
+      "db": "empty",
+      "sql": "SET hnsw.ef_search = 40;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id FROM items ORDER BY v <-> (SELECT v FROM queries WHERE qid = 1) LIMIT 10;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "169257be23034949",
+          "rows": [
+            ["Limit (actual rows=10.00 loops=1)"],
+            ["  Buffers: shared hit=1091"],
+            ["  InitPlan 1"],
+            ["    ->  Seq Scan on queries (actual rows=1.00 loops=1)"],
+            ["          Filter: (qid = 1)"],
+            ["          Rows Removed by Filter: 49"],
+            ["          Buffers: shared hit=2"],
+            ["  ->  Index Scan using items_hnsw on items (actual rows=10.00 loops=1)"],
+            ["        Order By: (v <-> (InitPlan 1).col1)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=1091"],
+            ["Planning:"],
+            ["  Buffers: shared hit=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "96c9632fcc542496": {
+      "db": "empty",
+      "sql": "DROP INDEX items_hnsw;\nCREATE INDEX items_ivf ON items USING ivfflat (v vector_l2_ops) WITH (lists = 100);\nSELECT p AS probes, recall('ivfflat.probes', p)\nFROM unnest(ARRAY[1, 5, 10, 20, 50]) AS p\nORDER BY p;",
+      "statements": [
+        {
+          "tag": "DROP INDEX",
+          "command": "DROP INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "63775631647b862a"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["probes", "int4", 23],
+            ["recall", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "7c49ebbba09cc3d1",
+          "rows": [
+            ["1", "0.152"],
+            ["5", "0.390"],
+            ["10", "0.572"],
+            ["20", "0.774"],
+            ["50", "0.970"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "565ccc75de6f0c2e": {
+      "db": "empty",
+      "sql": "CREATE INDEX items_hnsw2 ON items USING hnsw (v vector_l2_ops);\nSELECT relname AS rel, pg_relation_size(oid) / 8192 AS pages\nFROM pg_class WHERE relname IN ('items', 'items_ivf', 'items_hnsw2')\nORDER BY pages;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["rel", "name", 19],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "33b089c722f71fa3",
+          "rows": [
+            ["items_ivf", "219"],
+            ["items", "256"],
+            ["items_hnsw2", "532"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    }
+  }
+}

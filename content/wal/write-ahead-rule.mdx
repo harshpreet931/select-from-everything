@@ -1,0 +1,127 @@
+import trace from "./traces/write-ahead.pgtrace.json";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* the WalStrip and the byte counts read traces/write-ahead (PGlite, the lab dataset), so they
+    match the runnable blocks' engine. */}
+
+export const recs = trace.steps.slice(1, 4).flatMap((s) => s.wal.records);
+export const walBytes = recs.reduce((a, r) => a + r.len, 0);
+export const upd = trace.steps[1].wal.records[0];
+export const commitRec = trace.steps[3].wal.records[0];
+
+<InShort>
+the **write-ahead rule**: a change is described in the **WAL** before the data page it changes is allowed on disk. a write changes the page in memory, appends a record to the log, and stamps the page with that record's **LSN**. COMMIT then flushes the log up to its own commit record, one small sequential write, and returns. the table's pages follow whenever it suits the server, but never ahead of their log.
+</InShort>
+
+## the picture
+
+you know how a COMMIT comes back in well under a millisecond, but a transaction can change rows scattered over a hundred pages? writing a hundred 8 KB pages to a hundred places on disk, and waiting for all of them, would take much longer than that. postgres doesn't. at COMMIT it writes one thing: the end of the log.
+
+think of a shop's day book. every sale is written in the book, in pen, in order, the moment it happens (the WAL). the shelves (the table's pages) get restocked when someone has a minute. if the shop burns down overnight, the day book in the safe says exactly what the shelves should hold. the one rule: never touch a shelf for a sale that isn't in the book yet. a shelf that's ahead of the book can't be explained after a fire. a shelf that's behind it can always be caught up.
+
+<Figure caption={<>the order of things in one UPDATE ... COMMIT. hover a stage. the only disk write COMMIT waits for is the third one.</>}>
+<Flow
+  stages={[
+    { label: "change the page", sub: "in shared buffers", note: "the new tuple goes into the page in memory. the buffer is now dirty." },
+    { label: "append a record", sub: "to wal_buffers", note: "the change is described in a WAL record, in memory. the page's pd_lsn is set to the end of that record." },
+    { label: "COMMIT: flush", sub: "pg_wal, fsync", note: "a commit record is appended, then the log is written and flushed up to its end. now the transaction is durable." },
+    { label: "write the page", sub: "later", note: "the checkpointer, the background writer, or a backend that needs the buffer. before writing, it makes sure the WAL is flushed at least up to the page's pd_lsn." },
+  ]}
+/>
+</Figure>
+
+two pointers matter: how far the log has been **inserted** (written into wal_buffers) and how far it's been **flushed** (on disk, durable). and every page carries **pd_lsn**, the end of the last record that changed it. the rule, in one line: a page may be written only if `flushed ≥ pd_lsn`.
+
+## watch it on one page
+
+here's one transaction on lab's `accounts`, captured on the same engine the run buttons use. step through and watch the flush line, and the page's pd_lsn:
+
+<Figure wide caption={<>step through. each UPDATE is a record past the <C k="live">flush line</C> (dashed: only in memory), and the page's pd_lsn moves to the end of it. the page is <C k="accent">dirty</C> the whole time. COMMIT moves the flush line past everything; CHECKPOINT, much later, writes the page.</>}>
+<WalStrip trace={trace} />
+</Figure>
+
+two updates, {upd.len} bytes of WAL each, then a {commitRec.len}-byte commit record. at COMMIT the server wrote {walBytes} bytes of log, in one sequential piece, and that's what made the transfer durable. the 8 KB page it changed was still only in memory, and stayed there until the CHECKPOINT. (the flush line sits in front of every record because the dataset load before step 1 left a lot of WAL unflushed: nothing had committed since.)
+
+you can read the same three numbers yourself. inside the transaction, the page is ahead of the flushed log:
+
+```sql run db=lab session=rule
+SELECT count(*) FROM accounts;
+BEGIN;
+UPDATE accounts SET balance = balance - 25.00 WHERE id = 1;
+SELECT lsn AS page_lsn,
+       pg_current_wal_insert_lsn() AS inserted,
+       pg_current_wal_flush_lsn() AS flushed
+FROM page_header(get_raw_page('accounts', 0));
+```
+
+the page's LSN is past the flushed position: its change exists only in wal_buffers and in the page itself, both in memory. if the server died now, both would vanish together, and that's fine, because nothing was promised. (the inserted position is further on than the page's LSN: reading the catalog for this query wrote some WAL of its own, hint-bit page images with checksums on. see [full-page writes](/learn/wal/full-page-writes).)
+
+## the rule, enforced
+
+so what happens if the server needs that buffer for something else before the transaction ends? it can write the dirty page out, uncommitted change and all. but first it has to flush the WAL up to the page's LSN. `pg_buffercache_evict()` forces exactly that situation:
+
+<Predict question="the transaction above hasn't committed. you force its dirty page out of shared buffers. what happens to the flushed position?" options={["nothing: no commit, no flush", "it moves past the page's LSN", "the eviction fails"]} answer={1}>
+```sql
+-- still inside the transaction from above
+SELECT pg_buffercache_evict(bufferid) FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;
+SELECT pg_current_wal_flush_lsn();   -- before or after page_lsn?
+```
+<Explain>
+it moves. writing a dirty page goes through the buffer manager, and the buffer manager calls XLogFlush(pd_lsn) before it hands the page to the file. so an uncommitted change can reach the table's file, but only after the WAL describing it is on disk. if the server crashes right after, recovery replays that record onto the page again (it's already there), the transaction has no commit record, and its version is invisible. no damage.
+</Explain>
+</Predict>
+
+```sql run session=rule
+SELECT buffer_evicted
+FROM pg_buffercache_evict((SELECT bufferid FROM pg_buffercache
+                           WHERE relfilenode = pg_relation_filenode('accounts')
+                             AND relforknumber = 0));
+SELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;
+COMMIT;
+SELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;
+```
+
+the flushed position jumped to the insert position the moment the page was evicted, before any COMMIT. the flush covers everything inserted so far, not just up to the page's LSN, because flushing a little more costs nothing extra. then COMMIT appends its record and flushes again.
+
+in the textbook's words, postgres's buffer manager is **steal** (a page with uncommitted changes may be written to disk) and **no-force** (COMMIT doesn't force the changed pages to disk). that's the combination that needs both redo (for committed changes that were never written) and, in the textbook, undo (for uncommitted ones that were). postgres gets away without undo, which [ARIES](/learn/wal/aries) explains.
+
+## why log first
+
+because the log is the cheap thing to make durable.
+
+<Figure caption={<>bytes made durable at COMMIT for the transfer above, against the size of the one page it changed. the page is written later, at a checkpoint, along with every other change to it since.</>}>
+<Bars
+  unit=" B"
+  data={[
+    { label: "WAL flushed at COMMIT", value: walBytes, tone: "live" },
+    { label: "the page it changed", value: 8192 },
+  ]}
+/>
+<Provenance trace={{ engine: trace.engine, scenario: trace.scenario }} />
+</Figure>
+
+| | the WAL | the table's pages |
+| --- | --- | --- |
+| written at COMMIT | yes, up to the commit record | no |
+| shape of the write | appended, sequential, a few bytes per change | 8 KB per page, wherever the page lives |
+| how many fsyncs | one per flush, shared by everyone committing at once | a batch at the next checkpoint |
+| if lost in a crash | the transaction never committed | rebuilt from the WAL |
+
+a change is described in tens of bytes; the page it lands on is 8,192. postgres makes the small, sequential thing durable right away and lets the big, scattered things wait, sometimes long enough that one page absorbs hundreds of changes before it's written once. that's also why the WAL is where everything else hangs off: [crash recovery](/learn/wal/crash-recovery) replays it, [replicas](/learn/wal/streaming-replication) stream it, [backups](/learn/wal/backups-and-pitr) archive it.
+
+<Gotcha title="the rule only works if fsync tells the truth">
+"flushed" means postgres called fsync (or wrote with O_DSYNC) and the operating system said done. with `fsync = off`, or on a drive that acknowledges writes it's only holding in a volatile cache, a power cut can lose WAL that postgres believes is on disk while keeping pages written after it. then the page is ahead of the log, the one thing the rule exists to prevent, and recovery can't fix it. `fsync = off` is for throwaway data you could reload, never for anything you'd miss. and [unlogged tables](/learn/writes/copy-and-bulk-loads) opt out of the rule on purpose: no WAL, so they're emptied after a crash.
+</Gotcha>
+
+<Interview q="why does a database write to a log before writing to its data files?">
+because making a small sequential append durable is much cheaper than making scattered page writes durable. the write-ahead rule says a change's log record must reach stable storage before the page it changes can. so at commit, the database only has to flush the log up to the commit record. the data pages can be written later, in batches, by a checkpoint. after a crash, replaying the log from the last checkpoint rebuilds any page that missed its write. in postgres every page header holds pd_lsn, the LSN of the last record applied to it, and the buffer manager flushes the WAL up to that LSN before writing the page out. bonus point: name it in textbook terms, steal plus no-force, which needs redo; postgres's MVCC is why it doesn't also need undo.
+</Interview>
+
+<Keylines>
+- log first, data later: no page reaches disk before the WAL that describes it.
+- pd_lsn on every page is the end of the last record that changed it. the rule is flushed ≥ pd_lsn.
+- COMMIT waits for one sequential flush of the log, not for any table page.
+- an uncommitted change can be written to disk (steal), but only behind its WAL.
+- the rule assumes fsync is honest. fsync = off breaks it.
+</Keylines>

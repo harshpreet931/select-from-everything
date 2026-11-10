@@ -1,0 +1,159 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { planOf, prov, resultOf, runsOf } from "@/lib/db/captured";
+import trace from "./traces/arrays.pgtrace.json";
+
+{/* the strip, the operator switch, the unnest pair and the plan read traces/arrays.scenario.sql,
+    captured on PGlite with the shop dataset (products.tags is a text[]). */}
+
+export const lit = resultOf(trace, 0).rows[0];
+export const elems = lit[0].slice(1, -1).split(",");
+export const ops = runsOf(trace, ["= ANY", "@>", "&&", "<@"], 1);
+export const before = resultOf(trace, 5);
+export const after = resultOf(trace, 6);
+export const plan = planOf(trace, 8);
+export const source = prov(trace);
+
+<InShort>
+an **array** column holds a list of values of one type: `text[]`, `int[]`. subscripts start at **1**. `= ANY` asks "is it in the list", `@>` "does it contain all of these", `&&` "any of these", and **unnest** turns the list back into rows. a **GIN** index makes the containment questions fast.
+
+the day you need to rename an element everywhere, count by element, or point a foreign key at one, it should have been a table.
+</InShort>
+
+## the picture
+
+you know how a spreadsheet cell sometimes ends up holding "red, large, sale"? that's a list in a cell, and you can't sort, count or filter by one of them without splitting the text. an array is the database doing that properly: a real list, with types and operators.
+
+think of a pill organiser: one box per row, with numbered compartments, starting at 1. you can ask whether a box has a given pill, and you can tip a box out onto the table to look at each pill separately (unnest). what you can't do is make two boxes share a pill.
+
+<Figure caption={<>a four-element array with its subscripts. <code>a[1]</code> is <C k="hot">{lit[1]}</C>, <code>a[2:3]</code> is the slice {lit[3]}, and <code>a[0]</code> isn't an error, it's NULL: there's nothing there.</>}>
+<ArrayViz label="ARRAY['eco', 'new', 'sale', 'gift']" values={elems} base={1} tones={{ 0: "hot" }} range={[1, 2, "live"]} />
+<Provenance trace={source} />
+</Figure>
+
+## literals and subscripts
+
+two ways to write one: the `ARRAY[...]` constructor, or a string in braces that gets cast. quotes inside the braces protect spaces and commas, and an unquoted `NULL` is a NULL element:
+
+```sql run
+SELECT ARRAY['eco', 'new']                      AS constructor,
+       '{eco,new}'::text[]                      AS literal,
+       '{"left handed", NULL, "NULL", ""}'::text[] AS tricky,
+       (ARRAY[10, 20, 30, 40])[2:3]             AS slice;
+```
+
+`"NULL"` in quotes is the four-letter string; bare NULL is the missing value. and an empty array has no length at all, which catches people:
+
+```sql run
+SELECT cardinality('{}'::int[]) AS cardinality, array_length('{}'::int[], 1) AS array_length;
+```
+
+`array_length` returns NULL for an empty array (it has no first dimension to measure). `cardinality` says 0.
+
+## asking about elements
+
+shop's products have a `tags text[]` column. four operators cover almost every question:
+
+<Figure wide caption={<>the same table, four questions. pick an operator. <code>= ANY</code> tests one value against the list, the other three compare two whole arrays as sets, so order and repeats don't matter.</>}>
+<RunPick options={[{ key: "WHERE", values: ["= ANY", "@>", "&&", "<@"] }]} runs={ops} hot={["= ANY (tags)", "@>", "&&", "<@"]} file="tags.sql" trace={source} />
+</Figure>
+
+<Predict options={["true", "false", "NULL"]} answer={2}>
+```sql
+SELECT 3 = ANY (ARRAY[1, NULL]);
+```
+<Explain>
+NULL. `x = ANY (list)` is a chain of ORs, `3 = 1 OR 3 = NULL`: false OR unknown is unknown. if 3 had been in the list, the answer would be true no matter what else was there. the same logic as IN, from [NULL and three-valued logic](/learn/basics/null-and-three-valued-logic).
+</Explain>
+</Predict>
+
+```sql run
+SELECT 3 = ANY (ARRAY[1, NULL]) AS not_found, 1 = ANY (ARRAY[1, NULL]) AS found, 'x' = ANY ('{}'::text[]) AS empty_list;
+```
+
+## unnest: back to rows
+
+`unnest` takes an array and returns one row per element. used with LATERAL (or just a comma in FROM), it works row by row, and `WITH ORDINALITY` adds the position:
+
+<Figure wide caption={<>four products before and after unnest. each element becomes a row, numbered by <code>pos</code>. product 3 has an empty array, so it makes no rows and <C k="dead">disappears</C>; LEFT JOIN LATERAL ... ON true would keep it.</>}>
+<div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+<ResultTable columns={before.columns.map((c) => c.name)} rows={before.rows} rowTones={before.rows.map((r) => (r[0] === "3" ? "dead" : null))} dense />
+<ResultTable columns={after.columns.map((c) => c.name)} rows={after.rows} dense />
+</div>
+<Provenance trace={source} />
+</Figure>
+
+the reverse is `array_agg`, which collects rows into an array (with an ORDER BY inside, or the order is whatever the rows arrived in):
+
+```sql run db=shop
+SELECT tag, count(*) AS products, array_agg(id ORDER BY id) FILTER (WHERE id < 30) AS some_ids
+FROM products, unnest(tags) AS tag
+GROUP BY tag
+ORDER BY count(*) DESC, tag
+LIMIT 4;
+```
+
+## a GIN index on an array
+
+a b-tree indexes a whole value, which is useless for "contains sale". a GIN index is an [inverted index](/learn/indexes/index-types): one entry per element, each pointing at every row that has it. it serves `@>`, `&&`, `<@` and `=`:
+
+```sql run
+CREATE TABLE posts AS
+SELECT i AS id, CASE WHEN i % 97 = 0 THEN ARRAY['rare', 'sql'] ELSE ARRAY['sql'] END AS tags
+FROM generate_series(1, 20000) AS i;
+CREATE INDEX posts_tags ON posts USING gin (tags);
+ANALYZE posts;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM posts WHERE tags @> '{rare}';
+EXPLAIN (COSTS OFF) SELECT count(*) FROM posts WHERE 'rare' = ANY (tags);
+```
+
+the first uses the index; `= ANY` with the column on the right doesn't, because the GIN operator class only knows the array-vs-array operators. write `tags @> ARRAY['rare']` when you want the index. here's the first plan run for real, on posts with a few more tags each:
+
+<Figure caption={<>EXPLAIN ANALYZE of a containment query on 20,000 posts. the bitmap index scan on the GIN index finds exactly the 206 matching rows, and the heap scan only visits those.</>}>
+<PlanTree plan={plan} show={["actual"]} provenance={<Provenance trace={source} />} />
+</Figure>
+
+[GIN](/learn/index-internals/gin) shows the posting lists inside.
+
+## the day it should have been a table
+
+arrays are good for small lists you read as a unit and rarely ask questions about: a few labels, a list of scores. they go wrong when the elements start behaving like things. three signs, all real:
+
+**renaming an element touches every row that has it.** retire "eco" for "green":
+
+```sql run db=shop
+UPDATE products SET tags = array_replace(tags, 'eco', 'green') WHERE tags @> '{eco}';
+```
+
+34 rows rewritten (each one a new row version, see [an UPDATE is an INSERT](/learn/mvcc/update-is-insert)), and a typo in one row ("Eco") goes unnoticed.
+
+**a foreign key can't point at an element.** there's no way to say "every tag must exist in tags":
+
+```sql run expect=error
+CREATE TABLE tag_names (name text PRIMARY KEY);
+CREATE TABLE items (id int PRIMARY KEY, tags text[] REFERENCES tag_names (name));
+```
+
+**every question needs unnest first**, and anything you want to know *about* a tag (who added it, when, its colour) has nowhere to live. the table version answers all three:
+
+```sql run db=shop
+CREATE TABLE tags (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text UNIQUE NOT NULL);
+CREATE TABLE product_tags (product_id int REFERENCES products, tag_id int REFERENCES tags, PRIMARY KEY (product_id, tag_id));
+INSERT INTO tags (name) SELECT DISTINCT tag FROM products, unnest(tags) AS tag ORDER BY tag;
+INSERT INTO product_tags SELECT p.id, t.id FROM products AS p, unnest(p.tags) AS u (tag) JOIN tags AS t ON t.name = u.tag;
+UPDATE tags SET name = 'green' WHERE name = 'eco';
+SELECT count(*) AS products_now_green FROM product_tags JOIN tags ON tags.id = tag_id WHERE name = 'green';
+```
+
+the rename is one row. the foreign keys keep every link valid. this is [first normal form](/learn/design/normal-forms) arriving the practical way, and the [anti-patterns](/learn/design/anti-patterns) chapter has more lists that wanted to be tables.
+
+<Interview q="when would you store an array in a column instead of a child table?">
+when the list is small, owned by the row, read and written as a whole, and its elements have no identity of their own: a few labels, coordinates, a fixed set of scores. a GIN index makes containment queries (@>, &&) fast. move to a child table as soon as you need to reference elements with foreign keys, rename or update one element across rows, attach attributes to elements, or run most queries through unnest. bonus point: arrays are 1-based, array_length of an empty array is NULL, and `= ANY (col)` can't use a GIN index while `col @> ARRAY[x]` can.
+</Interview>
+
+<Keylines>
+- an array is a typed list in a column, subscripted from 1.
+- `= ANY` asks about one value; `@>`, `&&` and `<@` compare arrays as sets.
+- unnest turns elements into rows, WITH ORDINALITY numbers them, array_agg goes back.
+- a GIN index serves @> and &&, not = ANY.
+- renaming, referencing or describing elements means it should have been a table.
+</Keylines>

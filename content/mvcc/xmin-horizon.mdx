@@ -1,0 +1,122 @@
+import { LongTxn } from "@/components/figures/mvcc/LongTxn";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import longTxn from "./traces/long-txn.pgtrace.json";
+import idle from "./traces/idle-timeout.pgtrace.json";
+
+export const tLines = (log) => log.slice(0, log.findIndex((l, i) => i > 0 && l.startsWith("INFO:  vacuuming"))).filter((l) => /finished|tuples:|removable cutoff/.test(l)).map((l) => l.trim()).join("\n");
+export const held = tLines(longTxn.steps[2].log);
+export const freed = tLines(longTxn.steps[5].log);
+export const activity = resultOf(longTxn, 3);
+export const t1snap = longTxn.steps[0].xids.T1.snap;
+export const idleLog = [idle.steps[2].log[0], ...tLines(idle.steps[4].log).split("\n")].join("\n");
+
+<InShort>
+VACUUM can only remove a dead version once **no snapshot anywhere** could still see it. the oldest snapshot xmin (or xid) any session still holds is the **xmin horizon**, and everything deleted after it stays put: **dead, but not yet removable**. one transaction left open in an idle session holds back cleanup of every table in the database.
+</InShort>
+
+## the picture
+
+you know how [snapshots](/learn/mvcc/snapshots) let an old transaction keep reading old versions? those versions have to physically stay on the page for as long as the transaction might look. postgres can't know which rows it will read, so it keeps all of them: every version deleted after that snapshot was taken.
+
+think of a museum that keeps every exhibit any visitor in the building might still come back to see. one visitor who wandered in at 9 and never left means nothing replaced since 9 can go to storage, in any gallery, however many visitors have come and gone since. the oldest visitor still inside is the horizon.
+
+the capture is a real postgres 18.6 server. T1 opens a [repeatable read](/learn/transactions/isolation-levels) transaction and reads (that's all it does). T2 deletes half the table. then VACUUM, twice.
+
+<Figure wide caption={<>step through. after T2's delete, the deleted rows are <C k="dead">dead, but not yet removable</C> (dashed): T1's snapshot predates the delete. the first VACUUM leaves every one of them. once T1 commits they turn removable, and the second VACUUM frees them. the <C k="meta">horizon</C> is the oldest snapshot xmin or xid anything still holds.</>}>
+<LongTxn trace={longTxn} rel="t" />
+</Figure>
+
+T1 took its snapshot before T2 had even started: {t1snap.xmin}:{t1snap.xmax}, nothing in progress. T2 then got xid 759 and deleted eight rows. here's what VACUUM said, both times:
+
+<Figure caption={<>VACUUM VERBOSE, from the server log, while T1 was open and after it committed. the <C k="dead">not yet removable</C> count, and the removable cutoff: the horizon VACUUM computed.</>}>
+<SqlPanel code={held} lang="text" hot={[2, 3]} nolines file="while T1 is open" />
+<SqlPanel code={freed} lang="text" hot={[2]} nolines file="after T1 commits" />
+<Provenance trace={prov(longTxn)} />
+</Figure>
+
+"removable cutoff: 759": versions deleted by xids below 759 can go. T2's delete *is* 759, so nothing could. after T1 ends, the cutoff moves to 760 and all eight go.
+
+## who holds the horizon
+
+<Predict question="T1 opened a repeatable read transaction, ran one SELECT, and has been idle for an hour. it never wrote anything, so it has no xid. does it hold back VACUUM?" options={["no: no xid, no effect", "yes: its snapshot does", "only on the tables it read"]} answer={1}>
+```sql
+/* T1 */ BEGIN ISOLATION LEVEL REPEATABLE READ;
+/* T1 */ SELECT count(*) FROM t;
+/* T1 */ -- ... an hour of nothing
+```
+<Explain>
+yes, on every table in the database. the horizon comes from snapshots, not xids: T1's snapshot could still be used to read any table, so nothing deleted after it was taken can be removed, anywhere. that's exactly the capture above: T1 never wrote, and VACUUM kept all eight rows.
+</Explain>
+</Predict>
+
+`pg_stat_activity` shows it. `backend_xid` is the session's xid if it has one, `backend_xmin` the xmin of its snapshot:
+
+<Figure caption={<>pg_stat_activity during the capture. T1 has no xid but holds <C k="meta">backend_xmin</C> 759, and it's idle in transaction: the classic shape.</>}>
+<ResultTable columns={activity.columns} rows={activity.rows} rowTones={activity.rows.map((r) => (r[2] ? "hot" : null))} />
+<Provenance trace={prov(longTxn)} />
+</Figure>
+
+your own session's, in the browser (one session, so no one to hold anything back):
+
+```sql run db=lab session=h
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM accounts;
+SELECT backend_xid, backend_xmin, state FROM pg_stat_activity WHERE backend_xmin IS NOT NULL;
+COMMIT;
+SELECT backend_xid, backend_xmin, state FROM pg_stat_activity WHERE backend_xmin IS NOT NULL;
+```
+
+inside the transaction, backend_xmin is 753 and there's no xid. after COMMIT it still says 753, and state is still active: that's the snapshot of the query reading pg_stat_activity, which is itself running. a session can't watch itself sit idle. on a server you look at the other sessions' rows, and the query to run when vacuum seems stuck sorts them by the age of those two:
+
+```sql
+SELECT pid, state, backend_xid, backend_xmin,
+       age(backend_xmin) AS xmin_age, now() - xact_start AS open_for, left(query, 60) AS query
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL OR backend_xid IS NOT NULL
+ORDER BY greatest(age(backend_xmin), age(backend_xid)) DESC;
+```
+
+sessions aren't the only thing that holds the horizon:
+
+- **a long query**, even at read committed. a single statement that runs for an hour holds its snapshot for that hour.
+- **a prepared transaction** (`PREPARE TRANSACTION`, [two-phase commit](/learn/scale/two-phase-commit)) that nobody committed: `pg_prepared_xacts`. it survives restarts.
+- **a replication slot** with `xmin` or `catalog_xmin` set: `pg_replication_slots`. a logical slot whose consumer went away holds back catalog cleanup forever.
+- **a standby with `hot_standby_feedback = on`** reports its oldest snapshot to the primary, so a long query on a [read replica](/learn/scale/read-replicas) holds back vacuum on the primary.
+
+## ending the forgotten ones
+
+the most common culprit is an application that [opened a transaction](/learn/transactions/begin-commit-rollback) and never finished it: a connection checked out of a pool, an exception path that forgot to roll back, a person in psql who went to lunch. postgres can end those for you. `idle_in_transaction_session_timeout` (off by default, 0) ends any session that sits idle inside a transaction for longer than that:
+
+```sql run session=h
+SHOW idle_in_transaction_session_timeout;
+SET idle_in_transaction_session_timeout = '5min';
+SHOW idle_in_transaction_session_timeout;
+```
+
+the same scenario as above on a real server, with T1's session given a 500 ms limit:
+
+<Figure wide caption={<>step through. T1 reads and goes quiet. a second later the server has ended its session (the log line), its snapshot is gone, and VACUUM removes all eight rows. T1's application finds out on its next statement, when the connection is closed.</>}>
+<SessionLanes sessions={idle.sessions} trace={idle} side="none" />
+<SqlPanel code={idleLog} lang="text" hot={[1, 3]} nolines file="server log" />
+</Figure>
+
+set it for the whole server or per role, at something comfortably longer than any legitimate pause in your application. `transaction_timeout` <Since v={17} /> caps the whole transaction instead, busy or idle, and `statement_timeout` caps single statements.
+
+<Gotcha title="the forgotten transaction doesn't have to touch your table">
+a session idle in transaction on a tiny config table still pins the horizon for the 500 GB events table, because its snapshot could read anything. bloat on a busy table with "dead but not yet removable" in its vacuum logs means: go find the oldest backend_xmin. no autovacuum setting can work around it.
+</Gotcha>
+
+the horizon matters for [freezing](/learn/mvcc/freezing-and-wraparound) too: vacuum can't freeze tuples newer than it, so a transaction left open for days also stops relfrozenxid from advancing. and it's one reason postgres can't just reuse undo space the way [undo-log databases](/learn/mvcc/undo-logs) do: there, a long reader runs out of old versions instead.
+
+<Interview q="vacuum runs but the table keeps growing, and the logs say rows are dead but not yet removable. what's going on?">
+something holds the xmin horizon back: a snapshot older than the deletes. vacuum can only remove versions that no snapshot could still see, so it keeps everything deleted after the oldest backend_xmin. check pg_stat_activity for old backend_xmin or backend_xid (usually a session idle in transaction, or a very long query), pg_prepared_xacts for orphaned prepared transactions, and pg_replication_slots for slots holding xmin or catalog_xmin, plus standbys with hot_standby_feedback. end the culprit and the next vacuum cleans up. bonus point: set idle_in_transaction_session_timeout so it can't happen silently, and remember a read-only transaction with no xid still holds the horizon through its snapshot.
+</Interview>
+
+<Keylines>
+- VACUUM removes a version only if no snapshot anywhere could still see it.
+- the horizon is the oldest snapshot xmin or xid held by anyone: sessions, prepared transactions, slots, standbys.
+- one idle transaction holds back cleanup in every table of the database, even if it never wrote.
+- VACUUM VERBOSE says it: "dead but not yet removable", and the removable cutoff.
+- `idle_in_transaction_session_timeout` ends the forgotten ones.
+</Keylines>

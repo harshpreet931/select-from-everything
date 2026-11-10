@@ -1,0 +1,276 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f21affe0a02347a6": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'UTC';\nCREATE TABLE customers (\n  id         int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  email      text NOT NULL,\n  name       text NOT NULL,\n  deleted_at timestamptz\n);\nCREATE UNIQUE INDEX customers_email_live ON customers (email) WHERE deleted_at IS NULL;\n\nINSERT INTO customers (email, name, deleted_at) VALUES\n  ('ada@example.com', 'Ada Lovelace', '2026-03-10 09:00+00'),\n  ('ada@example.com', 'Ada Lovelace', NULL),\n  ('grace@example.com', 'Grace Okafor', NULL);\nSELECT id, email, deleted_at FROM customers ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "01f7a8f15b10540a"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["email", "text", 25],
+            ["deleted_at", "timestamptz", 1184]
+          ],
+          "rowCount": 3,
+          "digest": "7b426864a0360ad4",
+          "rows": [
+            ["1", "ada@example.com", "2026-03-10 09:00:00+00"],
+            ["2", "ada@example.com", null],
+            ["3", "grace@example.com", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2cdfba6c9ab94ef9": {
+      "db": "empty",
+      "sql": "CREATE VIEW live_customers AS SELECT id, email, name FROM customers WHERE deleted_at IS NULL;\n\nSELECT count(*) AS all_rows, (SELECT count(*) FROM live_customers) AS live FROM customers;",
+      "statements": [
+        {
+          "tag": "CREATE VIEW",
+          "command": "CREATE VIEW",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9b07abe7a60de54c"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["all_rows", "int8", 20],
+            ["live", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "5d6c07e977ee2b62",
+          "rows": [
+            ["3", "2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "11bf5f09d4a183f4": {
+      "db": "empty",
+      "sql": "CREATE TABLE accounts (id int PRIMARY KEY, owner text NOT NULL, balance numeric(12,2) NOT NULL);\nCREATE TABLE audit_log (\n  id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  tbl     text NOT NULL,\n  op      text NOT NULL,\n  who     text NOT NULL DEFAULT current_user,\n  old_row jsonb,\n  new_row jsonb\n);\nCREATE FUNCTION audit() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  INSERT INTO audit_log (tbl, op, old_row, new_row)\n  VALUES (TG_TABLE_NAME, TG_OP,\n          CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END,\n          CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END);\n  RETURN NULL;\nEND $$;\nCREATE TRIGGER accounts_audit AFTER INSERT OR UPDATE OR DELETE ON accounts\nFOR EACH ROW EXECUTE FUNCTION audit();\n\nINSERT INTO accounts VALUES (1, 'alice', 100.00);\nUPDATE accounts SET balance = 80.00 WHERE id = 1;\nDELETE FROM accounts WHERE id = 1;\n\nSELECT id, op, who, old_row ->> 'balance' AS old_balance, new_row ->> 'balance' AS new_balance\nFROM audit_log ORDER BY id;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "954d8a2dba64af1b"
+        },
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c779914020e1043e"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "7386e0a94e72c2aa"
+        },
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "2373397d6b8847b5"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int8", 20],
+            ["op", "text", 25],
+            ["who", "text", 25],
+            ["old_balance", "text", 25],
+            ["new_balance", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "6bad10ad3f1bb47c",
+          "rows": [
+            ["1", "INSERT", "postgres", null, "100.00"],
+            ["2", "UPDATE", "postgres", "100.00", "80.00"],
+            ["3", "DELETE", "postgres", "80.00", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "050a85c3b695905c": {
+      "db": "empty",
+      "sql": "SET TimeZone = 'UTC';\nCREATE TABLE prices (sku text PRIMARY KEY, price numeric(8,2) NOT NULL);\nCREATE TABLE price_history (sku text NOT NULL, price numeric(8,2) NOT NULL, valid tstzrange NOT NULL);\n\n-- close the current version and open a new one, on every insert or price change.\n-- the clock comes from app.clock so this page's output is stable; in production, now().\nCREATE FUNCTION keep_price_history() RETURNS trigger LANGUAGE plpgsql AS $$\nDECLARE t timestamptz := coalesce(current_setting('app.clock', true)::timestamptz, now());\nBEGIN\n  IF TG_OP = 'UPDATE' THEN\n    UPDATE price_history SET valid = tstzrange(lower(valid), t)\n    WHERE sku = OLD.sku AND upper_inf(valid);\n  END IF;\n  INSERT INTO price_history VALUES (NEW.sku, NEW.price, tstzrange(t, NULL));\n  RETURN NEW;\nEND $$;\nCREATE TRIGGER prices_history AFTER INSERT OR UPDATE OF price ON prices\nFOR EACH ROW EXECUTE FUNCTION keep_price_history();\n\nSET app.clock = '2026-03-01 00:00+00'; INSERT INTO prices VALUES ('TEA-01', 6.50);\nSET app.clock = '2026-03-12 00:00+00'; UPDATE prices SET price = 7.25 WHERE sku = 'TEA-01';\nSET app.clock = '2026-03-20 00:00+00'; UPDATE prices SET price = 5.95 WHERE sku = 'TEA-01';\nSET app.clock = '2026-04-01 00:00+00'; UPDATE prices SET price = 7.25 WHERE sku = 'TEA-01';\n\nSELECT price, valid FROM price_history ORDER BY lower(valid);",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c1bc3c4899a392aa"
+        },
+        {
+          "tag": "CREATE TRIGGER",
+          "command": "CREATE TRIGGER",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a6f2c72b2db91b23"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a7a021393239946c"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "999fdcf4a850ea03"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bd547621e41e6e1a"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "4569ddf6bb903a75"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "87c9fd991dd3f017"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "6828799bfca527ae"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "3dba0201bb59b061"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e07af94900c10d68"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["price", "numeric", 1700],
+            ["valid", "tstzrange", 3910]
+          ],
+          "rowCount": 4,
+          "digest": "0dc0e0553bab7f79",
+          "rows": [
+            ["6.50", "[\"2026-03-01 00:00:00+00\",\"2026-03-12 00:00:00+00\")"],
+            ["7.25", "[\"2026-03-12 00:00:00+00\",\"2026-03-20 00:00:00+00\")"],
+            ["5.95", "[\"2026-03-20 00:00:00+00\",\"2026-04-01 00:00:00+00\")"],
+            ["7.25", "[\"2026-04-01 00:00:00+00\",)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

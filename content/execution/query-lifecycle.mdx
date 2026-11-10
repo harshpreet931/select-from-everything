@@ -1,0 +1,125 @@
+import { LifecycleStages } from "@/components/figures/execution/LifecycleStages";
+import { prov, runsOf } from "@/lib/db/captured";
+import trace from "./traces/lifecycle.pgtrace.json";
+import errs from "./traces/lifecycle-errors.pgtrace.json";
+
+{/* the stage-by-stage figure reads traces/lifecycle.scenario.sql, captured on a throwaway native
+    postgres 18.6 with debug_print_parse, debug_print_rewritten and debug_print_plan on, through
+    pgtrace's log probe. the trees are trimmed to the fields named in each stage's keep list.
+    the error switch reads traces/lifecycle-errors.scenario.sql, captured on PGlite. */}
+
+export const STAGES = ["parser", "analyzer (table)", "analyzer (column)", "planner", "executor", "no mistake"];
+export const errRuns = runsOf(errs, STAGES, 0);
+
+<InShort>
+a query goes through five stages. the **parser** checks the grammar and builds a tree of words. the **analyzer** looks every name up in the catalog and turns it into numbers. the **rewriter** expands views (and rules). the **planner** picks the cheapest way to run it. the **executor** runs that plan, one row at a time.
+
+each stage catches its own kind of mistake, which is why the same typo gives different errors depending on where it is.
+</InShort>
+
+## the picture
+
+you know how a typo in a keyword says "syntax error", a typo in a table name says "does not exist", and a division by zero only fails once rows show up? three different errors, from three different places.
+
+think of a letter going through a post office. the first desk only checks that it looks like a letter: stamp, address in the right place (the parser). the next looks the address up and writes the postcode on it (the analyzer). the next notices it's addressed to a PO box and rewrites it to the real street (the rewriter, expanding a view). the next picks the route (the planner). and the van drives it (the executor).
+
+<Figure caption={<>the five stages. hover one for what it gets and what it hands on.</>}>
+<Flow stages={[
+  { label: "parser", sub: "text → parse tree", note: "splits the text into tokens and checks them against the grammar. it knows nothing about your tables: FROM custmers parses fine." },
+  { label: "analyzer", sub: "→ query tree", note: "looks up every name in the catalog (relations, columns, types, functions, operators) and replaces it with an oid. this is where 'does not exist' comes from." },
+  { label: "rewriter", sub: "→ rewritten tree", note: "applies rules from pg_rewrite. every view is one: its name in FROM is replaced by the view's own query, as a subquery." },
+  { label: "planner", sub: "→ plan", note: "considers scan methods, join orders and join algorithms, estimates the cost of each, and keeps the cheapest. the result is what EXPLAIN prints." },
+  { label: "executor", sub: "→ rows", note: "runs the plan as a tree of iterators: the top node asks for a row, and the request goes down to the scans." },
+]} />
+</Figure>
+
+## one query, watched
+
+here's `SELECT name FROM londoners WHERE id = 42`, where londoners is a view: `SELECT id, name FROM customers WHERE city = 'London'`. postgres can log the tree each stage produces (`debug_print_parse`, `debug_print_rewritten`, `debug_print_plan`). those logs are hundreds of lines per stage, so the figure keeps the lines that matter and says how many it dropped:
+
+<Figure wide caption={<>step through the stages, captured on a real postgres 18.6 server. the trees are trimmed: … marks lines left out. watch <code>:relid</code> change from the view (relkind v) to customers (relkind r) at the rewriter, and the plan turn into an index scan on customers_pkey.</>}>
+<LifecycleStages
+  trace={trace}
+  step={1}
+  stages={[
+    { id: "parser", label: "parser", sub: "text → parse tree", note: "the parser sees words: SELECT, an identifier, FROM, another identifier. it checks the order against the grammar and builds a tree of them. it can't log that tree in postgres 18 (debug_print_parse prints the analyzer's tree, next), and it has no idea yet whether londoners exists." },
+    { id: "analyzer", label: "analyzer", sub: "parse tree → query tree", keep: ["{QUERY", ":commandType", "{RANGETBLENTRY", ":aliasname", ":colnames", ":rtekind", ":relid", ":relkind", ":quals", "{OPEXPR", ":opno", "{VAR", ":varattno", ":vartype", "{CONST", ":constvalue", "{TARGETENTRY", ":resname"], note: "names are numbers now. londoners is relid 16577, relkind v (a view). id is column 1 of type 23 (int4), name is column 2 of type 25 (text), and = became operator 96, int4 equality. the 42 is a constant stored as raw bytes: 42 0 0 0..." },
+    { id: "rewriter", label: "rewriter", sub: "query tree → rewritten query tree", keep: ["{QUERY", "{RANGETBLENTRY", ":aliasname", ":rtekind", ":subquery", ":relid", ":relkind", "{OPEXPR", ":opno", ":constvalue", ":resname"], note: "the view is gone. its range table entry is now rtekind 1, a subquery, and inside it is the view's own query: customers, relid 16385, relkind r, with the view's WHERE (operator 98, text equality, against the bytes of 'London'). the entry still remembers relid 16577, relkind v, but only so your permission to read the view can be checked. the outer query is unchanged." },
+    { id: "planner", label: "planner", sub: "rewritten tree → plan", keep: ["{PLANNEDSTMT", ":planTree", "{INDEXSCAN", ":scan.plan.startup_cost", ":scan.plan.total_cost", ":scan.plan.plan_rows", ":scan.plan.qual", ":scan.scanrelid", ":indexid", ":indexqual", ":relationOids"], note: "the planner flattened the subquery away and picked one node: an index scan using index 16394 (customers_pkey) for id = 42, with city = 'London' as a filter (qual). cost 0.2775..8.2975, one row expected. relationOids lists both the view and the table, so the plan is thrown away if either changes." },
+    { id: "executor", label: "executor", sub: "plan → rows", note: "the executor runs the plan: the index scan walks customers_pkey to 42, fetches the row, checks the city, and hands Ada Lovelace up. one next() returns her, the next returns nothing, and the query is done." },
+  ]}
+/>
+</Figure>
+
+the numbers in those trees are oids from the catalog ([the system catalog](/learn/execution/system-catalog) has how to read them back), and you can ask what the two operators are:
+
+```sql run db=shop
+SELECT oid, oprname, oprleft::regtype AS left_type, oprright::regtype AS right_type
+FROM pg_operator
+WHERE oid IN (96, 98)
+ORDER BY oid;
+```
+
+## the parser knows grammar, not tables
+
+the parser has a list of keywords, and how reserved each one is:
+
+```sql run db=shop
+SELECT word, catdesc
+FROM pg_get_keywords()
+WHERE word IN ('select', 'from', 'where', 'name', 'form')
+ORDER BY word;
+```
+
+`name` is unreserved, which is why customers can have a column called that. `form` isn't a keyword at all, so `SELECT name FORM customers` doesn't fail at FORM: an identifier after an expression is a column alias (AS is optional), and the grammar only gets stuck one word later. pick a mistake, see who catches it:
+
+<Figure wide caption={<>one mistake per stage, run for real. the parser and analyzer reject the query before anything is planned; the planner rejects a join it can't build; the executor only fails when a row with id = 42 actually turns up.</>}>
+<RunPick options={[{ key: "mistake in", values: STAGES }]} runs={errRuns} trace={prov(errs)} />
+</Figure>
+
+<Predict question="which stage rejects SELECT name FROM custmers?" options={["the parser", "the analyzer", "the executor"]} answer={1}>
+```sql
+SELECT name FROM custmers WHERE id = 42;
+```
+<Explain>
+the analyzer. the grammar is perfect: SELECT, a column, FROM, a name, WHERE. it's only when the analyzer looks custmers up in pg_class, through the search_path, that there's nothing to find: relation "custmers" does not exist, SQLSTATE 42P01.
+</Explain>
+</Predict>
+
+## the rewriter, and views
+
+a view is stored as a rule in `pg_rewrite`: "a SELECT from this view is really this query". the rewriter applies it before the planner ever sees the query:
+
+```sql run db=shop
+CREATE VIEW londoners AS SELECT id, name FROM customers WHERE city = 'London';
+
+SELECT rulename, ev_type, is_instead
+FROM pg_rewrite
+WHERE ev_class = 'londoners'::regclass;
+
+EXPLAIN (COSTS OFF) SELECT name FROM londoners WHERE id = 42;
+```
+
+one rule, `_RETURN`, for SELECT (`ev_type` 1), INSTEAD. and the plan never mentions londoners: the view's query was spliced in, flattened, and its WHERE merged with yours, so customers_pkey can be used for `id = 42`. a view costs nothing at run time; it's a query you didn't have to type ([views](/learn/design/views)).
+
+## planning and running
+
+the planner is the [optimizer part](/learn/optimizer/cost-model) of this book: it generates candidate plans, estimates their costs from statistics, and keeps the cheapest. the executor is [the iterator model](/learn/execution/iterator-model): the plan as a tree of nodes, each answering "next row, please?".
+
+the line between them is where prepared statements live. `PREPARE` runs the parser, analyzer and rewriter once and keeps the result; each `EXECUTE` plans (or reuses a plan) and runs it. which plans get reused is [generic plans](/learn/optimizer/generic-plans).
+
+<Gotcha title="the planner can see constants, not values from a later stage">
+the planner works before any row exists. it can fold `2 + 2` into 4 and use the constant 42 against statistics, but it can't know what `now()` or a parameter will be at run time, and it can't see inside a function's result. that's why an error that depends on a row (like the division by zero above) only shows up in the executor, and why a query can plan fine and still fail halfway through.
+</Gotcha>
+
+<Interview q="what happens when postgres receives a query?">
+the parser checks the grammar and builds a parse tree. the analyzer resolves names against the catalog (tables, columns, types, operators, functions) and produces a query tree full of oids. the rewriter applies rules from pg_rewrite, which is how views get expanded into their defining query. the planner generates candidate plans, estimates their costs and keeps the cheapest. the executor runs the plan as a pull-based tree of operators and streams rows to the client. bonus points: syntax errors come from the parser, "does not exist" from the analyzer, and PREPARE caches everything up to the rewriter.
+</Interview>
+
+<Keylines>
+- parser: grammar only. it has never heard of your tables.
+- analyzer: names become oids from the catalog; "does not exist" comes from here.
+- rewriter: views are rules in pg_rewrite, spliced in as subqueries.
+- planner: picks the cheapest plan. executor: runs it, pulling rows up the tree.
+- each stage catches its own mistakes, so the error tells you how far the query got.
+</Keylines>

@@ -1,0 +1,106 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0d24494137856706": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.id, c.name\nFROM orders AS o JOIN customers AS c ON c.id = o.customer_id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5ee4cec10bde4927",
+          "rows": [
+            ["Hash Join (actual rows=10000.00 loops=1)"],
+            ["  Hash Cond: (o.customer_id = c.id)"],
+            ["  Buffers: shared read=107"],
+            ["  ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+            ["        Buffers: shared read=83"],
+            ["  ->  Hash (actual rows=2000.00 loops=1)"],
+            ["        Buckets: 2048  Batches: 1  Memory Usage: 90kB"],
+            ["        Buffers: shared read=24"],
+            ["        ->  Seq Scan on customers c (actual rows=2000.00 loops=1)"],
+            ["              Buffers: shared read=24"],
+            ["Planning:"],
+            ["  Buffers: shared hit=165 read=12 dirtied=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b84276a23f114a23": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT c.name, o.id\nFROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "0761db7ee06e83fb",
+          "rows": [
+            ["Hash Right Join"],
+            ["  Hash Cond: (o.customer_id = c.id)"],
+            ["  ->  Seq Scan on orders o"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on customers c"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1a893aa9e527bf51": {
+      "db": "shop",
+      "sql": "SET work_mem = '256kB';\nSET hash_mem_multiplier = 1;\n\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.customer_id, o.status, o.ordered_at, o.shipped_at, oi.product_id, oi.qty\nFROM order_items AS oi JOIN orders AS o ON o.id = oi.order_id;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c59f53ee54fee31e",
+          "rows": [
+            ["Hash Join (actual rows=24942.00 loops=1)"],
+            ["  Hash Cond: (oi.order_id = o.id)"],
+            ["  Buffers: shared read=242, temp read=128 written=128"],
+            ["  ->  Seq Scan on order_items oi (actual rows=24942.00 loops=1)"],
+            ["        Buffers: shared read=159"],
+            ["  ->  Hash (actual rows=10000.00 loops=1)"],
+            ["        Buckets: 4096  Batches: 4  Memory Usage: 161kB"],
+            ["        Buffers: shared read=83, temp written=49"],
+            ["        ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+            ["              Buffers: shared read=83"],
+            ["Planning:"],
+            ["  Buffers: shared hit=167 read=15 dirtied=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

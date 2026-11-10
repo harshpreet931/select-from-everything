@@ -1,0 +1,226 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "fc3be68cc07118c0": {
+      "db": "shop",
+      "sql": "SELECT o.id, o.status, c.name\nFROM orders AS o\nJOIN customers AS c ON c.id = o.customer_id\nWHERE o.customer_id = 42\nORDER BY o.id;",
+      "statements": [
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["status", "text", 25],
+            ["name", "text", 25]
+          ],
+          "rowCount": 7,
+          "digest": "432f3aa45560143c",
+          "rows": [
+            ["880", "cancelled", "Ada Lovelace"],
+            ["1455", "refunded", "Ada Lovelace"],
+            ["6580", "delivered", "Ada Lovelace"],
+            ["7787", "delivered", "Ada Lovelace"],
+            ["8219", "delivered", "Ada Lovelace"],
+            ["9615", "delivered", "Ada Lovelace"],
+            ["9946", "placed", "Ada Lovelace"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "22c864586cfe0fa8": {
+      "db": "shop",
+      "sql": "SELECT id, status\nFROM orders JOIN customers ON customers.id = orders.customer_id\nWHERE customer_id = 42;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42702",
+            "message": "column reference \"id\" is ambiguous",
+            "position": 8
+          },
+          "digest": "f274a64eaa9b79d0"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42702",
+        "message": "column reference \"id\" is ambiguous",
+        "position": 8,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "c944eaa1d6446e66": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS customers FROM customers;\nSELECT count(DISTINCT c.id) AS customers_in_the_join\nFROM customers AS c JOIN orders AS o ON o.customer_id = c.id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customers", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "f2d3d983a0e6f929",
+          "rows": [
+            ["2000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customers_in_the_join", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b1f629af42dbef91",
+          "rows": [
+            ["1962"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a1314e142a9cdc01": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM customers NATURAL JOIN orders;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "0ca308ece7d5537b",
+          "rows": [
+            ["2000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d32101661b9f71c7": {
+      "db": "school",
+      "sql": "SELECT count(*) FROM students NATURAL JOIN instructors;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c52672244bcc455b",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0e58524c253cb263": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id;\n\nSELECT count(*) FROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nJOIN order_items AS oi ON oi.order_id = o.id;\n\nSELECT count(*) FROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nJOIN order_items AS oi ON oi.order_id = o.id\nJOIN products AS p ON p.id = oi.product_id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "29a429f8ea1fc828",
+          "rows": [
+            ["10000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "e9f03e86f3646699",
+          "rows": [
+            ["24942"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "85e54d77b8c9d8ca",
+          "rows": [
+            ["24942"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c8bbb2179ba4717b": {
+      "db": "shop",
+      "sql": "SELECT p.name, sum(oi.qty) AS units\nFROM orders AS o\nJOIN order_items AS oi ON oi.order_id = o.id\nJOIN products AS p ON p.id = oi.product_id\nWHERE o.customer_id = 42\nGROUP BY p.name\nORDER BY units DESC, p.name\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["units", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "96c8a0cd7cca6620",
+          "rows": [
+            ["family soap dish", "5"],
+            ["the art of sql", "5"],
+            ["cast iron pan", "4"],
+            ["classic shower caddy", "4"],
+            ["heavy yo-yo", "4"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "67e2ab9167d121a8": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT o.id, c.name\nFROM orders AS o, customers AS c\nWHERE c.id = o.customer_id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "946aa5c1fc60ffb1",
+          "rows": [
+            ["Hash Join"],
+            ["  Hash Cond: (o.customer_id = c.id)"],
+            ["  ->  Seq Scan on orders o"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on customers c"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

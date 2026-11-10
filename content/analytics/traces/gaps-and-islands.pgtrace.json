@@ -1,0 +1,207 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/gaps-and-islands.scenario.sql",
+ "title": "gaps and islands in the events table: one user's active days, streaks, and sessions",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT g::date AS day, d.day IS NOT NULL AS active\nFROM generate_series(date '2026-03-01', date '2026-03-19', interval '1 day') AS g\nLEFT JOIN (SELECT DISTINCT occurred_at::date AS day FROM events WHERE user_id = 54) AS d\n       ON d.day = g::date\nORDER BY 1",
+   "note": "the calendar, march 1 to 19, and whether user 54 did anything that day.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 19,
+    "columns": [{"name":"day","type":"date"},{"name":"active","type":"bool"}],
+    "data": [
+     ["2026-03-01","t"],
+     ["2026-03-02","t"],
+     ["2026-03-03","t"],
+     ["2026-03-04","f"],
+     ["2026-03-05","t"],
+     ["2026-03-06","t"],
+     ["2026-03-07","t"],
+     ["2026-03-08","f"],
+     ["2026-03-09","f"],
+     ["2026-03-10","t"],
+     ["2026-03-11","t"],
+     ["2026-03-12","t"],
+     ["2026-03-13","f"],
+     ["2026-03-14","f"],
+     ["2026-03-15","t"],
+     ["2026-03-16","f"],
+     ["2026-03-17","f"],
+     ["2026-03-18","t"],
+     ["2026-03-19","f"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "WITH days AS (\n  SELECT DISTINCT occurred_at::date AS day\n  FROM events\n  WHERE user_id = 54 AND occurred_at < '2026-03-20'\n)\nSELECT day,\n       row_number() OVER (ORDER BY day) AS rn,\n       day - row_number() OVER (ORDER BY day)::int AS grp\nFROM days\nORDER BY day",
+   "note": "the active days, numbered, and the day minus its number.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 11,
+    "columns": [{"name":"day","type":"date"},{"name":"rn","type":"int8"},{"name":"grp","type":"date"}],
+    "data": [
+     ["2026-03-01","1","2026-02-28"],
+     ["2026-03-02","2","2026-02-28"],
+     ["2026-03-03","3","2026-02-28"],
+     ["2026-03-05","4","2026-03-01"],
+     ["2026-03-06","5","2026-03-01"],
+     ["2026-03-07","6","2026-03-01"],
+     ["2026-03-10","7","2026-03-03"],
+     ["2026-03-11","8","2026-03-03"],
+     ["2026-03-12","9","2026-03-03"],
+     ["2026-03-15","10","2026-03-05"],
+     ["2026-03-18","11","2026-03-07"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "WITH days AS (\n  SELECT DISTINCT occurred_at::date AS day\n  FROM events\n  WHERE user_id = 54 AND occurred_at < '2026-03-20'\n)\nSELECT min(day) AS first, max(day) AS last, count(*) AS days\nFROM (\n  SELECT day,\n         row_number() OVER (ORDER BY day) AS rn,\n         day - row_number() OVER (ORDER BY day)::int AS grp\n  FROM days\n) AS numbered\nGROUP BY grp\nORDER BY first",
+   "note": "one row per island.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"first","type":"date"},{"name":"last","type":"date"},{"name":"days","type":"int8"}],
+    "data": [
+     ["2026-03-01","2026-03-03","3"],
+     ["2026-03-05","2026-03-07","3"],
+     ["2026-03-10","2026-03-12","3"],
+     ["2026-03-15","2026-03-15","1"],
+     ["2026-03-18","2026-03-18","1"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "WITH days AS (SELECT DISTINCT user_id, occurred_at::date AS day FROM events),\nislands AS (\n  SELECT user_id, day, day - row_number() OVER (PARTITION BY user_id ORDER BY day)::int AS grp\n  FROM days\n)\nSELECT user_id, min(day) AS first, max(day) AS last, count(*) AS days\nFROM islands\nGROUP BY user_id, grp\nORDER BY days DESC, user_id\nLIMIT 6",
+   "note": "the longest streaks of any user. nobody gets past 47 days: nobody was active on 2026-04-14.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [
+     {"name":"user_id","type":"int4"},
+     {"name":"first","type":"date"},
+     {"name":"last","type":"date"},
+     {"name":"days","type":"int8"}
+    ],
+    "data": [
+     ["1","2026-04-15","2026-05-31","47"],
+     ["2","2026-04-15","2026-05-31","47"],
+     ["3","2026-04-15","2026-05-31","47"],
+     ["5","2026-04-15","2026-05-31","47"],
+     ["1","2026-03-01","2026-04-13","44"],
+     ["2","2026-03-01","2026-04-13","44"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT id, at, kind, gap,\n       sum(new) OVER (ORDER BY at, id) AS session\nFROM (\n  SELECT id, occurred_at::time AS at, kind,\n         occurred_at - lag(occurred_at) OVER w AS gap,\n         CASE WHEN occurred_at - lag(occurred_at) OVER w <= interval '30 minutes'\n              THEN 0 ELSE 1 END AS new\n  FROM events\n  WHERE user_id = 1 AND occurred_at >= '2026-03-02' AND occurred_at < '2026-03-03'\n  WINDOW w AS (ORDER BY occurred_at, id)\n) AS flagged\nORDER BY at, id",
+   "note": "a new session starts whenever the gap since the previous event is over 30 minutes. a running sum of those starts numbers the sessions: 11 of them.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 14,
+    "columns": [
+     {"name":"id","type":"int8"},
+     {"name":"at","type":"time"},
+     {"name":"kind","type":"text"},
+     {"name":"gap","type":"interval"},
+     {"name":"session","type":"int8"}
+    ],
+    "data": [
+     ["279","00:20:04","view",null,"1"],
+     ["283","00:40:05","view","00:20:01","1"],
+     ["331","04:54:32","add_to_cart","04:14:27","2"],
+     ["340","05:37:20","purchase","00:42:48","3"],
+     ["342","05:48:49","view","00:11:29","3"],
+     ["407","11:30:34","click","05:41:45","4"],
+     ["424","12:59:57","view","01:29:23","5"],
+     ["450","15:17:23","view","02:17:26","6"],
+     ["467","16:44:45","add_to_cart","01:27:22","7"],
+     ["475","17:25:28","view","00:40:43","8"],
+     ["491","18:53:16","add_to_cart","01:27:48","9"],
+     ["507","20:12:16","view","01:19:00","10"],
+     ["511","20:34:17","click","00:22:01","10"],
+     ["537","22:52:35","view","02:18:18","11"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT id, at, kind, gap,\n       sum(new) OVER (ORDER BY at, id) AS session\nFROM (\n  SELECT id, occurred_at::time AS at, kind,\n         occurred_at - lag(occurred_at) OVER w AS gap,\n         CASE WHEN occurred_at - lag(occurred_at) OVER w <= interval '90 minutes'\n              THEN 0 ELSE 1 END AS new\n  FROM events\n  WHERE user_id = 1 AND occurred_at >= '2026-03-02' AND occurred_at < '2026-03-03'\n  WINDOW w AS (ORDER BY occurred_at, id)\n) AS flagged\nORDER BY at, id",
+   "note": "same events, a 90-minute timeout. gaps that were too long before now fit, and the 14 events make 5 sessions.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 14,
+    "columns": [
+     {"name":"id","type":"int8"},
+     {"name":"at","type":"time"},
+     {"name":"kind","type":"text"},
+     {"name":"gap","type":"interval"},
+     {"name":"session","type":"int8"}
+    ],
+    "data": [
+     ["279","00:20:04","view",null,"1"],
+     ["283","00:40:05","view","00:20:01","1"],
+     ["331","04:54:32","add_to_cart","04:14:27","2"],
+     ["340","05:37:20","purchase","00:42:48","2"],
+     ["342","05:48:49","view","00:11:29","2"],
+     ["407","11:30:34","click","05:41:45","3"],
+     ["424","12:59:57","view","01:29:23","3"],
+     ["450","15:17:23","view","02:17:26","4"],
+     ["467","16:44:45","add_to_cart","01:27:22","4"],
+     ["475","17:25:28","view","00:40:43","4"],
+     ["491","18:53:16","add_to_cart","01:27:48","4"],
+     ["507","20:12:16","view","01:19:00","4"],
+     ["511","20:34:17","click","00:22:01","4"],
+     ["537","22:52:35","view","02:18:18","5"]
+    ]
+   }
+  }
+ ],
+ "db": "events"
+}

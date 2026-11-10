@@ -1,0 +1,183 @@
+import { chainRun } from "@/components/figures/design/runs";
+import { prov } from "@/lib/db/captured";
+import rls from "./traces/rls.pgtrace.json";
+
+{/* the RunPick reads traces/rls.scenario.sql (PGlite, one session, real roles switched with SET
+    ROLE). role names are unique across this part, because a native check runs every block on one
+    cluster and roles belong to the cluster, not to a database. */}
+
+export const as = {
+  "clerk, tenant acme": chainRun(rls, [1]),
+  "clerk, tenant globex": chainRun(rls, [2]),
+  "clerk, no tenant": chainRun(rls, [3]),
+  "clerk writes for globex": chainRun(rls, [4]),
+  "table owner": chainRun(rls, [5]),
+  "owner, FORCE": chainRun(rls, [6]),
+  "BYPASSRLS role": chainRun(rls, [7]),
+  "superuser": chainRun(rls, [8]),
+};
+
+<InShort>
+a **schema** is a namespace inside a database (`public`, `sales.orders`), and the **search_path** decides which schema an unqualified name means, which is also a classic security hole. **roles** are users and groups at once, and **GRANT** gives them rights on objects.
+
+**row-level security** goes one step further: a **policy** on a table adds a condition to every query, so a tenant only ever sees its own rows, without a single WHERE in the app. **USING** filters what you can see and touch, **WITH CHECK** what you may write. table owners skip policies unless you **FORCE** them; superusers and **BYPASSRLS** roles always skip them.
+</InShort>
+
+## the picture
+
+you know the multi-tenant app where every query ends in `AND tenant_id = $1`, and one day one of them doesn't? that's a data leak written as a missing line. RLS moves the line into the table, where no query can forget it.
+
+think of an office building (a database). floors are schemas, rooms are tables. a key card (a role) opens some floors and some rooms (GRANT). row-level security is a filing cabinet in the room that only shows each visitor the folders with their company's name on them, whatever drawer they open.
+
+<Figure caption={<>what lives where. roles belong to the whole cluster, everything else to one database. click a node to fold it.</>}>
+<Tree>{`
+cluster                     // one postgres server
+    roles                   #meta // users and groups, shared by every database
+    database shop
+        schema pg_catalog   #meta // the built-in types, functions and catalog tables
+        schema public       // where unqualified names go by default
+            customers
+            orders
+        schema reporting    // another namespace: reporting.orders is a different table
+            orders
+`}</Tree>
+</Figure>
+
+## schemas and search_path
+
+an unqualified name like `orders` is looked up in the schemas of the search_path, in order, and the first match wins. `pg_catalog` is always searched (first, unless you place it), and so is your temporary schema:
+
+```sql run
+CREATE SCHEMA reporting;
+CREATE TABLE public.orders (id int, note text);
+CREATE TABLE reporting.orders (id int, note text);
+INSERT INTO public.orders VALUES (1, 'the live table');
+INSERT INTO reporting.orders VALUES (1, 'last night''s copy');
+
+SELECT current_schemas(true) AS searched, note FROM orders;
+SET search_path = reporting, public;
+SELECT current_schemas(true) AS searched, note FROM orders;
+```
+
+same query, different table. that's useful (a staging schema that shadows production for a test run) and it's also the footgun.
+
+<Figure caption={<>how postgres resolves <code>lower(name)</code>, a function call: it collects every <code>lower</code> on the path, then picks the best match for the argument types. path order only breaks ties.</>}>
+<Flow stages={[
+  { label: "collect", sub: "every schema on the path", note: "pg_catalog.lower(text), and anything named lower in public or any other schema you search." },
+  { label: "match types", sub: "exact beats a cast", note: "a varchar argument matches lower(varchar) exactly; pg_catalog.lower(text) needs a cast from varchar to text." },
+  { label: "pick", sub: "path order breaks ties", note: "only between equally good matches does the earlier schema win. pg_catalog first doesn't protect you from a better match." },
+]} />
+</Figure>
+
+so anyone who can create a function in a schema on your path can hijack a call to a built-in by offering a better-typed one:
+
+```sql run
+CREATE TABLE people (name varchar(40));
+INSERT INTO people VALUES ('Ada Lovelace');
+SELECT lower(name) FROM people;
+
+-- someone with CREATE on public adds this:
+CREATE FUNCTION public.lower(varchar) RETURNS text LANGUAGE sql AS $$ SELECT 'gotcha: ' || $1 $$;
+
+SELECT lower(name) FROM people;
+SELECT pg_catalog.lower(name) FROM people;
+```
+
+this is CVE-2018-1058, and the real attack is worse: a function that runs with the caller's rights does whatever the attacker wrote, as you. the defences: since postgres 15, ordinary users no longer get CREATE on the `public` schema by default; SECURITY DEFINER functions should always `SET search_path` (to `pg_catalog, pg_temp` plus what they need); and code that runs with privileges should schema-qualify what it calls.
+
+## roles and GRANT
+
+a role is a user if it can log in, a group if others are members of it, and often both. nothing is visible to a new role except what's been granted (and what's granted to PUBLIC, everyone):
+
+```sql run errors=continue
+CREATE TABLE prices (sku text PRIMARY KEY, price numeric(8,2));
+INSERT INTO prices VALUES ('TEA-01', 6.50);
+CREATE ROLE grants_reader;
+
+SET ROLE grants_reader;
+SELECT * FROM prices;
+CREATE TABLE public.scratch (x int);
+RESET ROLE;
+
+GRANT SELECT ON prices TO grants_reader;
+SET ROLE grants_reader;
+SELECT sku, price FROM prices;
+```
+
+denied, then denied again (no CREATE on public, the postgres 15 default), then allowed. the layers: USAGE on a schema to see into it at all, then table rights (SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER), optionally per column. `ALTER DEFAULT PRIVILEGES` sets what tables created later get, so a reader role doesn't lose access every time a migration adds a table. the usual layout: an owner role that runs migrations and owns everything, an app role with only DML, a read-only role for reporting, and nobody connecting as a superuser.
+
+## row-level security
+
+enable it on a table, add policies, and every query against that table gets the policy's condition added, for every role it applies to. here the condition reads the tenant from a setting the app sets per connection or transaction (`SET app.tenant = 'acme'`):
+
+```sql
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_rows ON notes USING (tenant = current_setting('app.tenant', true));
+```
+
+<Figure wide caption={<>the same <code>SELECT ... FROM notes</code>, as different roles. the clerk sees only its tenant&apos;s rows, and nothing with no tenant set (a NULL setting makes the policy never true). writing a row for another tenant is <C k="dead">refused</C>. the owner skips the policy until FORCE; a BYPASSRLS role and the superuser always skip it. every run is real, in this page&apos;s engine.</>}>
+<RunPick options={[{ key: "as", values: ["clerk, tenant acme", "clerk, tenant globex", "clerk, no tenant", "clerk writes for globex", "table owner", "owner, FORCE", "BYPASSRLS role", "superuser"] }]} runs={as} file="notes.sql" trace={prov(rls)} />
+</Figure>
+
+### USING and WITH CHECK
+
+a policy has two expressions. **USING** decides which existing rows a command can see: rows SELECT returns, and rows UPDATE and DELETE can touch. **WITH CHECK** decides which new rows may be written by INSERT and UPDATE. if a policy gives only USING, it's used for both, which is why the acme clerk couldn't insert a globex note.
+
+<Predict options={["the row is inserted", "an error", "it's inserted, but invisible"]} answer={2}>
+```sql
+CREATE POLICY see_own ON notes FOR SELECT
+  USING (tenant = current_setting('app.tenant', true));
+CREATE POLICY write_any ON notes FOR INSERT
+  WITH CHECK (true);
+-- as the acme clerk:
+INSERT INTO notes VALUES (5, 'globex', 'hello');
+```
+<Explain>
+it's inserted, and the clerk can't see it afterwards. policies are per command: the INSERT policy's WITH CHECK (true) allows any row, and the SELECT policy hides rows from other tenants. separating them is how you build "write-only" drop boxes; doing it by accident is how one tenant writes into another's data.
+</Explain>
+</Predict>
+
+the run below builds exactly those two policies and does it:
+
+```sql run session=rls
+CREATE ROLE rls_writer;
+CREATE TABLE notes (id int PRIMARY KEY, tenant text NOT NULL, body text NOT NULL);
+GRANT SELECT, INSERT ON notes TO rls_writer;
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY see_own ON notes FOR SELECT USING (tenant = current_setting('app.tenant', true));
+CREATE POLICY write_any ON notes FOR INSERT WITH CHECK (true);
+
+SET app.tenant = 'acme';
+SET ROLE rls_writer;
+INSERT INTO notes VALUES (5, 'globex', 'hello');
+SELECT count(*) AS visible_to_me FROM notes;
+RESET ROLE;
+SELECT count(*) AS really_there FROM notes;
+```
+
+multiple policies for the same command are combined with OR (permissive, the default); `AS RESTRICTIVE` policies are ANDed on top, for rules like "and never rows marked archived".
+
+### who skips the policies
+
+- **superusers**, always.
+- roles with **BYPASSRLS**, always. meant for backups and auditors; pg_dump fails rather than silently dumping a filtered table unless it runs as one.
+- the **table owner**, unless the table has `FORCE ROW LEVEL SECURITY`. migrations usually run as the owner, and so does any app that connects as the owner, which is the common way RLS ends up doing nothing.
+- and anything reached through a **view** runs as the view's owner, unless the view is `security_invoker` ([views](/learn/design/views)).
+
+<Gotcha title="the app role must not own the tables">
+the most common RLS bug: policies created, tested in psql as a non-owner, and then the application connects as the role that owns the tables. every policy is skipped, silently. connect the app as a role that doesn't own anything (or FORCE row level security), never as a superuser, and set the tenant with `SET LOCAL` inside each transaction, so a pooled connection can't carry the previous request's tenant into the next one ([connection pooling](/learn/scale/connections-and-pooling)).
+</Gotcha>
+
+policies cost what their condition costs: `tenant = current_setting(...)` is added to every scan, so the table wants an index that leads with tenant (and the planner treats current_setting as stable, so it can use it). a policy with a subquery runs that subquery for queries on the table, which can get expensive. and DDL like `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` takes an ACCESS EXCLUSIVE lock, so on a busy table it waits in [the lock queue](/learn/locking/lock-queue) like any other migration.
+
+<Interview q="how would you isolate tenants in a shared postgres database?">
+one set of tables with a tenant_id column leading every key and index, and row-level security: ENABLE ROW LEVEL SECURITY plus a policy USING (tenant_id = current_setting('app.tenant')::int), which also serves as the WITH CHECK for writes. the app connects as a role that doesn't own the tables (owners skip policies unless FORCE ROW LEVEL SECURITY), never as superuser or a BYPASSRLS role, and sets the tenant with SET LOCAL per transaction so pooled connections can't leak it. bonus point: views in front of those tables need security_invoker, or they apply the view owner's rights instead of the caller's.
+</Interview>
+
+<Keylines>
+- a schema is a namespace; search_path picks which one an unqualified name means.
+- a better-typed function earlier or later on the path wins: SET search_path in privileged functions.
+- roles get nothing until granted; since 15, not even CREATE on public.
+- RLS policies add a condition to every query: USING for rows you see, WITH CHECK for rows you write.
+- owners skip policies unless FORCE; superusers and BYPASSRLS roles always do.
+</Keylines>

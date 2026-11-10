@@ -1,0 +1,532 @@
+{
+ "v": 1,
+ "scenario": "content/index-internals/traces/orders-pkey.scenario.sql",
+ "title": "orders_pkey on shop: 10,000 int keys, a root over 28 leaves",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "",
+   "note": "orders_pkey as shop builds it: the metapage says the root is page 3, one level above the leaves.",
+   "status": "ok",
+   "btree": {
+    "orders_pkey": {
+     "root": 3,
+     "levels": 2,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 2,
+       "high": "367",
+       "items": [
+        {"off":2,"key":"1","tid":[0,1],"dead":false},
+        {"off":3,"key":"2","tid":[0,2],"dead":false},
+        {"off":366,"key":"365","tid":[3,4],"dead":false},
+        {"off":367,"key":"366","tid":[3,5],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 2,
+       "type": "l",
+       "level": 0,
+       "prev": 1,
+       "next": 4,
+       "high": "733",
+       "items": [
+        {"off":2,"key":"367","tid":[3,6],"dead":false},
+        {"off":3,"key":"368","tid":[3,7],"dead":false},
+        {"off":366,"key":"731","tid":[6,10],"dead":false},
+        {"off":367,"key":"732","tid":[6,11],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 3,
+       "type": "r",
+       "level": 1,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"","tid":[1,0],"dead":false},
+        {"off":2,"key":"367","tid":[2,1],"dead":false},
+        {"off":27,"key":"9517","tid":[28,1],"dead":false},
+        {"off":28,"key":"9883","tid":[29,1],"dead":false}
+       ],
+       "n": 28
+      },
+      {
+       "blk": 4,
+       "type": "l",
+       "level": 0,
+       "prev": 2,
+       "next": 5,
+       "high": "1099",
+       "items": [
+        {"off":2,"key":"733","tid":[6,12],"dead":false},
+        {"off":3,"key":"734","tid":[6,13],"dead":false},
+        {"off":366,"key":"1097","tid":[9,16],"dead":false},
+        {"off":367,"key":"1098","tid":[9,17],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 5,
+       "type": "l",
+       "level": 0,
+       "prev": 4,
+       "next": 6,
+       "high": "1465",
+       "items": [
+        {"off":2,"key":"1099","tid":[9,18],"dead":false},
+        {"off":3,"key":"1100","tid":[9,19],"dead":false},
+        {"off":366,"key":"1463","tid":[12,22],"dead":false},
+        {"off":367,"key":"1464","tid":[12,23],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 6,
+       "type": "l",
+       "level": 0,
+       "prev": 5,
+       "next": 7,
+       "high": "1831",
+       "items": [
+        {"off":2,"key":"1465","tid":[12,24],"dead":false},
+        {"off":3,"key":"1466","tid":[12,25],"dead":false},
+        {"off":366,"key":"1829","tid":[15,27],"dead":false},
+        {"off":367,"key":"1830","tid":[15,28],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 7,
+       "type": "l",
+       "level": 0,
+       "prev": 6,
+       "next": 8,
+       "high": "2197",
+       "items": [
+        {"off":2,"key":"1831","tid":[15,29],"dead":false},
+        {"off":3,"key":"1832","tid":[15,30],"dead":false},
+        {"off":366,"key":"2195","tid":[18,33],"dead":false},
+        {"off":367,"key":"2196","tid":[18,34],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 8,
+       "type": "l",
+       "level": 0,
+       "prev": 7,
+       "next": 9,
+       "high": "2563",
+       "items": [
+        {"off":2,"key":"2197","tid":[18,35],"dead":false},
+        {"off":3,"key":"2198","tid":[18,36],"dead":false},
+        {"off":366,"key":"2561","tid":[21,39],"dead":false},
+        {"off":367,"key":"2562","tid":[21,40],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 9,
+       "type": "l",
+       "level": 0,
+       "prev": 8,
+       "next": 10,
+       "high": "2929",
+       "items": [
+        {"off":2,"key":"2563","tid":[21,41],"dead":false},
+        {"off":3,"key":"2564","tid":[21,42],"dead":false},
+        {"off":366,"key":"2927","tid":[24,45],"dead":false},
+        {"off":367,"key":"2928","tid":[24,46],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 10,
+       "type": "l",
+       "level": 0,
+       "prev": 9,
+       "next": 11,
+       "high": "3295",
+       "items": [
+        {"off":2,"key":"2929","tid":[24,47],"dead":false},
+        {"off":3,"key":"2930","tid":[24,48],"dead":false},
+        {"off":366,"key":"3293","tid":[27,51],"dead":false},
+        {"off":367,"key":"3294","tid":[27,52],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 11,
+       "type": "l",
+       "level": 0,
+       "prev": 10,
+       "next": 12,
+       "high": "3661",
+       "items": [
+        {"off":2,"key":"3295","tid":[27,53],"dead":false},
+        {"off":3,"key":"3296","tid":[27,54],"dead":false},
+        {"off":366,"key":"3659","tid":[30,57],"dead":false},
+        {"off":367,"key":"3660","tid":[30,58],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 12,
+       "type": "l",
+       "level": 0,
+       "prev": 11,
+       "next": 13,
+       "high": "4027",
+       "items": [
+        {"off":2,"key":"3661","tid":[30,59],"dead":false},
+        {"off":3,"key":"3662","tid":[30,60],"dead":false},
+        {"off":366,"key":"4025","tid":[33,62],"dead":false},
+        {"off":367,"key":"4026","tid":[33,63],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 13,
+       "type": "l",
+       "level": 0,
+       "prev": 12,
+       "next": 14,
+       "high": "4393",
+       "items": [
+        {"off":2,"key":"4027","tid":[33,64],"dead":false},
+        {"off":3,"key":"4028","tid":[33,65],"dead":false},
+        {"off":366,"key":"4391","tid":[36,68],"dead":false},
+        {"off":367,"key":"4392","tid":[36,69],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 14,
+       "type": "l",
+       "level": 0,
+       "prev": 13,
+       "next": 15,
+       "high": "4759",
+       "items": [
+        {"off":2,"key":"4393","tid":[36,70],"dead":false},
+        {"off":3,"key":"4394","tid":[36,71],"dead":false},
+        {"off":366,"key":"4757","tid":[39,74],"dead":false},
+        {"off":367,"key":"4758","tid":[39,75],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 15,
+       "type": "l",
+       "level": 0,
+       "prev": 14,
+       "next": 16,
+       "high": "5125",
+       "items": [
+        {"off":2,"key":"4759","tid":[39,76],"dead":false},
+        {"off":3,"key":"4760","tid":[39,77],"dead":false},
+        {"off":366,"key":"5123","tid":[42,80],"dead":false},
+        {"off":367,"key":"5124","tid":[42,81],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 16,
+       "type": "l",
+       "level": 0,
+       "prev": 15,
+       "next": 17,
+       "high": "5491",
+       "items": [
+        {"off":2,"key":"5125","tid":[42,82],"dead":false},
+        {"off":3,"key":"5126","tid":[42,83],"dead":false},
+        {"off":366,"key":"5489","tid":[45,86],"dead":false},
+        {"off":367,"key":"5490","tid":[45,87],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 17,
+       "type": "l",
+       "level": 0,
+       "prev": 16,
+       "next": 18,
+       "high": "5857",
+       "items": [
+        {"off":2,"key":"5491","tid":[45,88],"dead":false},
+        {"off":3,"key":"5492","tid":[45,89],"dead":false},
+        {"off":366,"key":"5855","tid":[48,92],"dead":false},
+        {"off":367,"key":"5856","tid":[48,93],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 18,
+       "type": "l",
+       "level": 0,
+       "prev": 17,
+       "next": 19,
+       "high": "6223",
+       "items": [
+        {"off":2,"key":"5857","tid":[48,94],"dead":false},
+        {"off":3,"key":"5858","tid":[48,95],"dead":false},
+        {"off":366,"key":"6221","tid":[51,98],"dead":false},
+        {"off":367,"key":"6222","tid":[51,99],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 19,
+       "type": "l",
+       "level": 0,
+       "prev": 18,
+       "next": 20,
+       "high": "6589",
+       "items": [
+        {"off":2,"key":"6223","tid":[51,100],"dead":false},
+        {"off":3,"key":"6224","tid":[51,101],"dead":false},
+        {"off":366,"key":"6587","tid":[54,104],"dead":false},
+        {"off":367,"key":"6588","tid":[54,105],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 20,
+       "type": "l",
+       "level": 0,
+       "prev": 19,
+       "next": 21,
+       "high": "6955",
+       "items": [
+        {"off":2,"key":"6589","tid":[54,106],"dead":false},
+        {"off":3,"key":"6590","tid":[54,107],"dead":false},
+        {"off":366,"key":"6953","tid":[57,110],"dead":false},
+        {"off":367,"key":"6954","tid":[57,111],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 21,
+       "type": "l",
+       "level": 0,
+       "prev": 20,
+       "next": 22,
+       "high": "7321",
+       "items": [
+        {"off":2,"key":"6955","tid":[57,112],"dead":false},
+        {"off":3,"key":"6956","tid":[57,113],"dead":false},
+        {"off":366,"key":"7319","tid":[60,116],"dead":false},
+        {"off":367,"key":"7320","tid":[60,117],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 22,
+       "type": "l",
+       "level": 0,
+       "prev": 21,
+       "next": 23,
+       "high": "7687",
+       "items": [
+        {"off":2,"key":"7321","tid":[60,118],"dead":false},
+        {"off":3,"key":"7322","tid":[60,119],"dead":false},
+        {"off":366,"key":"7685","tid":[64,2],"dead":false},
+        {"off":367,"key":"7686","tid":[64,3],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 23,
+       "type": "l",
+       "level": 0,
+       "prev": 22,
+       "next": 24,
+       "high": "8053",
+       "items": [
+        {"off":2,"key":"7687","tid":[64,4],"dead":false},
+        {"off":3,"key":"7688","tid":[64,5],"dead":false},
+        {"off":366,"key":"8051","tid":[67,8],"dead":false},
+        {"off":367,"key":"8052","tid":[67,9],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 24,
+       "type": "l",
+       "level": 0,
+       "prev": 23,
+       "next": 25,
+       "high": "8419",
+       "items": [
+        {"off":2,"key":"8053","tid":[67,10],"dead":false},
+        {"off":3,"key":"8054","tid":[67,11],"dead":false},
+        {"off":366,"key":"8417","tid":[70,14],"dead":false},
+        {"off":367,"key":"8418","tid":[70,15],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 25,
+       "type": "l",
+       "level": 0,
+       "prev": 24,
+       "next": 26,
+       "high": "8785",
+       "items": [
+        {"off":2,"key":"8419","tid":[70,16],"dead":false},
+        {"off":3,"key":"8420","tid":[70,17],"dead":false},
+        {"off":366,"key":"8783","tid":[73,20],"dead":false},
+        {"off":367,"key":"8784","tid":[73,21],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 26,
+       "type": "l",
+       "level": 0,
+       "prev": 25,
+       "next": 27,
+       "high": "9151",
+       "items": [
+        {"off":2,"key":"8785","tid":[73,22],"dead":false},
+        {"off":3,"key":"8786","tid":[73,23],"dead":false},
+        {"off":366,"key":"9149","tid":[76,26],"dead":false},
+        {"off":367,"key":"9150","tid":[76,27],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 27,
+       "type": "l",
+       "level": 0,
+       "prev": 26,
+       "next": 28,
+       "high": "9517",
+       "items": [
+        {"off":2,"key":"9151","tid":[76,28],"dead":false},
+        {"off":3,"key":"9152","tid":[76,29],"dead":false},
+        {"off":366,"key":"9515","tid":[79,32],"dead":false},
+        {"off":367,"key":"9516","tid":[79,33],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 28,
+       "type": "l",
+       "level": 0,
+       "prev": 27,
+       "next": 29,
+       "high": "9883",
+       "items": [
+        {"off":2,"key":"9517","tid":[79,34],"dead":false},
+        {"off":3,"key":"9518","tid":[79,35],"dead":false},
+        {"off":366,"key":"9881","tid":[82,27],"dead":false},
+        {"off":367,"key":"9882","tid":[82,28],"dead":false}
+       ],
+       "n": 366
+      },
+      {
+       "blk": 29,
+       "type": "l",
+       "level": 0,
+       "prev": 28,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"9883","tid":[82,29],"dead":false},
+        {"off":2,"key":"9884","tid":[82,30],"dead":false},
+        {"off":117,"key":"9999","tid":[82,145],"dead":false},
+        {"off":118,"key":"10000","tid":[82,146],"dead":false}
+       ],
+       "n": 118
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "db": "shop"
+}

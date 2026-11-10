@@ -1,0 +1,10 @@
+{
+  "name": "empty",
+  "title": "empty",
+  "blurb": "a brand new database with nothing in it. the default when a block doesn't say db=.",
+  "files": [],
+  "analyze": false,
+  "extensions": [],
+  "setups": [],
+  "maxRowsPerTable": 30000
+}

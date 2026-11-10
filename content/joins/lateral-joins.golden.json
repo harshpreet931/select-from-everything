@@ -1,0 +1,114 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "e17db83085a40ed7": {
+      "db": "shop",
+      "sql": "SELECT c.name, o.id\nFROM customers AS c\nCROSS JOIN (SELECT o.id FROM orders AS o\n            WHERE o.customer_id = c.id\n            ORDER BY o.ordered_at DESC LIMIT 3) AS o\nWHERE c.id = 42;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P01",
+            "message": "invalid reference to FROM-clause entry for table \"c\"",
+            "detail": "There is an entry for table \"c\", but it cannot be referenced from this part of the query.",
+            "hint": "To reference that table, you must mark this subquery with LATERAL.",
+            "position": 116
+          },
+          "digest": "442e8ff4cfed4375"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P01",
+        "message": "invalid reference to FROM-clause entry for table \"c\"",
+        "detail": "There is an entry for table \"c\", but it cannot be referenced from this part of the query.",
+        "hint": "To reference that table, you must mark this subquery with LATERAL.",
+        "position": 116,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "b8bc168bcf9870bc": {
+      "db": "shop",
+      "sql": "SELECT c.id, c.name, o.id AS order_id, o.day\nFROM customers AS c\nCROSS JOIN LATERAL (\n  SELECT o.id, o.ordered_at::date AS day\n  FROM orders AS o\n  WHERE o.customer_id = c.id\n  ORDER BY o.ordered_at DESC\n  LIMIT 3\n) AS o\nWHERE c.id IN (1, 7, 42)\nORDER BY c.id, o.day DESC, o.id DESC;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["order_id", "int4", 23],
+            ["day", "date", 1082]
+          ],
+          "rowCount": 6,
+          "digest": "99f272cc8c70af4d",
+          "rows": [
+            ["1", "Maya Chen", "9982", "2026-06-26"],
+            ["1", "Maya Chen", "9405", "2026-06-05"],
+            ["1", "Maya Chen", "9398", "2026-06-05"],
+            ["42", "Ada Lovelace", "9946", "2026-06-25"],
+            ["42", "Ada Lovelace", "9615", "2026-06-13"],
+            ["42", "Ada Lovelace", "8219", "2026-04-23"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ded57b94a1a05fe2": {
+      "db": "shop",
+      "sql": "SELECT c.name,\n       (SELECT o.id FROM orders AS o\n        WHERE o.customer_id = c.id\n        ORDER BY o.ordered_at DESC LIMIT 3) AS order_id\nFROM customers AS c\nWHERE c.id = 42;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "21000",
+            "message": "more than one row returned by a subquery used as an expression"
+          },
+          "digest": "7ee6ef13f74342fb"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "21000",
+        "message": "more than one row returned by a subquery used as an expression",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "66227255f1460b31": {
+      "db": "shop",
+      "sql": "SELECT p.id, p.name, t.tag\nFROM products AS p\nCROSS JOIN LATERAL unnest(p.tags) AS t (tag)\nWHERE p.id <= 3\nORDER BY p.id, t.tag;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["tag", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "7d5e6a3e9196eccf",
+          "rows": [
+            ["1", "chef's knife", "sharp"],
+            ["1", "chef's knife", "steel"],
+            ["2", "cast iron pan", "iron"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

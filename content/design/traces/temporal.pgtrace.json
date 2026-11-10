@@ -1,0 +1,116 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/temporal.scenario.sql",
+ "title": "a room-booking table keyed by (room, during WITHOUT OVERLAPS), and four bookings to try",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "bookings": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"room","type":"int4"},{"name":"guest","type":"text"},{"name":"during","type":"daterange"}]
+  },
+  "bookings_pkey": {
+   "kind": "index",
+   "am": "gist",
+   "columns": [{"name":"room","type":"gbtreekey8"},{"name":"during","type":"daterange"}],
+   "on": "bookings"
+  }
+ },
+ "base": {"xid":753,"lsn":27498208},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE bookings (\n  room   int       NOT NULL,\n  guest  text      NOT NULL,\n  during daterange NOT NULL,\n  PRIMARY KEY (room, during WITHOUT OVERLAPS)\n);\nINSERT INTO bookings VALUES (101, 'ada', '[2026-03-02,2026-03-05)'), (101, 'grace', '[2026-03-05,2026-03-07)')",
+   "note": "bookings keyed by room and stay. the key is checked for overlap, not equality.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO bookings VALUES (101, 'edsger', '[2026-03-04,2026-03-06)')",
+   "note": "edsger wants room 101 from march 4 to 6. that overlaps both stays, and the key refuses it.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23P01",
+    "message": "conflicting key value violates exclusion constraint \"bookings_pkey\"",
+    "detail": "Key (room, during)=(101, [2026-03-04,2026-03-06)) conflicts with existing key (room, during)=(101, [2026-03-02,2026-03-05))."
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO bookings VALUES (102, 'edsger', '[2026-03-04,2026-03-06)')",
+   "note": "the same dates in room 102: a different key, no conflict.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT room, guest, during FROM bookings ORDER BY room, lower(during)",
+   "note": "the bookings.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"room","type":"int4"},{"name":"guest","type":"text"},{"name":"during","type":"daterange"}],
+    "data": [
+     ["101","ada","[2026-03-02,2026-03-05)"],
+     ["101","grace","[2026-03-05,2026-03-07)"],
+     ["102","edsger","[2026-03-04,2026-03-06)"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO bookings VALUES (101, 'barbara', '[2026-03-07,2026-03-09)')",
+   "note": "room 101 from march 7, the day grace leaves. half-open ranges touch without overlapping.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT room, guest, during FROM bookings ORDER BY room, lower(during)",
+   "note": "the bookings.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"room","type":"int4"},{"name":"guest","type":"text"},{"name":"during","type":"daterange"}],
+    "data": [
+     ["101","ada","[2026-03-02,2026-03-05)"],
+     ["101","grace","[2026-03-05,2026-03-07)"],
+     ["101","barbara","[2026-03-07,2026-03-09)"],
+     ["102","edsger","[2026-03-04,2026-03-06)"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "INSERT INTO bookings VALUES (103, 'nobody', 'empty')",
+   "note": "an empty stay. a WITHOUT OVERLAPS key refuses empty ranges outright.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23514",
+    "message": "empty WITHOUT OVERLAPS value found in column \"during\" in relation \"bookings\""
+   }
+  }
+ ]
+}

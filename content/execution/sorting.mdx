@@ -1,0 +1,169 @@
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import trace from "./traces/sorting.pgtrace.json";
+
+{/* the sort switch reads traces/sorting.scenario.sql, captured on PGlite with the events dataset:
+    the same ORDER BY, with and without LIMIT 10, at 4MB, 1MB and 64kB of work_mem (steps 0 to 5),
+    then the same ORDER BY ... LIMIT without and with an index on user_id (steps 6, 7). the external merge slides are a hand-drawn
+    model with twelve numbers. */}
+
+<InShort>
+a Sort node picks its algorithm when it runs, by how much fits in **work_mem**. everything fits: **quicksort** in memory. a LIMIT on top: a **top-N heapsort** that only ever keeps the best n rows. too big: an **external merge**, which sorts runs that fit, writes them to temp files and merges them.
+
+and if the rows already arrive sorted on the first keys, an **Incremental Sort** only sorts within each group of equal leading keys.
+</InShort>
+
+## the picture
+
+you know how EXPLAIN ANALYZE sometimes says `Sort Method: quicksort  Memory: 1684kB` and sometimes `external merge  Disk: 1040kB` for the same ORDER BY? the query didn't change. the room did.
+
+think of sorting a pile of exam papers on a desk. if the pile fits on the desk, spread them out and sort them (quicksort). if you only need the top 10, keep a stack of 10 and swap in any paper that beats the worst one in it (a heap). if the pile is bigger than the desk, sort one deskful at a time into neat stacks on the floor, then merge the stacks by repeatedly taking the best top paper (external merge).
+
+the events table, 25,000 rows, sorted by kind and newest first, at three sizes of desk:
+
+<Figure wide caption={<>pick a query and a work_mem. without a LIMIT, 4MB fits all 25,000 rows in memory and anything less <C k="hot">spills to disk</C>. with LIMIT 10, the sort keeps 10 rows in 18kB whatever work_mem is. the bar is the kB each sort used, in memory or on disk.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[
+    { key: "query", values: ["ORDER BY", "ORDER BY ... LIMIT 10"] },
+    { key: "work_mem", values: ["4MB", "1MB", "64kB"] },
+  ]}
+  runs={{
+    "ORDER BY | 4MB": 0,
+    "ORDER BY ... LIMIT 10 | 4MB": 1,
+    "ORDER BY | 1MB": 2,
+    "ORDER BY ... LIMIT 10 | 1MB": 3,
+    "ORDER BY | 64kB": 4,
+    "ORDER BY ... LIMIT 10 | 64kB": 5,
+  }}
+  hot={["Sort Method", "temp read"]}
+  metric={{ label: "kB the sort used (Memory or Disk)", re: /(?:Memory|Disk): (\d+)kB/, unit: "kB" }}
+/>
+</Figure>
+
+the 1,684kB in memory became 1,040kB on disk at 1MB: in memory every row also carries some bookkeeping, on disk it is packed tight. at 64kB it's more runs, each a sliver of memory's worth, so more merging and more temp traffic (289 pages written instead of 131) for the same rows.
+
+## quicksort
+
+```sql run db=events
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, user_id, kind, occurred_at
+FROM events
+ORDER BY kind, occurred_at DESC;
+```
+
+the whole input goes into memory, then gets sorted, then the first row comes out. that's why a Sort is a [blocking node](/learn/execution/iterator-model): its first row could be anybody. `Memory: 1684kB` is the peak, and it has to be under work_mem (4MB by default, per sort, per query, so a query with three Sorts can use three times that).
+
+## top-N heapsort
+
+with a LIMIT above it, postgres tells the Sort how many rows it'll ever be asked for. the sort keeps a heap of the best n so far: each new row is compared with the worst of the n, and either thrown away or swapped in. 25,000 rows go through it; 10 are ever held.
+
+<Predict question="ORDER BY ... LIMIT 10 over 25,000 rows, work_mem = 64kB. what happens?" options={["external merge on disk", "top-N heapsort in memory", "an error: too little memory"]} answer={1}>
+```sql
+SET work_mem = '64kB';
+SELECT id, user_id, kind, occurred_at
+FROM events
+ORDER BY kind, occurred_at DESC
+LIMIT 10;
+```
+<Explain>
+top-N heapsort, in 18kB. the sort only ever holds 10 rows, so it never comes near 64kB. it still reads all 25,000 (a heap can't know the 25,000th row isn't the best), but nothing spills. a LIMIT doesn't make the scan shorter here, it makes the sort smaller.
+</Explain>
+</Predict>
+
+## external merge
+
+when the rows don't fit, postgres fills work_mem, sorts what it has, writes it out as a sorted **run**, and starts again. at the end it merges the runs: one cursor per run, and the next output row is always the smallest row under any cursor. with a tiny pile and a desk that holds four:
+
+<Figure caption={<>a model of an external sort with room for 4 values, on 12. step through: three runs, each sorted in memory and written out, then one merge with a <C k="ref">cursor</C> per run. the <C k="hot">hot</C> value is the smallest under the cursors, the next one out.</>}>
+<Slides label="step">
+<Slide note="the input: 12 values, and memory that holds 4.">
+<ArrayViz values={[42, 7, 19, 88, 3, 61, 25, 14, 90, 8, 33, 56]} label="input" range={[0, 3, "hot"]} />
+</Slide>
+<Slide note="fill memory, quicksort it, write it out: run 1. then the next 4, and the last 4.">
+<ArrayViz values={[7, 19, 42, 88]} label="run 1 (temp file)" />
+<ArrayViz values={[3, 14, 25, 61]} label="run 2 (temp file)" />
+<ArrayViz values={[8, 33, 56, 90]} label="run 3 (temp file)" />
+</Slide>
+<Slide note="merge: a cursor at the front of every run. the smallest of 7, 3 and 8 is 3, from run 2.">
+<ArrayViz values={[7, 19, 42, 88]} label="run 1" pointers={{ 0: "▲" }} />
+<ArrayViz values={[3, 14, 25, 61]} label="run 2" pointers={{ 0: "▲" }} tones={{ 0: "hot" }} />
+<ArrayViz values={[8, 33, 56, 90]} label="run 3" pointers={{ 0: "▲" }} />
+<ArrayViz values={[3]} label="output" indices={false} />
+</Slide>
+<Slide note="run 2's cursor moves on to 14. now the smallest of 7, 14 and 8 is 7, from run 1.">
+<ArrayViz values={[7, 19, 42, 88]} label="run 1" pointers={{ 0: "▲" }} tones={{ 0: "hot" }} />
+<ArrayViz values={[3, 14, 25, 61]} label="run 2" pointers={{ 1: "▲" }} dim={[0]} />
+<ArrayViz values={[8, 33, 56, 90]} label="run 3" pointers={{ 0: "▲" }} />
+<ArrayViz values={[3, 7]} label="output" indices={false} />
+</Slide>
+<Slide note="and so on, one comparison per output row, until every run is used up. each value was written once and read back once.">
+<ArrayViz values={[7, 19, 42, 88]} label="run 1" dim={[0, 1, 2, 3]} />
+<ArrayViz values={[3, 14, 25, 61]} label="run 2" dim={[0, 1, 2, 3]} />
+<ArrayViz values={[8, 33, 56, 90]} label="run 3" dim={[0, 1, 2, 3]} />
+<ArrayViz values={[3, 7, 8, 14, 19, 25, 33, 42, 56, 61, 88, 90]} label="output" range={[0, 11, "live"]} indices={false} />
+</Slide>
+</Slides>
+<Provenance drawn="a textbook model, not a capture" />
+</Figure>
+
+postgres does the same with many more runs and a heap of cursors instead of a row of them, and if there are too many runs to merge at once it merges them in rounds. in the plan, it's `Sort Method: external merge  Disk: 1040kB`, and the temp files show up under `Buffers:` as `temp read` and `temp written`, counted in 8 KB pages:
+
+```sql run db=events
+SET work_mem = '1MB';
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, user_id, kind, occurred_at
+FROM events
+ORDER BY kind, occurred_at DESC;
+```
+
+an external sort isn't a disaster: it's sequential writes and reads of files the OS will often keep in its cache. it's just slower than not doing it, and it's the first thing to look for when a big ORDER BY, a merge join or a DISTINCT is slow. `log_temp_files` logs every temp file over a size you pick, which is how you find them in production.
+
+## incremental sort <Since v={13} />
+
+sometimes the rows already arrive sorted on the first key you asked for. an index on `user_id` hands rows over by user, so `ORDER BY user_id, occurred_at` only has to sort each user's few dozen events among themselves:
+
+```sql run db=events
+CREATE INDEX ON events (user_id);
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, user_id, occurred_at
+FROM events
+ORDER BY user_id, occurred_at
+LIMIT 10;
+```
+
+<Figure wide caption={<>the same ORDER BY user_id, occurred_at LIMIT 10, before and after an index on user_id. without it, a top-N heapsort has to see all 25,000 rows. with it, an <C k="hot">Incremental Sort</C> sorts one user's events at a time and stops once it has 10. the bar is the rows the scan handed up.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "index on user_id", values: ["no", "yes"] }]}
+  runs={{ no: 6, yes: { step: 7, sql: "CREATE INDEX ON events (user_id);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, occurred_at FROM events ORDER BY user_id, occurred_at LIMIT 10;" } }}
+  hot={["Incremental Sort", "Presorted Key", "Sort Method", "actual rows=25000", "actual rows=1135"]}
+  metric={{ label: "rows the scan handed up", re: /Scan[^\n]*actual rows=([\d.]+)/, unit: "rows" }}
+/>
+</Figure>
+
+`Presorted Key: user_id`. the Incremental Sort reads one group of equal user_ids at a time from the index, sorts that group on occurred_at, and hands it up. with a LIMIT, that means it stops early: the index scan returned 1,135 rows, not 25,000, because 10 rows were done long before the last user. a plain Sort would have read and sorted all of them first. (the `Full-sort Groups` and `Pre-sorted Groups` lines are its own accounting: it batches small groups together and sorts them as one.)
+
+<Quiz question="what decides between quicksort and external merge?" options={["the planner, at plan time", "data size vs work_mem, at run", "whether there is an index"]} answer={1}>
+<Explain>
+the Sort node decides while it runs: it starts in memory, and switches to writing runs the moment the data outgrows work_mem. the planner only estimated the cost of both. that's why the same plan can say quicksort one day and external merge the next, after the table grew.
+</Explain>
+</Quiz>
+
+<Gotcha title="work_mem is per operation, not per query">
+work_mem is the budget for *each* sort and hash in a plan, and parallel workers get their own. a plan with four Sorts and two Hashes can use six of them, and fifty connections running it can use three hundred. raising work_mem globally to make one report fast is how servers run out of memory. raise it for the one session or transaction that needs it: `SET LOCAL work_mem = '256MB'`.
+</Gotcha>
+
+<Interview q="how does postgres sort data that doesn't fit in memory?">
+an external merge sort. it reads rows until work_mem is full, sorts them in memory, writes that sorted run to a temp file, and repeats; then it merges the runs, keeping one cursor per run and always taking the smallest current row, in several rounds if there are too many runs. EXPLAIN ANALYZE says Sort Method: external merge with the Disk usage, and temp read/written in Buffers. bonus points: with a LIMIT it uses a top-N heapsort that holds only n rows, and when the input is already sorted on leading keys an Incremental Sort sorts only within groups, and can stop early.
+</Interview>
+
+<Keylines>
+- fits in work_mem: quicksort, in memory.
+- LIMIT n above it: top-N heapsort, holding only n rows.
+- doesn't fit: external merge, sorted runs in temp files, merged at the end.
+- the method is chosen while the sort runs, by size, not by the planner.
+- already sorted on the leading keys: Incremental Sort sorts group by group and can stop early.
+</Keylines>

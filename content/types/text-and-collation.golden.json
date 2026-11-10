@@ -1,0 +1,400 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "b6ae997999407942": {
+      "db": "empty",
+      "sql": "CREATE TABLE users (name varchar(5));\nINSERT INTO users (name) VALUES ('Ada Lovelace');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22001",
+            "message": "value too long for type character varying(5)"
+          },
+          "digest": "18355aac3040b9d8"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22001",
+        "message": "value too long for type character varying(5)",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "5b725760690df276": {
+      "db": "empty",
+      "sql": "SELECT 'Ada Lovelace'::varchar(3) AS cut, 'Ada Lovelace'::text AS whole;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["cut", "varchar", 1043],
+            ["whole", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "9b0d3bc3c14c24ab",
+          "rows": [
+            ["Ada", "Ada Lovelace"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c356ca3eddab9c2b": {
+      "db": "empty",
+      "sql": "SELECT 'ab'::char(5) = 'ab   '::char(5)        AS char_equal,\n       'ab'::varchar(5) = 'ab   '::varchar(5)  AS varchar_equal,\n       length('ab'::char(5))                   AS char_length,\n       octet_length('ab'::char(5))             AS char_bytes;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["char_equal", "bool", 16],
+            ["varchar_equal", "bool", 16],
+            ["char_length", "int4", 23],
+            ["char_bytes", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "ea00234de220422c",
+          "rows": [
+            ["t", "f", "2", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "50d9e4fffa9955f2": {
+      "db": "empty",
+      "sql": "SELECT 'ab'::char(5) || 'x'       AS glued,\n       concat('ab'::char(5), 'x') AS concatenated;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["glued", "text", 25],
+            ["concatenated", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "666c810e44243a8f",
+          "rows": [
+            ["abx", "ab   x"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4494d88fb325ef13": {
+      "db": "empty",
+      "sql": "CREATE TABLE people (name varchar(50));\nINSERT INTO people VALUES ('Ada Lovelace'), ('Grace Hopper');\nSELECT pg_relation_filenode('people') AS file_before;\nALTER TABLE people ALTER COLUMN name TYPE varchar(255);\nSELECT pg_relation_filenode('people') AS file_after_widening;\nALTER TABLE people ALTER COLUMN name TYPE varchar(20);\nSELECT pg_relation_filenode('people') AS file_after_narrowing;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["file_before", "oid", 26]
+          ],
+          "rowCount": 1,
+          "digest": "e2d16804049dc04d",
+          "rows": [
+            ["16384"]
+          ]
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c9df9cfa72a1225e"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["file_after_widening", "oid", 26]
+          ],
+          "rowCount": 1,
+          "digest": "d673066d5fa2c10a",
+          "rows": [
+            ["16384"]
+          ]
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "d02ad37b21e292e8"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["file_after_narrowing", "oid", 26]
+          ],
+          "rowCount": 1,
+          "digest": "f97d235dc9a10adf",
+          "rows": [
+            ["16387"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "dbaf46e09a2b51c1": {
+      "db": "empty",
+      "sql": "SELECT datcollate, datctype FROM pg_database WHERE datname = current_database();\nSELECT 'B' < 'a' AS capital_b_first, 'Zoe' < 'Zoë' AS plain_e_first;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["datcollate", "text", 25],
+            ["datctype", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "b48851a3ea752d6c",
+          "rows": [
+            ["C", "C.UTF-8"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["capital_b_first", "bool", 16],
+            ["plain_e_first", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "a36d2b6af20252f3",
+          "rows": [
+            ["t", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a9851b9f1d65fd7a": {
+      "db": "empty",
+      "sql": "SELECT w\nFROM (VALUES ('apple'), ('Banana'), ('cherry'), ('ost'), ('Öl'), ('zebra'), ('zoe'), ('Zoë'), ('Ångström')) AS t (w)\nORDER BY w;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["w", "text", 25]
+          ],
+          "rowCount": 9,
+          "digest": "7fbef43080acba5d",
+          "rows": [
+            ["Banana"],
+            ["Zoë"],
+            ["apple"],
+            ["cherry"],
+            ["ost"],
+            ["zebra"],
+            ["zoe"],
+            ["Ångström"],
+            ["Öl"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "242d01d7ccc05df9": {
+      "db": "empty",
+      "sql": "SELECT w\nFROM (VALUES ('apple'), ('Banana'), ('cherry'), ('ost'), ('Öl'), ('zebra'), ('zoe'), ('Zoë'), ('Ångström')) AS t (w)\nORDER BY w COLLATE \"unicode\";",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["w", "text", 25]
+          ],
+          "rowCount": 9,
+          "digest": "96bd6af4d7476881",
+          "rows": [
+            ["Ångström"],
+            ["apple"],
+            ["Banana"],
+            ["cherry"],
+            ["Öl"],
+            ["ost"],
+            ["zebra"],
+            ["zoe"],
+            ["Zoë"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "414253a3d5b0c3a1": {
+      "db": "empty",
+      "sql": "CREATE COLLATION numeric_sort (provider = icu, locale = 'en-u-kn');\nSELECT x\nFROM (VALUES ('item 10'), ('item 9'), ('item 100'), ('Item 2')) AS t (x)\nORDER BY x COLLATE numeric_sort;",
+      "statements": [
+        {
+          "tag": "CREATE COLLATION",
+          "command": "CREATE COLLATION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "95af69dbce95e990"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["x", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "53b6a683583297a5",
+          "rows": [
+            ["Item 2"],
+            ["item 9"],
+            ["item 10"],
+            ["item 100"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "bbf5d4bfac677664": {
+      "db": "empty",
+      "sql": "SELECT lower('Zoë') = lower('ZOË') AS lowered, 'Zoë Martin' ILIKE 'zoë%' AS ilike;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lowered", "bool", 16],
+            ["ilike", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "d30c91e736364b5b",
+          "rows": [
+            ["t", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "77ccfa1b225b1922": {
+      "db": "empty",
+      "sql": "CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);\nCREATE TABLE members (name text COLLATE ci UNIQUE);\nINSERT INTO members VALUES ('Zoë');\nINSERT INTO members VALUES ('ZOË');",
+      "statements": [
+        {
+          "tag": "CREATE COLLATION",
+          "command": "CREATE COLLATION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "95af69dbce95e990"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "",
+          "command": "",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"members_name_key\"",
+            "detail": "Key (name)=(ZOË) already exists.",
+            "schema": "public",
+            "table": "members",
+            "constraint": "members_name_key"
+          },
+          "digest": "0cc1258763b1faf0"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"members_name_key\"",
+        "detail": "Key (name)=(ZOË) already exists.",
+        "schema": "public",
+        "table": "members",
+        "constraint": "members_name_key",
+        "statement": 3
+      },
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "547fcde6a1666f2e": {
+      "db": "empty",
+      "sql": "CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);\nSELECT 'Zoë Martin' LIKE 'ZOË%' COLLATE ci AS case_blind_like;",
+      "statements": [
+        {
+          "tag": "CREATE COLLATION",
+          "command": "CREATE COLLATION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "95af69dbce95e990"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["case_blind_like", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "9aa3746108b7f6ae",
+          "rows": [
+            ["t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    }
+  }
+}

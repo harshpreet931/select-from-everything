@@ -1,0 +1,165 @@
+import { PageFill } from "@/components/figures/storage/PageFill";
+import { HeaderBytes } from "@/components/figures/storage/HeaderBytes";
+import pageFill from "./traces/page-fill.pgtrace.json";
+import pageBytes from "./traces/page-bytes.pgtrace.json";
+
+<InShort>
+a table is a file of 8 KB **pages**. every page is laid out the same way: a 24-byte **header**, an array of 4-byte **line pointers** growing from the front, the tuples packed in from the back, and the free space in the middle.
+
+a row's address, its **ctid**, is (page number, line pointer number). not a byte offset. that one level of indirection is what lets postgres move tuples around inside a page without breaking a single index.
+</InShort>
+
+## the picture
+
+you know how `ctid` shows up as `(0,1)` and looks like a coordinate? it is one, just not the one you'd guess. the second number isn't "the first row on the page" or "byte 1". it's the number of an entry in a little table of contents at the top of the page.
+
+think of a page in a notebook where you keep recipes. you write a contents list from the top down (the line pointers), one short line per recipe saying where on the page it starts and how long it is. the recipes themselves you write from the bottom up (the tuples). the page is full when the two meet in the middle. and when you tell a friend "recipe 3 on page 0", you mean contents entry 3, so you're free to recopy recipe 3 somewhere else on the page later, as long as you fix its contents line.
+
+here is that, for real. an empty table, rows of different widths going in one at a time, then a delete, a VACUUM and one more insert. every byte offset is from the browser's engine, captured as it ran:
+
+<Figure wide caption={<>step through. <C k="ref">line pointers</C> grow right from byte 24, tuples grow left from byte 8192, and the dashed gap between pd_lower and pd_upper is the free space. what changed is <C k="hot">hot</C>. watch slots 3 and 4 after the VACUUM: their tuples move, their numbers don't.</>}>
+<PageFill trace={pageFill} rel="slots" start={4} />
+</Figure>
+
+four things to take from it. a row's line pointer is always 4 bytes, however wide the row. the tuples are packed tight against the end of the page, newest lowest. a delete moves nothing. and VACUUM can slide tuples around to close a hole, because everything outside the page refers to them by slot number, never by offset.
+
+## the header
+
+every page starts with the same 24 bytes. `page_header()` from pageinspect decodes them:
+
+```sql run db=lab
+SELECT lsn, checksum, flags, lower, upper, special, pagesize, version, prune_xid
+FROM page_header(get_raw_page('accounts', 0));
+```
+
+`lower` and `upper` are the two ends of the free space. `lower` is 36: the 24-byte header plus three 4-byte line pointers. `upper` is 8,072: where the lowest tuple starts. so this page has 8,036 bytes free in the middle. `special` is 8,192, the very end of the page: heap pages don't use the special space, index pages do (more below). `lsn` is the position in the [write-ahead log](/learn/wal/wal-records) of the last change to this page, which is how recovery knows whether a logged change already made it onto the page.
+
+those are just bytes, though. here are the raw ones:
+
+```sql run db=lab
+SELECT encode(substr(get_raw_page('accounts', 0), 1, 24), 'hex') AS header,
+       encode(substr(get_raw_page('accounts', 0), 25, 12), 'hex') AS line_pointers;
+```
+
+<Figure wide caption={<>the same 36 bytes, split into fields. the <C k="meta">header</C> is eight fields, little-endian (the low byte first, so <code>2400</code> is 0x0024 = 36). each <C k="ref">line pointer</C> packs an offset, two flag bits and a length into 32 bits.</>}>
+<HeaderBytes trace={pageBytes} />
+</Figure>
+
+the checksum is computed when the page is written out to its file, which is why it's sitting there even though nobody asked for it. checksums are [on by default since postgres 18](/learn/wal/checksums) <Since v={18} />, and the lab engine has them on too.
+
+## line pointers, and what ctid means
+
+`heap_page_items()` reads the line pointer array and follows each pointer to its tuple:
+
+```sql run db=lab
+SELECT lp, lp_off, lp_flags, lp_len, t_ctid
+FROM heap_page_items(get_raw_page('accounts', 0))
+ORDER BY lp;
+SELECT ctid, id, owner FROM accounts ORDER BY id;
+```
+
+<Figure wide caption={<>the lab's accounts page, drawn from the same capture as the bytes above. three <C k="ref">line pointers</C> right after the header, three tuples at the very end, and nearly 8 KB of free space between them. pick a slot to see its tuple's header.</>}>
+<PageView page={pageBytes.steps[3].heap.accounts[0]} xact={pageBytes.steps[3].xact} focus={2} fields={["id", "owner", "balance"]} provenance="real output, postgres 18.6 (PGlite 0.5.12) · page-bytes" />
+</Figure>
+
+slot 1 points at byte 8,152 and says the tuple there is 39 bytes long. slot 2 points at 8,112, slot 3 at 8,072. alice is 39 bytes, bob 37, carol 39 (bob has a shorter name), and each tuple starts on an 8-byte boundary, so they sit 40 bytes apart.
+
+and there's the ctid: `(0,1)` is "page 0, line pointer 1". that's the address everything else uses. an index entry for alice holds `(0,1)`. a [Tid Scan](/learn/execution/scans) goes straight there:
+
+```sql run db=lab
+EXPLAIN (COSTS OFF) SELECT owner FROM accounts WHERE ctid = '(0,2)';
+SELECT owner FROM accounts WHERE ctid = '(0,2)';
+```
+
+page 0, slot 2: one page read, one hop through the line pointer, bob.
+
+`lp_flags` is 1 for a normal tuple. the other values are what a slot becomes later in life: 0 unused (free to reuse), 2 a redirect (it points at another slot, part of a [HOT chain](/learn/mvcc/hot-updates)), 3 dead (the tuple is gone, but an index might still point here).
+
+## why the indirection
+
+the figure did this, and here it is as a query you can run. four rows, delete the second, vacuum, insert a fifth:
+
+```sql run db=lab session=slots
+CREATE TABLE slots (id int, note text);
+INSERT INTO slots VALUES (1, 'hi');
+INSERT INTO slots VALUES (2, repeat('-', 200));
+INSERT INTO slots VALUES (3, 'medium ' || repeat('=', 60));
+INSERT INTO slots VALUES (4, 'yo');
+DELETE FROM slots WHERE id = 2;
+VACUUM slots;
+SELECT lp, lp_off, lp_flags, lp_len FROM heap_page_items(get_raw_page('slots', 0)) ORDER BY lp;
+```
+
+slot 2 is unused now (flags 0, no offset). and slots 3 and 4 point somewhere new: their tuples were at 7,832 and 7,800 before the VACUUM, and now they're at 8,064 and 8,032, pushed up against slot 1's tuple so the free space is one gap again. an index on `slots` would still say `(0,3)` and `(0,4)`, and it would still be right. nobody outside the page had to hear about the move.
+
+<Predict question="now insert one more row. what's its ctid?" options={["(0,5)", "(0,2)", "(1,1)"]} answer={1}>
+```sql
+INSERT INTO slots VALUES (5, 'new');
+SELECT ctid, id FROM slots ORDER BY id;
+```
+<Explain>
+(0,2). slot 2 is unused, so the new row takes its number. the bytes come from the free space like always (at offset 8,000, just below slot 4's tuple), but the slot is recycled. that's also why ctids aren't in insertion order, and why "the row with the highest ctid is the newest" is a myth.
+</Explain>
+</Predict>
+
+```sql run session=slots
+INSERT INTO slots VALUES (5, 'new');
+SELECT ctid, id FROM slots ORDER BY id;
+```
+
+## how many rows fit
+
+a tuple costs its own length (rounded up to 8 bytes) plus its 4-byte line pointer. the lab's `notes` rows are short, an int and about 50 characters of text:
+
+```sql run db=lab
+SELECT (ctid::text::point)[0]::int AS page, count(*) AS rows
+FROM notes GROUP BY 1 ORDER BY 1;
+```
+
+97 to a page, and the 400th row spills onto a fifth page. and there's a ceiling no matter how small the rows get. a table with no columns at all still has a 24-byte tuple header and a 4-byte line pointer per row:
+
+```sql run db=lab
+CREATE TABLE nothing ();
+INSERT INTO nothing SELECT FROM generate_series(1, 600);
+SELECT (ctid::text::point)[0]::int AS page, count(*) AS rows
+FROM nothing GROUP BY 1 ORDER BY 1;
+```
+
+291 rows, and not one more. (8,192 − 24) / (24 + 4) = 291.7, and postgres sizes its per-page arrays for exactly that: 291 is the most line pointers a heap page can ever have. what the 24 bytes of a tuple header hold, and why wider rows waste more than you'd think, is the [next chapter](/learn/storage/tuple-layout).
+
+## not just tables
+
+indexes are files of pages too, with the same header and the same line pointers. the difference is the **special space** at the end, which heap pages leave empty. a b-tree page keeps its sibling links and its level there:
+
+```sql run db=lab
+SELECT 'accounts' AS rel, lower, upper, special FROM page_header(get_raw_page('accounts', 0))
+UNION ALL
+SELECT 'accounts_pkey', lower, upper, special FROM page_header(get_raw_page('accounts_pkey', 1))
+ORDER BY rel;
+```
+
+the index page ends 16 bytes early: `special` is 8,176. how b-tree pages use the rest is in [a real b-tree, page by page](/learn/index-internals/nbtree-pages).
+
+<Gotcha title="ctid is an address, not an id">
+a ctid tells you where a row version is right now. an UPDATE writes the new version somewhere else (that's [an UPDATE is an INSERT](/learn/mvcc/update-is-insert)), VACUUM FULL rewrites the whole table, and a reused slot can hand the same ctid to a different row later. it's fine inside one statement (deduplicating with `DELETE ... WHERE ctid NOT IN (...)` is a classic), and wrong anywhere it has to survive.
+
+```sql run db=lab
+SELECT ctid FROM accounts WHERE id = 3;
+UPDATE accounts SET balance = balance + 1 WHERE id = 3;
+SELECT ctid FROM accounts WHERE id = 3;
+```
+
+same carol, new address.
+</Gotcha>
+
+<Interview q="why does postgres use line pointers instead of storing tuple offsets in the index?">
+because tuples have to move inside a page. pruning and VACUUM compact a page by sliding the live tuples together, and rows change size when they're updated. if an index held byte offsets, every move would mean finding and fixing every index entry pointing at that tuple. with a line pointer in between, the index holds (page, slot), the slot holds the offset, and a compaction only rewrites the slots on the page it's already working on. bonus point: the same trick lets a HOT chain keep its root slot as a redirect, so index entries keep working after the tuple they pointed at is gone.
+</Interview>
+
+<Keylines>
+- a page is 8 KB: a 24-byte header, line pointers growing from the front, tuples from the back, free space between pd_lower and pd_upper.
+- a line pointer is 4 bytes: a 15-bit offset, 2 flag bits, a 15-bit length.
+- ctid = (page, line pointer). indexes store it, so tuples can move inside a page and nothing outside notices.
+- a deleted row's slot gets reused after VACUUM, which is why ctids aren't in insertion order.
+- at most 291 tuples fit on a heap page, however small they are.
+</Keylines>

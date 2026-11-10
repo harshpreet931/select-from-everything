@@ -1,0 +1,153 @@
+import { VectorModel } from "@/components/figures/index-internals/VectorModel";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import gold from "./vector-indexes.golden.json";
+
+{/* pgvector isn't in the browser engine (PGlite 0.5.12 here ships no vector extension), so
+    every block is native: a throwaway postgres 18.6 with pgvector 0.8.6 from Postgres.app.
+    HNSW and IVFFlat builds use randomness, so those blocks are volatile: the golden is one
+    run, and recall moves by a point or two between builds. the figure is a model. */}
+
+export const stmts = (needle) => Object.values(gold.blocks).find((b) => b.sql.includes(needle)).statements;
+export const hnsw = stmts("recall('hnsw.ef_search'")[1].rows.map((r) => ({ ef: Number(r[0]), recall: Number(r[1]) }));
+export const ivf = stmts("recall('ivfflat.probes'")[2].rows.map((r) => ({ probes: Number(r[0]), recall: Number(r[1]) }));
+
+<InShort>
+an embedding is a vector of hundreds of numbers, and "similar" means "close". exact nearest-neighbour search has to compare the query with every row, so vector indexes give up exactness on purpose. **HNSW** builds a layered graph and walks it greedily toward the query; **IVF** clusters the vectors into lists and scans only the few lists nearest the query. both trade **recall** (how many of the true nearest you get back) for speed, with one knob each: `hnsw.ef_search` and `ivfflat.probes`.
+</InShort>
+
+## the picture
+
+you know how [GiST](/learn/index-internals/gist-and-spgist) finds the nearest points with bounding boxes? in 2 dimensions a box rules out most of the plane. in 768 dimensions it rules out almost nothing: every point is about the same distance from every box. that's the "curse of dimensionality", and it's why exact indexes stop working for embeddings. the way out is to stop insisting on the exact answer.
+
+two everyday versions of that. finding a house in a city you don't know: you ask someone at the airport for the right district (a long jump), then someone there for the street, then knock on doors nearby (HNSW: long links on top, short ones at the bottom). or you sort the city into neighbourhoods once, and when someone asks, you only search the neighbourhood or two whose centre is closest to the address (IVF). both usually get it right, and occasionally miss a house just over a border.
+
+<Figure wide caption={<>both ideas on 70 points in 2 dimensions. HNSW: step from the top layer down; each layer has fewer points and longer <C k="ref">links</C>, and the search only ever moves to a closer point. IVF: the query is compared with the <C k="meta">centroids</C>, and only the nearest lists are scanned. try a small ef or one probe to see a <C k="dead">true neighbour missed</C>.</>}>
+<VectorModel />
+</Figure>
+
+## exact search first
+
+pgvector adds a `vector` type and distance operators: `<->` (euclidean), `<=>` (cosine distance), `<#>` (negative inner product). the browser's engine doesn't have it, so everything here ran on a real postgres 18.6 server. 10,000 vectors of 32 numbers, made deterministically from a hash, and 50 query vectors:
+
+```sql native session=vec
+CREATE EXTENSION vector;
+SELECT extversion FROM pg_extension WHERE extname = 'vector';
+CREATE TABLE items AS
+SELECT g AS id,
+       (SELECT array_agg((hashint4(g * 64 + d) % 1000) / 1000.0 ORDER BY d)
+        FROM generate_series(1, 32) AS d)::vector(32) AS v
+FROM generate_series(1, 10000) AS g;
+CREATE TABLE queries AS
+SELECT q AS qid,
+       (SELECT array_agg((hashint4(-q * 64 - d) % 1000) / 1000.0 ORDER BY d)
+        FROM generate_series(1, 32) AS d)::vector(32) AS v
+FROM generate_series(1, 50) AS q;
+ANALYZE items;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id FROM items ORDER BY v <-> (SELECT v FROM queries WHERE qid = 1) LIMIT 10;
+```
+
+no index: a seq scan computes all 10,000 distances, and a top-N heapsort keeps the 10 smallest, reading the whole table (258 buffers). that's exact, and it's the yardstick: the true 10 nearest for each of the 50 queries go in a table, and `recall()` measures how many of those an index finds:
+
+```sql native session=vec
+CREATE TABLE truth AS
+SELECT qid, (SELECT array_agg(id ORDER BY d, id)
+             FROM (SELECT id, i.v <-> q.v AS d FROM items AS i ORDER BY d, id LIMIT 10) AS nn) AS ids
+FROM queries AS q;
+-- recall@10 over the 50 queries, with one setting changed for the duration
+CREATE FUNCTION recall(setting text DEFAULT NULL, val int DEFAULT NULL)
+RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE r record; hits int := 0; got int[];
+BEGIN
+  IF setting IS NOT NULL THEN PERFORM set_config(setting, val::text, true); END IF;
+  FOR r IN SELECT t.ids, q.v FROM truth AS t JOIN queries AS q USING (qid) LOOP
+    SELECT array_agg(id) INTO got FROM (SELECT id FROM items ORDER BY v <-> r.v LIMIT 10) AS s;
+    hits := hits + (SELECT count(*) FROM unnest(r.ids) AS x WHERE x = ANY (got));
+  END LOOP;
+  RETURN round(hits / 500.0, 3);
+END $$;
+SELECT recall() AS exact_recall;
+```
+
+1.000 without an index, of course: the seq scan is exact.
+
+## HNSW
+
+HNSW (hierarchical navigable small world graphs, Malkov and Yashunin, 2016) puts every vector in a graph on layer 0, a random few on layer 1, fewer on layer 2, and so on, each linked to up to `m` near neighbours on each of its layers (pgvector's default `m` is 16, 32 on layer 0). an insert searches the graph for its own neighbours, with a candidate list of `ef_construction` (default 64). a query starts at the top, walks greedily toward the query vector, drops a layer, and at layer 0 runs a best-first search keeping `hnsw.ef_search` candidates (default 40):
+
+```sql native session=vec volatile
+CREATE INDEX items_hnsw ON items USING hnsw (v vector_l2_ops);
+SELECT ef AS ef_search, recall('hnsw.ef_search', ef)
+FROM unnest(ARRAY[10, 20, 40, 100, 200]) AS ef
+ORDER BY ef;
+```
+
+<Figure caption={<>recall@10 over 50 queries by hnsw.ef_search, from the run block above. one build: the graph's layers are drawn at random, so another build lands a point or two away.</>}>
+<Bars data={hnsw.map((r) => ({ label: `ef_search ${r.ef}`, value: r.recall, tone: r.recall >= 0.99 ? "live" : r.recall >= 0.9 ? "ref" : "hot" }))} max={1} unit="recall" />
+<Provenance recorded="postgres 18.6 with pgvector 0.8.6, a native server, one build" />
+</Figure>
+
+at the default of 40 the index found {hnsw[2].recall} of the true nearest; at 10, only {hnsw[0].recall}. raising `ef_search` widens the search and buys recall back, at the cost of looking at more of the graph. none of these numbers say "wrong": the index returned the closest vectors it found, and an approximate index is allowed to miss.
+
+here's one query at the default, with its buffer count:
+
+```sql native session=vec volatile
+SET hnsw.ef_search = 40;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id FROM items ORDER BY v <-> (SELECT v FROM queries WHERE qid = 1) LIMIT 10;
+```
+
+`Order By` on an Index Scan, like [GiST's nearest-neighbour scan](/learn/index-internals/gist-and-spgist), but approximate.
+
+<Predict question="the same 10-nearest query, before and after adding an HNSW index. what can change?" options={["nothing, only the speed", "which rows come back", "only their order"]} answer={1}>
+```sql
+SELECT id FROM items ORDER BY v <-> $1 LIMIT 10;
+```
+<Explain>
+which rows come back. with the index the planner runs an approximate scan, and the result is whatever the graph walk found: usually most of the true 10, sometimes a near miss in place of one. the pgvector README says it plainly: you will see different results after adding an approximate index. a test that compares results with and without the index will fail, and should.
+</Explain>
+</Predict>
+
+## IVF
+
+IVFFlat (an inverted file of flat, uncompressed vectors) runs k-means at build time to find `lists` centroids, and files each vector under its nearest one. a query compares itself with the centroids and scans only the `ivfflat.probes` nearest lists (default 1):
+
+```sql native session=vec volatile
+DROP INDEX items_hnsw;
+CREATE INDEX items_ivf ON items USING ivfflat (v vector_l2_ops) WITH (lists = 100);
+SELECT p AS probes, recall('ivfflat.probes', p)
+FROM unnest(ARRAY[1, 5, 10, 20, 50]) AS p
+ORDER BY p;
+```
+
+<Figure caption={<>recall@10 by ivfflat.probes, 100 lists, from the run block above. one build: k-means starts from random centroids.</>}>
+<Bars data={ivf.map((r) => ({ label: `probes ${r.probes}`, value: r.recall, tone: r.recall >= 0.95 ? "live" : r.recall >= 0.7 ? "ref" : "hot" }))} max={1} unit="recall" />
+<Provenance recorded="postgres 18.6 with pgvector 0.8.6, a native server, one build" />
+</Figure>
+
+one probe out of 100 lists found {ivf[0].recall} of the true neighbours: random 32-dimensional points don't cluster, so the nearest ones are spread over many lists. it took {ivf[4].probes} probes, half the lists, to get to {ivf[4].recall}. the README's starting points are lists = rows / 1000 (up to a million rows) and probes = √lists, and it notes IVFFlat must be built after the data is loaded, since the centroids come from the data. HNSW has no training step.
+
+```sql native session=vec volatile
+CREATE INDEX items_hnsw2 ON items USING hnsw (v vector_l2_ops);
+SELECT relname AS rel, pg_relation_size(oid) / 8192 AS pages
+FROM pg_class WHERE relname IN ('items', 'items_ivf', 'items_hnsw2')
+ORDER BY pages;
+```
+
+the sizes, on this build: IVFFlat is a little smaller than the table (it stores every vector once, plus the centroids), HNSW about twice the table, for the links.
+
+<Gotcha title="on small or uniform data, an index can lose">
+the HNSW plan above made 1,091 buffer accesses, against 261 for the seq scan of the whole table: the graph walk comes back to the same pages again and again (each one counts), and 10,000 rows is small. the exact numbers move a little from build to build, the direction doesn't. uniform random vectors are also close to the worst case for both indexes, since there are no clusters to exploit; real embeddings cluster, and recall at the same settings is usually better. approximate indexes pay off at hundreds of thousands to millions of rows. measure recall on your own data against an exact search, like the `truth` table here, before trusting the defaults.
+</Gotcha>
+
+<Deep title="filters and the missing rows">
+`WHERE category = 'tea' ORDER BY v <-> $1 LIMIT 10` with an HNSW index: the index walks the graph and returns its ef_search best candidates, then the filter throws away the ones that aren't tea. if tea is 5% of the rows, 40 candidates leave about 2, and you get 2 rows back, not 10. pgvector 0.8 added iterative index scans (`hnsw.iterative_scan`), which keep walking until enough rows pass the filter. the alternatives are a partial index per category, or a bigger ef_search.
+</Deep>
+
+<Keylines>
+- exact nearest-neighbour search compares the query with every row; vector indexes skip most of them on purpose.
+- HNSW is a layered graph: long jumps on top, a best-first search on layer 0 with ef_search candidates.
+- IVF clusters vectors into lists and scans the probes nearest lists.
+- recall is the price, and each index has one knob that buys it back with work: ef_search, probes.
+- adding the index changes which rows come back. measure recall against an exact search on your data.
+</Keylines>

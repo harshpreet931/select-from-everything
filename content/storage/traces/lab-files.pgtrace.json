@@ -1,0 +1,95 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/lab-files.scenario.sql",
+ "title": "the files behind the lab's notes table",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"}
+ },
+ "base": {"xid":753,"lsn":26051992},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT pg_relation_filepath('notes') AS path, pg_relation_filenode('notes') AS relfilenode,\n       current_setting('block_size') AS block_size, current_setting('segment_size') AS segment_size",
+   "note": "where notes lives, and the sizes that decide how its files are cut.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"path","type":"text"},
+     {"name":"relfilenode","type":"oid"},
+     {"name":"block_size","type":"text"},
+     {"name":"segment_size","type":"text"}
+    ],
+    "data": [["base/5/16486","16486","8192","1GB"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT c.relname, c.relkind, f.file, (pg_stat_file('base/5/' || f.file)).size AS bytes\nFROM pg_class c\nJOIN pg_ls_dir('base/5') AS f(file) ON f.file ~ ('^' || c.relfilenode || '(_[a-z]+)?(\\.[0-9]+)?$')\nWHERE c.oid IN ('notes'::regclass, 'notes_pkey'::regclass,\n                (SELECT reltoastrelid FROM pg_class WHERE relname = 'notes'))\n   OR c.oid = (SELECT indexrelid FROM pg_index WHERE indrelid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'notes'))\nORDER BY f.file",
+   "note": "every file in the database's directory that belongs to notes: the table, its free space map, its toast table and their indexes.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"relname","type":"name"},
+     {"name":"relkind","type":"char"},
+     {"name":"file","type":"text"},
+     {"name":"bytes","type":"int8"}
+    ],
+    "data": [
+     ["notes","r","16486","40960"],
+     ["notes","r","16486_fsm","24576"],
+     ["pg_toast_16486","t","16491","0"],
+     ["pg_toast_16486_index","i","16492","8192"],
+     ["notes_pkey","i","16493","16384"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT d AS entry, (pg_stat_file(d)).isdir AS dir FROM pg_ls_dir('.') AS d\nWHERE d IN ('base', 'global', 'pg_wal', 'pg_xact', 'pg_multixact', 'pg_tblspc', 'PG_VERSION')\nORDER BY d",
+   "note": "the top of the data directory.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [{"name":"entry","type":"text"},{"name":"dir","type":"bool"}],
+    "data": [
+     ["PG_VERSION","f"],
+     ["base","t"],
+     ["global","t"],
+     ["pg_multixact","t"],
+     ["pg_tblspc","t"],
+     ["pg_wal","t"],
+     ["pg_xact","t"]
+    ]
+   }
+  }
+ ],
+ "db": "lab"
+}

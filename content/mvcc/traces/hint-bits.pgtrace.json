@@ -1,0 +1,713 @@
+{
+ "v": 1,
+ "scenario": "content/mvcc/traces/hint-bits.scenario.sql",
+ "title": "a committed UPDATE, a checkpoint, then a plain SELECT that sets hint bits, dirties the page and writes WAL",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on",
+  "io_method": "sync"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":26572432},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;\nCHECKPOINT;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = balance + 10 WHERE id = 1",
+   "note": "T1 updates alice and commits. its xid goes into the tuples, and the commit goes into the WAL and the commit log. the tuples don't hear about it.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":3,"pins":0},
+     {"id":372,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"accounts_pkey","fork":"main","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":374,"rel":"accounts","fork":"vm","block":0,"dirty":true,"usage":3,"pins":0},
+     {"id":375,"rel":"accounts","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"accounts","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"accounts","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 789,
+    "summary": {"used":797,"dirty":132}
+   },
+   "wal": {
+    "insert": 26580928,
+    "flush": 26580928,
+    "redo": 25553624,
+    "checkpoint": 25553712,
+    "records": [
+     {
+      "lsn": 26572432,
+      "end": 26580888,
+      "prev": 26572336,
+      "xid": 759,
+      "rmgr": "Heap",
+      "type": "HOT_UPDATE",
+      "len": 8426,
+      "fpiLen": 8348,
+      "desc": "old_xmax: 759, old_off: 1, old_infobits: [], flags: 0x21, new_xmax: 0, new_off: 3",
+      "blocks": [{"rel":"accounts","block":0,"fpi":true},{"rel":"accounts (vm)","block":0,"fpi":true}]
+     },
+     {
+      "lsn": 26580888,
+      "end": 26580928,
+      "prev": 26572432,
+      "xid": 759,
+      "rmgr": "Transaction",
+      "type": "COMMIT",
+      "len": 34,
+      "fpiLen": 0,
+      "desc": "<time>",
+      "blocks": []
+     }
+    ]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 26580888,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "obs",
+   "sql": "CHECKPOINT",
+   "note": "a CHECKPOINT writes every dirty page out. the page on disk now has T1's xid in it and no hint that T1 committed.",
+   "status": "ok",
+   "result": {"command":"CHECKPOINT","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"accounts","fork":"main","block":0,"dirty":false,"usage":4,"pins":0},
+     {"id":372,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"accounts_pkey","fork":"main","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":374,"rel":"accounts","fork":"vm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":375,"rel":"accounts","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"accounts","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"accounts","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 791,
+    "summary": {"used":799,"dirty":0}
+   },
+   "wal": {
+    "insert": 26581136,
+    "flush": 26581136,
+    "redo": 26580928,
+    "checkpoint": 26581016,
+    "records": [
+     {
+      "lsn": 26580928,
+      "end": 26580960,
+      "prev": 26580888,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_REDO",
+      "len": 30,
+      "fpiLen": 0,
+      "desc": "wal_level replica",
+      "blocks": []
+     },
+     {
+      "lsn": 26580960,
+      "end": 26581016,
+      "prev": 26580928,
+      "xid": 0,
+      "rmgr": "Standby",
+      "type": "RUNNING_XACTS",
+      "len": 50,
+      "fpiLen": 0,
+      "desc": "nextXid 760 latestCompletedXid 759 oldestRunningXid 760",
+      "blocks": []
+     },
+     {
+      "lsn": 26581016,
+      "end": 26581136,
+      "prev": 26580960,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "CHECKPOINT_ONLINE",
+      "len": 114,
+      "fpiLen": 0,
+      "desc": "redo 0/19597C0; tli 1; prev tli 1; fpw true; wal_level replica; xid 0:760; oid 24576; multi 1; offset 0; oldest xid 744 in DB 1; oldest multi 1 in DB 1; oldest/newest commit timestamp xid: 0/0; oldest running xid 760; online",
+      "blocks": []
+     }
+    ]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 26580888,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "T2 just reads alice. to judge the two versions it looks T1's xid up in the commit log, then writes the answer into both tuple headers as hint bits. the page is dirty again, and because checksums are on, the first change since the checkpoint logs the whole page.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["110.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":372,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"accounts_pkey","fork":"main","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":374,"rel":"accounts","fork":"vm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":375,"rel":"accounts","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"accounts","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"accounts","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 791,
+    "summary": {"used":799,"dirty":1}
+   },
+   "wal": {
+    "insert": 26581344,
+    "flush": 26581136,
+    "redo": 26580928,
+    "checkpoint": 26581016,
+    "records": [
+     {
+      "lsn": 26581136,
+      "end": 26581344,
+      "prev": 26581016,
+      "xid": 0,
+      "rmgr": "XLOG",
+      "type": "FPI_FOR_HINT",
+      "len": 205,
+      "fpiLen": 156,
+      "desc": "",
+      "blocks": [{"rel":"accounts","block":0,"fpi":true}]
+     }
+    ]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 26581344,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "the same read again. the hint bits are already there: no commit log lookup, nothing dirtied, no WAL.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["110.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":372,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"accounts_pkey","fork":"main","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":374,"rel":"accounts","fork":"vm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":375,"rel":"accounts","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"accounts","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"accounts","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 791,
+    "summary": {"used":799,"dirty":1}
+   },
+   "wal": {"insert":26581344,"flush":26581136,"redo":26580928,"checkpoint":26581016,"records":[]},
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 26581344,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 10 WHERE id = 2;\nROLLBACK",
+   "note": "T1 updates bob, then rolls back. the aborted version stays on the page.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":372,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"accounts_pkey","fork":"main","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":374,"rel":"accounts","fork":"vm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":375,"rel":"accounts","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"accounts","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"accounts","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 791,
+    "summary": {"used":799,"dirty":1}
+   },
+   "wal": {
+    "insert": 26581456,
+    "flush": 26581136,
+    "redo": 26580928,
+    "checkpoint": 26581016,
+    "records": [
+     {
+      "lsn": 26581344,
+      "end": 26581416,
+      "prev": 26581136,
+      "xid": 760,
+      "rmgr": "Heap",
+      "type": "HOT_UPDATE",
+      "len": 70,
+      "fpiLen": 0,
+      "desc": "old_xmax: 760, old_off: 2, old_infobits: [], flags: 0x20, new_xmax: 0, new_off: 4",
+      "blocks": [{"rel":"accounts","block":0,"fpi":false}]
+     },
+     {
+      "lsn": 26581416,
+      "end": 26581456,
+      "prev": 26581344,
+      "xid": 760,
+      "rmgr": "Transaction",
+      "type": "ABORT",
+      "len": 34,
+      "fpiLen": 0,
+      "desc": "<time>",
+      "blocks": []
+     }
+    ]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8032,
+      "special": 8192,
+      "lsn": 26581416,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 760,
+        "ctid": [0,4],
+        "infomask": 258,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8032,
+        "len": 37,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 10242,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"2","owner":"bob","balance":"90.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed","760":"aborted"}
+  },
+  {
+   "i": 5,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 2",
+   "note": "T2 reads bob. the commit log says aborted, so the new version gets XMIN_INVALID and the old one XMAX_INVALID. no checkpoint since the last full page image, so this time it's a hint with no WAL at all.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "buffers": {
+    "frames": [
+     {"id":371,"rel":"accounts","fork":"main","block":0,"dirty":true,"usage":5,"pins":0},
+     {"id":372,"rel":"accounts_pkey","fork":"main","block":0,"dirty":false,"usage":5,"pins":0},
+     {"id":373,"rel":"accounts_pkey","fork":"main","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":374,"rel":"accounts","fork":"vm","block":0,"dirty":false,"usage":3,"pins":0},
+     {"id":375,"rel":"accounts","fork":"fsm","block":0,"dirty":false,"usage":2,"pins":0},
+     {"id":376,"rel":"accounts","fork":"fsm","block":1,"dirty":false,"usage":2,"pins":0},
+     {"id":377,"rel":"accounts","fork":"fsm","block":2,"dirty":false,"usage":2,"pins":0},
+     {"id":378,"rel":"pg_toast.pg_toast_16466_index","fork":"main","block":0,"dirty":false,"usage":1,"pins":0}
+    ],
+    "other": 791,
+    "summary": {"used":799,"dirty":1}
+   },
+   "wal": {"insert":26581456,"flush":26581136,"redo":26580928,"checkpoint":26581016,"records":[]},
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 40,
+      "upper": 8032,
+      "special": 8192,
+      "lsn": 26581416,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 760,
+        "ctid": [0,4],
+        "infomask": 2306,
+        "infomask2": 16387,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_HOT_UPDATED"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00"}
+       },
+       {
+        "lp": 4,
+        "lpFlags": "normal",
+        "off": 8032,
+        "len": 37,
+        "xmin": 760,
+        "xmax": 0,
+        "ctid": [0,4],
+        "infomask": 10754,
+        "infomask2": 32771,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_INVALID","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"2","owner":"bob","balance":"90.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed","760":"aborted"}
+  }
+ ]
+}

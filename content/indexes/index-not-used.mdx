@@ -1,0 +1,195 @@
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import trace from "./traces/not-used.pgtrace.json";
+
+{/* the checklist figure and the stale-statistics plans read traces/not-used.scenario.sql,
+    captured on PGlite: plain EXPLAIN for the checklist (shape and estimates), EXPLAIN ANALYZE for
+    the statistics pair (estimate against actual). */}
+
+export const stale = trace.steps[11].explain.Plan;
+export const fresh = trace.steps[13].explain.Plan;
+
+<InShort>
+when postgres ignores your index, it's one of two things. either the index **can't** answer the query as written (a function on the column, a type mismatch, a leading wildcard, an OR with an unindexed column), or it **could** but the planner thinks it's slower (too many matches, or statistics that are wrong about how many). EXPLAIN tells you which: the condition shows up as a `Filter` on a seq scan instead of an `Index Cond`.
+</InShort>
+
+## the picture
+
+you know how a phone book is useless for "everyone whose name ends in -son"? the book is sorted, but not by the thing you're asking about. most index mysteries are that: the question doesn't match the order the index is in. the rest are the planner deciding that the book isn't worth opening, because the answer is half the book.
+
+here are the usual suspects, each as written and fixed, from one capture. every one of them is a real plan from the postgres on this page.
+
+<Figure wide caption={<>pick a cause, then flip between the query as written and the fix. the tell is the same every time: the condition moves from a <code>Filter</code> on a Seq Scan to an <code>Index Cond</code>. plain EXPLAIN, so only estimated rows.</>}>
+<PlanPick
+  trace={trace}
+  groupLabel="cause"
+  keyLabel="version"
+  show={["est"]}
+  plans={[
+    { group: "function", label: "as written", step: 0, tone: "dead" },
+    { group: "function", label: "fixed", step: 1, tone: "live" },
+    { group: "cast", label: "as written", step: 2, tone: "dead" },
+    { group: "cast", label: "fixed", step: 3, tone: "live" },
+    { group: "wildcard", label: "as written", step: 4, tone: "dead" },
+    { group: "wildcard", label: "fixed", step: 5, tone: "live" },
+    { group: "OR", label: "as written", step: 6, tone: "dead" },
+    { group: "OR", label: "fixed", step: 7, tone: "live" },
+    { group: "too many", label: "as written", step: 8 },
+    { group: "too many", label: "fixed", step: 9, tone: "live" },
+  ]}
+/>
+</Figure>
+
+## the checklist
+
+all of these run on `shop` with an index on `customers(name)`, and on `orders(customer_id)` and `orders(status)`:
+
+```sql hidden session=nu db=shop
+CREATE INDEX orders_customer ON orders (customer_id);
+CREATE INDEX orders_status ON orders (status);
+CREATE INDEX customers_name ON customers (name);
+```
+
+### 1. a function on the column
+
+the index holds `name`. it doesn't hold `lower(name)`, so a condition on `lower(name)` can't search it:
+
+```sql run session=nu
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE lower(name) = 'ada lovelace';
+```
+
+the same goes for `name || ''`, `customer_id + 0`, `date(ordered_at)`, `ordered_at::date`. compare the bare column, or index the expression itself: `CREATE INDEX ON customers (lower(name))` ([expression indexes](/learn/indexes/partial-and-expression)). for dates, rewrite the function as a range on the column: `ordered_at >= '2026-01-01' AND ordered_at < '2026-01-02'`.
+
+### 2. a type mismatch
+
+`customer_id` is an `int`. `42.0` is a `numeric`. postgres has no `int = numeric` operator in the index's operator class, so it casts the column up to numeric, and the condition is on `(customer_id)::numeric`, which nothing indexes:
+
+```sql run session=nu
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42.0;
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = '42';
+```
+
+the quoted `'42'` works: an untyped literal takes the column's type. in application code this shows up as a driver that binds every number as numeric, or a `bigint` key compared with a `text` parameter. the plan shows the cast; [types and casts](/learn/types/types-and-casts) has the rules for which way it goes.
+
+### 3. a leading wildcard
+
+a sorted index can find everything that *starts* with something: it's a range. `LIKE 'Ada%'` becomes `name >= 'Ada' AND name < 'Adb'`. but `LIKE '%Lovelace'` can start with anything, so the order is no help:
+
+```sql run session=nu
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE '%Lovelace';
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE 'Ada%';
+```
+
+for "contains" searches, a trigram index does work ([full-text and fuzzy search](/learn/indexes/text-search)). `ILIKE` and case-insensitive regexes have the same problem as a function: index `lower(name)` and search `lower(name) LIKE 'ada%'`.
+
+<Gotcha title="LIKE 'Ada%' works here because the collation is C">
+turning a prefix into a range only works when the index's sort order is plain byte order, the C collation. the browser's database is C, so the plain index on `name` serves `LIKE 'Ada%'`. on a server whose database was created with a language collation (`en_US.UTF-8`, say), the same index sorts by language rules, and postgres can't turn the prefix into a range. there you'd create the index with the `text_pattern_ops` operator class, or with `COLLATE "C"`, to get prefix searches: `CREATE INDEX ON customers (name text_pattern_ops)`. that index then can't serve ordinary `<` and `ORDER BY name` in the language order, so some tables end up with both. [collations](/learn/types/text-and-collation) has the details.
+</Gotcha>
+
+### 4. OR
+
+an OR is fine when every side has an index: postgres builds a bitmap from each and ORs them together. it isn't when one side has no index, because that side alone needs the whole table:
+
+```sql run session=nu
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42 OR status = 'placed';
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42 OR shipped_at IS NULL;
+```
+
+`BitmapOr` in the first, a seq scan in the second. the fix is an index for the other side, or a `UNION` of two queries that each use one. and an OR on the same column is the easy case: postgres 18 turns `customer_id = 42 OR customer_id = 43` into `customer_id = ANY ('{42,43}')` and does a single index scan <Since v={18} />:
+
+```sql run session=nu
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE customer_id = 42 OR customer_id = 43;
+```
+
+### 5. too many matches
+
+the index works, and it isn't worth it:
+
+```sql run session=nu
+SELECT status, count(*) FROM orders GROUP BY status ORDER BY count(*) DESC;
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE status = 'delivered';
+```
+
+9,352 of 10,000 orders are delivered. fetching them one index entry at a time would cost far more than reading the 83 pages in order. this isn't a bug to fix. [when postgres uses an index](/learn/indexes/index-or-scan) shows where the line falls and why. if what you really query is the rare values, a [partial index](/learn/indexes/partial-and-expression) on just those is smaller and better.
+
+<Predict question="WHERE status = 'paid': 62 rows of 10,000. what plan?" options={["Seq Scan", "Index Scan on orders_status", "Bitmap scan on orders_customer"]} answer={1}>
+```sql
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE status = 'paid';
+```
+<Explain>
+the index on status. 62 rows is 0.6% of the table, and the statistics know it exactly: `status` has only six values, and every one of them is in the most-common-values list with its real frequency. the same column, the same index, a different value, and a different plan. the planner chooses per value, not per column.
+</Explain>
+</Predict>
+
+```sql run session=nu
+EXPLAIN (COSTS OFF) SELECT id FROM orders WHERE status = 'paid';
+SELECT most_common_vals, most_common_freqs FROM pg_stats
+WHERE tablename = 'orders' AND attname = 'status';
+```
+
+### 6. stale or missing statistics
+
+the planner's row counts come from `ANALYZE`. if the table changed a lot since, it plans for the old table. here's a job queue: when it was analyzed, 20 of 10,000 jobs were done. then almost all of them finished:
+
+```sql run session=nu
+CREATE TABLE jobs (id int PRIMARY KEY, state text NOT NULL);
+INSERT INTO jobs SELECT g, CASE WHEN g <= 20 THEN 'done' ELSE 'new' END
+FROM generate_series(1, 10000) AS g ORDER BY g;
+CREATE INDEX jobs_state ON jobs (state);
+ANALYZE jobs;
+UPDATE jobs SET state = 'done' WHERE id <= 9980;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM jobs WHERE state = 'done';
+ANALYZE jobs;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM jobs WHERE state = 'done';
+```
+
+<Figure wide caption={<>the same query before and after ANALYZE. with stale statistics postgres <C k="dead">expects {stale["Plan Rows"]} rows and gets {Number(stale["Actual Rows"]).toLocaleString("en-US")}</C>, so it walks the index for most of the table. after ANALYZE, a seq scan.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="statistics"
+  show={["est", "actual", "buffers"]}
+  pages
+  plans={[
+    { label: "stale", step: 11 },
+    { label: "after ANALYZE", step: 13 },
+  ]}
+/>
+</Figure>
+
+the reverse happens too: a value that used to be common and now is rare gets a seq scan it doesn't deserve. on a real server autovacuum runs ANALYZE for you after enough changes ([autovacuum](/learn/mvcc/autovacuum)); a big load or update followed straight away by queries can beat it to the table, so run `ANALYZE` yourself after bulk changes. a table that was never analyzed is worse: the planner falls back on built-in default selectivities, which are guesses ([estimating rows](/learn/optimizer/estimating-rows)).
+
+### 7. it was used, just not how you expected
+
+sometimes the index is there in the plan and still looks unused: a Bitmap Index Scan instead of an Index Scan, or a different index than the one you made, or an Index Scan with a big `Rows Removed by Filter` because only the first column of a [multicolumn index](/learn/indexes/composite-indexes) could narrow the search. read the `Index Cond` line: it says exactly which conditions the index searched on, and everything in `Filter` was checked row by row afterwards.
+
+## how to check, in order
+
+<Figure caption={<>the checklist as one path through EXPLAIN. every branch is a line you can read off the plan.</>}>
+<Tree>{`
+EXPLAIN (ANALYZE, BUFFERS), real values
+    a Filter, not an Index Cond
+        a function or a cast         // 1, 2
+        LIKE '%...'                  // 3
+        OR, one side unindexed       // 4
+    an Index Cond, not the one you hoped    // 7
+    no index in the plan at all
+        estimate far from actual     // 6: ANALYZE
+        estimate right, many rows    // 5: believe it
+`}</Tree>
+</Figure>
+
+1. `EXPLAIN (ANALYZE, BUFFERS)` the real query, with the real parameter values.
+2. is the condition in an `Index Cond`? if it's in a `Filter`, the index can't search on it as written: look for a function, a cast, a wildcard or an OR (1 to 4).
+3. compare `rows` estimated with actual. off by 10x or more: statistics (6), or correlated columns ([extended statistics](/learn/optimizer/extended-statistics)).
+4. estimates right and still a seq scan: it really is cheaper (5). check the plan with `SET enable_seqscan = off` in a test session to see what the index plan would cost, and believe the numbers. [steering the planner](/learn/optimizer/steering-the-planner) is about what you can actually change.
+
+<Interview q="your query has WHERE created_at::date = '2026-01-01' and an index on created_at isn't used. why, and how do you fix it?">
+the cast makes it an expression on the column, and the index stores created_at, not created_at::date, so the condition can't be an index search. rewrite it as a range on the bare column: created_at >= '2026-01-01' AND created_at < '2026-01-02', which the btree index serves directly. (on timestamptz the cast also depends on the session's time zone, which is why postgres won't even let you index created_at::date: the expression isn't immutable.) bonus point: the same family of problems includes lower(col), col + 0, a numeric parameter against an int column, and a leading % in LIKE. EXPLAIN shows all of them as a Filter instead of an Index Cond.
+</Interview>
+
+<Keylines>
+- Filter instead of Index Cond: the index can't search the condition as written.
+- functions, casts, leading wildcards and OR with an unindexed side all do that.
+- too many matches: the index works, and a seq scan is cheaper. not a bug.
+- wrong estimates come from stale statistics. ANALYZE after big changes.
+- LIKE 'abc%' needs C collation or text_pattern_ops on the index.
+</Keylines>

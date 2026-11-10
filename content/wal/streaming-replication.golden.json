@@ -1,0 +1,98 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5ad4b1a39d6355ef": {
+      "db": "lab",
+      "sql": "SELECT pg_is_in_recovery() AS standby, (SELECT count(*) FROM pg_stat_replication) AS standbys;\nSELECT name, setting FROM pg_settings\nWHERE name IN ('wal_level', 'max_wal_senders', 'max_replication_slots', 'hot_standby')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["standby", "bool", 16],
+            ["standbys", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "1decbc7345625949",
+          "rows": [
+            ["f", "0"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "febf7219dc7685ae",
+          "rows": [
+            ["hot_standby", "on"],
+            ["max_replication_slots", "10"],
+            ["max_wal_senders", "10"],
+            ["wal_level", "replica"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "76cb808c94f5f035": {
+      "db": "lab",
+      "sql": "SELECT slot_name FROM pg_create_physical_replication_slot('standby1', true);\nUPDATE notes SET body = 'x' WHERE id <= 200;\nSELECT slot_name, active, wal_status,\n       pg_wal_lsn_diff(pg_current_wal_insert_lsn(), restart_lsn) > 0 AS holding_wal\nFROM pg_replication_slots;\nSELECT pg_drop_replication_slot('standby1');",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["slot_name", "name", 19]
+          ],
+          "rowCount": 1,
+          "digest": "9a889b2467790578",
+          "rows": [
+            ["standby1"]
+          ]
+        },
+        {
+          "tag": "UPDATE 200",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 200,
+          "digest": "e8dc1bb8f593f70b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["slot_name", "name", 19],
+            ["active", "bool", 16],
+            ["wal_status", "text", 25],
+            ["holding_wal", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "1d23382cb4ab1b20",
+          "rows": [
+            ["standby1", "f", "reserved", "t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_drop_replication_slot", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "1cbad88664df2003",
+          "rows": [
+            [""]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    }
+  }
+}

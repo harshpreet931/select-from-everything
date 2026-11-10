@@ -1,0 +1,125 @@
+import { PlanCacheStrip } from "@/components/figures/optimizer/PlanCacheStrip";
+import { planOf, prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/plan-cache.pgtrace.json";
+
+{/* the figures read traces/plan-cache.scenario.sql, captured on PGlite with the events dataset
+    (`pnpm pgtrace <file> --engine=pglite --twice`): executions 1-8 of one prepared statement
+    (EXPLAIN EXECUTE plus the counters after it), then the 'view' query run for real under each
+    plan_cache_mode (a SET, a count, the plan). */}
+
+export const modes = Object.fromEntries([["auto", 18], ["force_custom_plan", 21], ["force_generic_plan", 24]].map(([m, i]) => [m, {
+  ...resultOf(trace, i),
+  sql: `SET plan_cache_mode = ${m};\nEXECUTE by_kind('view');`,
+  note: trace.steps[i + 1].note,
+  plan: planOf(trace, i + 1),
+}]));
+export const top = (i) => trace.steps[i].explain.Plan["Total Cost"].toFixed(2);
+
+<InShort>
+a **prepared statement** is parsed once and planned at execution. for its first **five** executions postgres makes a **custom plan** for the actual parameter values. after that it also prices a **generic plan**, made for any value (`$1` in EXPLAIN), and if that costs no more than the custom plans did on average, it uses the generic one from then on, without planning again.
+
+usually a good deal. on skewed data it isn't, and **plan_cache_mode** lets you choose.
+</InShort>
+
+## the picture
+
+you know how a query can be fast in psql and slow from the app, same SQL, same values? the app is often using a prepared statement (most drivers do, through the extended protocol), and it might be running a plan that was made for no value in particular.
+
+think of a tailor. the first five customers get a suit made to measure. by then the tailor knows roughly what people cost to fit, and makes one off-the-rack suit in an average size. if that suit is cheaper than the made-to-measure ones were on average, from now on everybody gets the rack suit, whatever their size. fine for most people. bad for the very tall.
+
+here's that, with `events.kind`, where 'view' is 60% of the rows and 'signup' is 2%:
+
+<Figure wide caption={<>eight executions of one prepared statement, five with 'view' and then three others. executions 1 to 5 are <C k="mute">custom</C> plans for 'view': seq scans. at execution 6 postgres prices the <C k="hot">generic</C> plan (estimated for 5,000 rows, any kind), finds it cheaper than the custom average, and keeps it, for 'signup' and 'purchase' too. the condition says <code>$1</code>: the value isn't in the plan.</>}>
+<PlanCacheStrip trace={trace} />
+</Figure>
+
+## five custom plans
+
+```sql run db=events session=pc
+CREATE INDEX events_kind ON events (kind);
+ANALYZE events;
+PREPARE by_kind(text) AS
+  SELECT max(occurred_at) FROM events WHERE kind = $1;
+EXPLAIN EXECUTE by_kind('signup');
+EXPLAIN EXECUTE by_kind('view');
+SELECT name, generic_plans, custom_plans FROM pg_prepared_statements;
+```
+
+two executions, two custom plans, each made for its value: a bitmap scan for the 500 signups, a seq scan for the 15,112 views. the value is in the plan as a constant (`'signup'::text`). `pg_prepared_statements` counts which kind of plan each execution got. (EXPLAIN EXECUTE goes through the plan cache exactly like EXECUTE, so it counts.)
+
+## then, maybe, a generic plan
+
+the generic plan is planned with `$1` unknown. the estimate for `kind = $1` can't use the MCV list, because it doesn't know which value: it uses 1 / n_distinct, so 1/5 of 25,000 = 5,000 rows, for any kind ([estimating rows](/learn/optimizer/estimating-rows)). at the sixth execution postgres compares:
+
+- the average cost of the custom plans so far, **plus** an estimate of what planning each of them cost (1,000 × cpu_operator_cost per table in the query, plus one more), since a generic plan saves that every time,
+- the generic plan's cost.
+
+if the generic plan is no more expensive, it wins and is cached. in the figure, the custom plans averaged {top(1)} and the generic plan costs {top(11)}, so from execution 6 on everyone gets the bitmap scan built for 5,000 rows.
+
+```sql run session=pc
+EXECUTE by_kind('view');
+EXECUTE by_kind('view');
+EXECUTE by_kind('view');
+EXPLAIN EXECUTE by_kind('signup');
+SELECT name, generic_plans, custom_plans FROM pg_prepared_statements;
+```
+
+there it is: `Recheck Cond: (kind = $1)`. this is the plan for every execution from now on, until the statement is deallocated, the session ends, or something invalidates the cache (an ANALYZE or DDL on the table).
+
+<Predict question="the first five executions were all 'signup' (500 rows, cheap bitmap scans). what does execution six use?" options={["the generic plan", "a custom plan", "a seq scan"]} answer={1}>
+```sql
+EXECUTE by_kind('signup');  -- × 5, then once more
+```
+<Explain>
+a custom plan. the custom plans cost 366.74 each (a cheap bitmap scan for 500 rows), and the generic plan for 5,000 rows costs 469.05, so postgres keeps planning per execution. it compares again every time, and keeps choosing custom as long as the custom plans stay cheaper than the generic one.
+</Explain>
+</Predict>
+
+## when the generic plan is wrong
+
+the bad case is the one in the figure, seen from the other side: a common value made the custom plans expensive, so the generic plan looked like a bargain. now run 'view' itself on that cached plan:
+
+<Figure wide caption={<>EXECUTE by_kind('view') under each plan_cache_mode, run for real. auto (after the five executions above) and force_generic_plan use the generic bitmap scan, <C k="dead">estimated at 5,000 rows, getting 15,112</C>. force_custom_plan plans for 'view' every time and gets the seq scan the data wants.</>}>
+<RunPick options={[{ key: "plan_cache_mode", values: ["auto", "force_custom_plan", "force_generic_plan"] }]} runs={modes} trace={prov(trace)} show={["est", "actual", "buffers"]} hot={["plan_cache_mode", "force_custom_plan", "force_generic_plan"]} />
+</Figure>
+
+a bitmap scan for 60% of the table, priced for 20% of it. here that's a modest loss; with a nested loop or a join order chosen on that estimate, it's the "fast in psql, slow in the app" query. the shape to look for: a column with a few very common values and many rare ones, used as a parameter.
+
+## plan_cache_mode
+
+```sql run session=pc
+SET plan_cache_mode = force_custom_plan;
+EXPLAIN EXECUTE by_kind('view');
+RESET plan_cache_mode;
+```
+
+three settings (postgres 12+):
+
+- **auto** (default): five custom plans, then the generic one if it's not more expensive.
+- **force_custom_plan**: plan every execution for its values. you pay planning time each time, and never get a plan for the wrong value.
+- **force_generic_plan**: use the generic plan from the first execution. no planning after the first, and every value shares one plan.
+
+set it per session, per role or database, or per function with `SET` in its definition, rather than server-wide:
+
+```sql
+ALTER ROLE app SET plan_cache_mode = force_custom_plan;
+```
+ a short, simple query with a uniform parameter is the generic plan's best case; a query on a skewed column is custom's.
+
+<Gotcha title="PL/pgSQL and drivers prepare for you">
+every static SQL statement in a PL/pgSQL function is a prepared statement, cached per session, with the same five-then-maybe-generic rule. so are queries from drivers that prepare statements (JDBC after `prepareThreshold` executions, for example). a pooler in transaction mode complicates which session has which statement, but the rule is the same. use `EXECUTE format(...)` in PL/pgSQL when a query must always be planned for its value.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/sql-prepare.html" title="PREPARE">the manual describes the choice: custom plans for the first five executions, then the generic plan if its estimated cost isn't much higher than the custom plans' average, with planning cost taken into account.</Docs>
+
+<Interview q="why can a query be fast in psql and slow from the application?">
+the application often runs it as a prepared statement. after five executions postgres may switch to a generic plan, made without knowing the parameter value: the estimate for col = $1 uses an average selectivity instead of the MCV list. on a skewed column that plan can be badly wrong for some values. check with PREPARE and EXPLAIN EXECUTE (a generic plan shows $1), or pg_prepared_statements.generic_plans. fix with plan_cache_mode = force_custom_plan for that role or function. bonus point: other causes are a different search_path, different settings per role, or a parameter of a different type than the column, which can stop an index from being used.
+</Interview>
+
+<Keylines>
+- prepared statements are planned at execution: five custom plans first, for the actual values.
+- then a generic plan, planned for $1, is used if it costs no more than the custom average (planning included).
+- a generic plan's estimate ignores the value: 1 / n_distinct for =, so skewed columns suffer.
+- EXPLAIN EXECUTE shows which you got: $1 in the plan means generic.
+- plan_cache_mode: auto, force_custom_plan, force_generic_plan. set it per role or function.
+</Keylines>

@@ -1,0 +1,445 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0b2ef77c1cf039bb": {
+      "db": "empty",
+      "sql": "CREATE TABLE orders_wide (\n  order_id   int  NOT NULL,\n  sku        text NOT NULL,\n  qty        int  NOT NULL,\n  product    text NOT NULL,\n  list_price numeric(8,2) NOT NULL,\n  ordered_on date NOT NULL,\n  email      text NOT NULL,\n  customer   text NOT NULL,\n  address    text NOT NULL,\n  PRIMARY KEY (order_id, sku)\n);\nINSERT INTO orders_wide VALUES\n  (101, 'TEA-01', 2, 'assam tea', 6.50, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (101, 'MUG-02', 1, 'blue mug',  9.00, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (102, 'TEA-01', 1, 'assam tea', 6.50, '2026-03-03', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (103, 'TEA-02', 3, 'green tea', 5.00, '2026-03-04', 'grace@example.com', 'Grace Okafor', '4 Elm Rd, Leeds'),\n  (104, 'MUG-02', 2, 'blue mug',  9.00, '2026-03-05', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 5",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 5,
+          "digest": "456640ddbdad5916"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "618082d4a5d9313b": {
+      "db": "empty",
+      "sql": "UPDATE orders_wide SET address = '3 Kew Gardens, London' WHERE order_id = 104;\n\nSELECT DISTINCT address FROM orders_wide WHERE email = 'ada@example.com' ORDER BY address;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "d4149e3cbcb8aced"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["address", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "5ffe202be02366f2",
+          "rows": [
+            ["12 Byron St, London"],
+            ["3 Kew Gardens, London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ccb9ec8db22723bf": {
+      "db": "empty",
+      "sql": "INSERT INTO orders_wide (email, customer, address)\nVALUES ('ming@example.com', 'Ming Li', '9 Canal St, Manchester');",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23502",
+            "message": "null value in column \"order_id\" of relation \"orders_wide\" violates not-null constraint",
+            "detail": "Failing row contains (null, null, null, null, null, null, ming@example.com, Ming Li, 9 Canal St, Manchester).",
+            "schema": "public",
+            "table": "orders_wide",
+            "column": "order_id"
+          },
+          "digest": "5bb57054aff2ad1e"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23502",
+        "message": "null value in column \"order_id\" of relation \"orders_wide\" violates not-null constraint",
+        "detail": "Failing row contains (null, null, null, null, null, null, ming@example.com, Ming Li, 9 Canal St, Manchester).",
+        "schema": "public",
+        "table": "orders_wide",
+        "column": "order_id",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "48a97db838e6fa00": {
+      "db": "empty",
+      "sql": "DELETE FROM orders_wide WHERE order_id = 103;\n\nSELECT count(*) FILTER (WHERE email = 'grace@example.com') AS grace_rows,\n       count(*) FILTER (WHERE sku = 'TEA-02') AS green_tea_rows\nFROM orders_wide;",
+      "statements": [
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "379ad7620834a00b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["grace_rows", "int8", 20],
+            ["green_tea_rows", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "87d11f94f9231906",
+          "rows": [
+            ["0", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5c27ac223ceb5734": {
+      "db": "empty",
+      "sql": "CREATE TABLE orders_csv (order_id int PRIMARY KEY, skus text);\nINSERT INTO orders_csv VALUES (101, 'TEA-01,MUG-02'), (102, 'TEA-01');\n\nSELECT order_id, sku\nFROM orders_csv, string_to_table(skus, ',') AS sku\nORDER BY order_id, sku;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["order_id", "int4", 23],
+            ["sku", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "ba063972b6bb923b",
+          "rows": [
+            ["101", "MUG-02"],
+            ["101", "TEA-01"],
+            ["102", "TEA-01"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7834e7ac9ed97025": {
+      "db": "empty",
+      "sql": "SELECT sku, count(DISTINCT (product, list_price)) AS versions\nFROM orders_wide\nGROUP BY sku\nHAVING count(DISTINCT (product, list_price)) > 1\nORDER BY sku;",
+      "statements": [
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["sku", "text", 25],
+            ["versions", "int8", 20]
+          ],
+          "rowCount": 0,
+          "digest": "213697921dd2c93e",
+          "rows": []
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f74b21629f995597": {
+      "db": "empty",
+      "sql": "CREATE TABLE orders_wide (\n  order_id int NOT NULL, sku text NOT NULL, qty int NOT NULL, product text NOT NULL,\n  list_price numeric(8,2) NOT NULL, ordered_on date NOT NULL, email text NOT NULL,\n  customer text NOT NULL, address text NOT NULL, PRIMARY KEY (order_id, sku)\n);\nINSERT INTO orders_wide VALUES\n  (101, 'TEA-01', 2, 'assam tea', 6.50, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (101, 'MUG-02', 1, 'blue mug',  9.00, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (102, 'TEA-01', 1, 'assam tea', 6.50, '2026-03-03', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (103, 'TEA-02', 3, 'green tea', 5.00, '2026-03-04', 'grace@example.com', 'Grace Okafor', '4 Elm Rd, Leeds'),\n  (104, 'MUG-02', 2, 'blue mug',  9.00, '2026-03-05', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 5",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 5,
+          "digest": "456640ddbdad5916"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b7a7460c6aa27777": {
+      "db": "empty",
+      "sql": "CREATE TABLE customers (\n  id      int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  email   text NOT NULL UNIQUE,\n  name    text NOT NULL,\n  address text NOT NULL\n);\nCREATE TABLE products (sku text PRIMARY KEY, name text NOT NULL, list_price numeric(8,2) NOT NULL);\nCREATE TABLE orders (\n  id          int PRIMARY KEY,\n  ordered_on  date NOT NULL,\n  customer_id int NOT NULL REFERENCES customers\n);\nCREATE TABLE order_lines (\n  order_id int  NOT NULL REFERENCES orders,\n  sku      text NOT NULL REFERENCES products,\n  qty      int  NOT NULL,\n  PRIMARY KEY (order_id, sku)\n);\n\nINSERT INTO customers (email, name, address)\nSELECT DISTINCT email, customer, address FROM orders_wide ORDER BY email;\nINSERT INTO products SELECT DISTINCT sku, product, list_price FROM orders_wide ORDER BY sku;\nINSERT INTO orders\nSELECT DISTINCT w.order_id, w.ordered_on, c.id\nFROM orders_wide AS w JOIN customers AS c USING (email) ORDER BY 1;\nINSERT INTO order_lines SELECT order_id, sku, qty FROM orders_wide ORDER BY 1, 2;\n\nSELECT (SELECT count(*) FROM customers) AS customers, (SELECT count(*) FROM products) AS products,\n       (SELECT count(*) FROM orders) AS orders, (SELECT count(*) FROM order_lines) AS lines;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "df879e4945d133d0"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "e50816625cce3678"
+        },
+        {
+          "tag": "INSERT 0 4",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "999fdff4a850ef1c"
+        },
+        {
+          "tag": "INSERT 0 5",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 5,
+          "digest": "21d832f8c8f719dc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customers", "int8", 20],
+            ["products", "int8", 20],
+            ["orders", "int8", 20],
+            ["lines", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "43f8e34a0f9e3bf4",
+          "rows": [
+            ["2", "3", "4", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b32980678570dddd": {
+      "db": "empty",
+      "sql": "WITH rejoined AS (\n  SELECT l.order_id, l.sku, l.qty, p.name AS product, p.list_price, o.ordered_on, c.email, c.name AS customer, c.address\n  FROM order_lines AS l\n  JOIN orders AS o ON o.id = l.order_id\n  JOIN products AS p USING (sku)\n  JOIN customers AS c ON c.id = o.customer_id\n)\nSELECT (SELECT count(*) FROM (TABLE rejoined EXCEPT TABLE orders_wide) AS x) AS extra,\n       (SELECT count(*) FROM (TABLE orders_wide EXCEPT TABLE rejoined) AS x) AS missing;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["extra", "int8", 20],
+            ["missing", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c4d98fa98978c33b",
+          "rows": [
+            ["0", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e2b2845f162fb012": {
+      "db": "empty",
+      "sql": "UPDATE customers SET address = '3 Kew Gardens, London' WHERE email = 'ada@example.com';\nINSERT INTO customers (email, name, address) VALUES ('ming@example.com', 'Ming Li', '9 Canal St, Manchester');\nDELETE FROM order_lines WHERE order_id = 103;\nDELETE FROM orders WHERE id = 103;\n\nSELECT c.name, c.address, count(o.id) AS orders\nFROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.id\nGROUP BY c.id\nORDER BY c.id;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "d4149e3cbcb8aced"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "7328e1e8c2a48461"
+        },
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0dfde0eb54f44c36"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["address", "text", 25],
+            ["orders", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "4c3b62ac1f0505ba",
+          "rows": [
+            ["Ada Lovelace", "3 Kew Gardens, London", "3"],
+            ["Grace Okafor", "4 Elm Rd, Leeds", "0"],
+            ["Ming Li", "9 Canal St, Manchester", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aa76860d13ce187d": {
+      "db": "empty",
+      "sql": "CREATE TABLE tutoring (\n  student text NOT NULL,\n  subject text NOT NULL,\n  tutor   text NOT NULL,\n  PRIMARY KEY (student, subject)\n);\nINSERT INTO tutoring VALUES\n  ('Maya', 'math', 'Tomás'), ('Liam', 'math', 'Yuki'),\n  ('Maya', 'physics', 'Amara'), ('Liam', 'physics', 'Amara');\n\nSELECT tutor, subject, count(*) AS rows FROM tutoring GROUP BY tutor, subject ORDER BY tutor;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 4",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "456641ddbdad5ac9"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["tutor", "text", 25],
+            ["subject", "text", 25],
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "31f9ef424cb0887f",
+          "rows": [
+            ["Amara", "physics", "2"],
+            ["Tomás", "math", "1"],
+            ["Yuki", "math", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "69822e71245ba57f": {
+      "db": "empty",
+      "sql": "CREATE TABLE tutors (tutor text PRIMARY KEY, subject text NOT NULL);\nCREATE TABLE lessons (student text, tutor text REFERENCES tutors, PRIMARY KEY (student, tutor));\nINSERT INTO tutors SELECT DISTINCT tutor, subject FROM tutoring ORDER BY tutor;\nINSERT INTO lessons SELECT student, tutor FROM tutoring ORDER BY 1, 2;\n\n-- Maya gets a second math tutor. nothing objects.\nINSERT INTO lessons VALUES ('Maya', 'Yuki');\n\nSELECT l.student, t.subject, count(*) AS tutors\nFROM lessons AS l JOIN tutors AS t USING (tutor)\nGROUP BY l.student, t.subject\nORDER BY l.student, t.subject;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "9bac3e1aed2851fd"
+        },
+        {
+          "tag": "INSERT 0 4",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "01f7a3f15b104b8b"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["student", "text", 25],
+            ["subject", "text", 25],
+            ["tutors", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "033c9688ba15a5f1",
+          "rows": [
+            ["Liam", "math", "1"],
+            ["Liam", "physics", "1"],
+            ["Maya", "math", "2"],
+            ["Maya", "physics", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

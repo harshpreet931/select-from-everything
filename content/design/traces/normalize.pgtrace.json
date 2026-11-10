@@ -1,0 +1,128 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/normalize.scenario.sql",
+ "title": "one wide orders table with the address in every row, and the same data split so the address lives once",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "orders_wide": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"qty","type":"int4"},
+    {"name":"product","type":"text"},
+    {"name":"list_price","type":"numeric"},
+    {"name":"ordered_on","type":"date"},
+    {"name":"email","type":"text"},
+    {"name":"customer","type":"text"},
+    {"name":"address","type":"text"}
+   ]
+  },
+  "orders_wide_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"sku","type":"text"}],
+   "on": "orders_wide"
+  },
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"email","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"address","type":"text"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "order_lines": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"sku","type":"text"},{"name":"customer_id","type":"int4"}]
+  }
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE orders_wide (\n  order_id   int  NOT NULL,\n  sku        text NOT NULL,\n  qty        int  NOT NULL,\n  product    text NOT NULL,\n  list_price numeric(8,2) NOT NULL,\n  ordered_on date NOT NULL,\n  email      text NOT NULL,\n  customer   text NOT NULL,\n  address    text NOT NULL,\n  PRIMARY KEY (order_id, sku)\n);\nINSERT INTO orders_wide VALUES\n  (101, 'TEA-01', 2, 'assam tea', 6.50, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (101, 'MUG-02', 1, 'blue mug',  9.00, '2026-03-02', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (102, 'TEA-01', 1, 'assam tea', 6.50, '2026-03-03', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London'),\n  (103, 'TEA-02', 3, 'green tea', 5.00, '2026-03-04', 'grace@example.com', 'Grace Okafor', '4 Elm Rd, Leeds'),\n  (104, 'MUG-02', 2, 'blue mug',  9.00, '2026-03-05', 'ada@example.com',   'Ada Lovelace', '12 Byron St, London')",
+   "note": "the wide table: one row per order line, the customer's name and address copied into every one.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":5,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT order_id, sku, product, customer, address FROM orders_wide ORDER BY order_id, sku",
+   "note": "the columns the lab shows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"order_id","type":"int4"},
+     {"name":"sku","type":"text"},
+     {"name":"product","type":"text"},
+     {"name":"customer","type":"text"},
+     {"name":"address","type":"text"}
+    ],
+    "data": [
+     ["101","MUG-02","blue mug","Ada Lovelace","12 Byron St, London"],
+     ["101","TEA-01","assam tea","Ada Lovelace","12 Byron St, London"],
+     ["102","TEA-01","assam tea","Ada Lovelace","12 Byron St, London"],
+     ["103","TEA-02","green tea","Grace Okafor","4 Elm Rd, Leeds"],
+     ["104","MUG-02","blue mug","Ada Lovelace","12 Byron St, London"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "CREATE TABLE customers (id int PRIMARY KEY, email text NOT NULL UNIQUE, name text NOT NULL, address text NOT NULL);\nINSERT INTO customers (id, email, name, address)\nSELECT row_number() OVER (ORDER BY min(order_id)), email, customer, min(address)\nFROM orders_wide GROUP BY email, customer ORDER BY 1;\nCREATE TABLE order_lines AS\nSELECT w.order_id, w.sku, c.id AS customer_id FROM orders_wide AS w JOIN customers AS c USING (email)",
+   "note": "the split: customers get a row each, order lines point at them by id.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":5,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT id, name, address FROM customers ORDER BY id",
+   "note": "customers, one row each.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"address","type":"text"}],
+    "data": [["1","Ada Lovelace","12 Byron St, London"],["2","Grace Okafor","4 Elm Rd, Leeds"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT order_id, sku, customer_id FROM order_lines ORDER BY order_id, sku",
+   "note": "the order lines, each pointing at a customer.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"order_id","type":"int4"},{"name":"sku","type":"text"},{"name":"customer_id","type":"int4"}],
+    "data": [["101","MUG-02","1"],["101","TEA-01","1"],["102","TEA-01","1"],["103","TEA-02","2"],["104","MUG-02","1"]]
+   }
+  }
+ ]
+}

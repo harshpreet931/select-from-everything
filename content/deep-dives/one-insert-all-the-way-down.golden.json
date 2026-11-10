@@ -1,0 +1,150 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "df34b228920cdc9a": {
+      "db": "lab",
+      "sql": "CREATE TABLE inbox (id int PRIMARY KEY, body text NOT NULL);\nINSERT INTO inbox VALUES (3, 'hello from the capstone');\nSELECT xmin, pg_xact_status(xmin::text::xid8) AS status, id, body FROM inbox;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["xmin", "xid", 28],
+            ["status", "text", 25],
+            ["id", "int4", 23],
+            ["body", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "d87a2f94ae061637",
+          "rows": [
+            ["754", "committed", "3", "hello from the capstone"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "29a2551f17efd423": {
+      "db": "lab",
+      "sql": "CREATE TABLE inbox (id int PRIMARY KEY, body text NOT NULL);\nINSERT INTO inbox VALUES (1, 'the first note'), (2, 'the second note');\nCHECKPOINT;\nSELECT set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;\nINSERT INTO inbox VALUES (3, 'hello from the capstone');\nSELECT resource_manager, record_type, record_length, fpi_length\nFROM pg_get_wal_records_info(current_setting('my.lsn')::pg_lsn, pg_current_wal_insert_lsn())\nORDER BY start_lsn;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "CHECKPOINT",
+          "command": "CHECKPOINT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "15024938cb3e2aa3"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "653aab1193b40ebe",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["resource_manager", "text", 25],
+            ["record_type", "text", 25],
+            ["record_length", "int4", 23],
+            ["fpi_length", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "5fb1771cd64c49c6",
+          "rows": [
+            ["Heap", "INSERT", "242", "188"],
+            ["Btree", "INSERT_LEAF", "153", "100"],
+            ["Transaction", "COMMIT", "34", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0f0e73f033128468": {
+      "db": "lab",
+      "sql": "SELECT lp, lp_off, lp_len, t_xmin, t_ctid FROM heap_page_items(get_raw_page('inbox', 0)) ORDER BY lp;\nSELECT itemoffset, ctid, data FROM bt_page_items('inbox_pkey', 1) ORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["lp_off", "int2", 21],
+            ["lp_len", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["t_ctid", "tid", 27]
+          ],
+          "rowCount": 3,
+          "digest": "e5a3c285f2fa4f62",
+          "rows": [
+            ["1", "8144", "43", "754", "(0,1)"],
+            ["2", "8096", "44", "754", "(0,2)"],
+            ["3", "8040", "52", "755", "(0,3)"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "09191b0d3b93b3de",
+          "rows": [
+            ["1", "(0,1)", "01 00 00 00 00 00 00 00"],
+            ["2", "(0,2)", "02 00 00 00 00 00 00 00"],
+            ["3", "(0,3)", "03 00 00 00 00 00 00 00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

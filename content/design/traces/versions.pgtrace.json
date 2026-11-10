@@ -1,0 +1,140 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/versions.scenario.sql",
+ "title": "a price history kept by a trigger, with a tstzrange saying when each price was true",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "prices": {"kind":"table","am":"heap","columns":[{"name":"sku","type":"text"},{"name":"price","type":"numeric"}]},
+  "prices_pkey": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"prices"},
+  "price_history": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"sku","type":"text"},{"name":"price","type":"numeric"},{"name":"valid","type":"tstzrange"}]
+  }
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nCREATE TABLE prices (sku text PRIMARY KEY, price numeric(8,2) NOT NULL);\nCREATE TABLE price_history (sku text NOT NULL, price numeric(8,2) NOT NULL, valid tstzrange NOT NULL);\nCREATE FUNCTION keep_price_history() RETURNS trigger LANGUAGE plpgsql AS $$\nDECLARE t timestamptz := coalesce(current_setting('app.clock', true)::timestamptz, now());\nBEGIN\n  IF TG_OP = 'UPDATE' THEN\n    UPDATE price_history SET valid = tstzrange(lower(valid), t)\n    WHERE sku = OLD.sku AND upper_inf(valid);\n  END IF;\n  INSERT INTO price_history VALUES (NEW.sku, NEW.price, tstzrange(t, NULL));\n  RETURN NEW;\nEND $$;\nCREATE TRIGGER prices_history AFTER INSERT OR UPDATE OF price ON prices\nFOR EACH ROW EXECUTE FUNCTION keep_price_history()",
+   "note": "prices, plus a history table. the trigger closes the old version and opens a new one on every change. it reads its clock from app.clock, so this page's output is stable; in production it would be now().",
+   "status": "ok",
+   "result": {"command":"CREATE TRIGGER","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SET app.clock = '2026-03-01 00:00+00';\nINSERT INTO prices VALUES ('TEA-01', 6.50)",
+   "note": "assam tea goes on sale on march 1 at 6.50.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SET app.clock = '2026-03-12 00:00+00';\nUPDATE prices SET price = 7.25 WHERE sku = 'TEA-01'",
+   "note": "a price rise on march 12.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SET app.clock = '2026-03-20 00:00+00';\nUPDATE prices SET price = 5.95 WHERE sku = 'TEA-01'",
+   "note": "a sale from march 20.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SET app.clock = '2026-04-01 00:00+00';\nUPDATE prices SET price = 7.25 WHERE sku = 'TEA-01'",
+   "note": "back up on april 1.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT price, lower(valid)::date AS valid_from, upper(valid)::date AS valid_to FROM price_history ORDER BY lower(valid)",
+   "note": "the history: four versions, each valid from one change to the next. the last one is open-ended.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"price","type":"numeric"},{"name":"valid_from","type":"date"},{"name":"valid_to","type":"date"}],
+    "data": [
+     ["6.50","2026-03-01","2026-03-12"],
+     ["7.25","2026-03-12","2026-03-20"],
+     ["5.95","2026-03-20","2026-04-01"],
+     ["7.25","2026-04-01",null]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT sku, price FROM price_history WHERE sku = 'TEA-01' AND valid @> '2026-03-05 12:00+00'::timestamptz",
+   "note": "as of march 5: the range that contains that instant.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"sku","type":"text"},{"name":"price","type":"numeric"}],
+    "data": [["TEA-01","6.50"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT sku, price FROM price_history WHERE sku = 'TEA-01' AND valid @> '2026-03-15 12:00+00'::timestamptz",
+   "note": "as of march 15.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"sku","type":"text"},{"name":"price","type":"numeric"}],
+    "data": [["TEA-01","7.25"]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT sku, price FROM price_history WHERE sku = 'TEA-01' AND valid @> '2026-03-25 12:00+00'::timestamptz",
+   "note": "as of march 25.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"sku","type":"text"},{"name":"price","type":"numeric"}],
+    "data": [["TEA-01","5.95"]]
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT sku, price FROM price_history WHERE sku = 'TEA-01' AND valid @> '2026-04-10 12:00+00'::timestamptz",
+   "note": "as of april 10, the open-ended version.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"sku","type":"text"},{"name":"price","type":"numeric"}],
+    "data": [["TEA-01","7.25"]]
+   }
+  }
+ ]
+}

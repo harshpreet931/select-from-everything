@@ -1,0 +1,149 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "eef26bd40d6decab": {
+      "db": "shop",
+      "sql": "SELECT id, name, email, city\nFROM customers\nWHERE id = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["email", "text", 25],
+            ["city", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "d127fd831d68d0b8",
+          "rows": [
+            ["42", "Ada Lovelace", "ada@example.com", "London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "147dc76e7d98099f": {
+      "db": "shop",
+      "sql": "SELECT c.id, c.name, count(*) AS orders\nFROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'London'\nGROUP BY c.id, c.name\nORDER BY orders DESC, c.id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["orders", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "a462a3d900a244d5",
+          "rows": [
+            ["38", "Elena Yilmaz", "17"],
+            ["169", "Elena Mueller", "14"],
+            ["22", "Fatima Mueller", "13"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f40c75d551866d96": {
+      "db": "shop",
+      "sql": "INSERT INTO customers (name, email, city, country, created_at)\nVALUES (NULL, 'ada@example.com', 'London', 'GB', '2026-10-28 09:00+00');\nINSERT INTO customers (name, email, city, country, created_at)\nVALUES ('Bob', 'bob@example.com', 'Atlantis', 'ZZZ', '2026-10-28 09:00+00');\nINSERT INTO customers (name, email, city, country, created_at)\nVALUES ('Ada Again', 'ada@example.com', 'London', 'GB', '2026-10-28 09:00+00');\nSELECT count(*) FROM customers;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23502",
+            "message": "null value in column \"name\" of relation \"customers\" violates not-null constraint",
+            "detail": "Failing row contains (2001, null, ada@example.com, London, GB, 2026-10-28 09:00:00+00).",
+            "schema": "public",
+            "table": "customers",
+            "column": "name"
+          },
+          "digest": "5e2b05bcff74b291"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22001",
+            "message": "value too long for type character(2)"
+          },
+          "digest": "85c18f22e8dde4c7"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"customers_email_key\"",
+            "detail": "Key (email)=(ada@example.com) already exists.",
+            "schema": "public",
+            "table": "customers",
+            "constraint": "customers_email_key"
+          },
+          "digest": "61536fed959ceb91"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "dac34dc981a0474a",
+          "rows": [
+            ["2000"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23502",
+        "message": "null value in column \"name\" of relation \"customers\" violates not-null constraint",
+        "detail": "Failing row contains (2001, null, ada@example.com, London, GB, 2026-10-28 09:00:00+00).",
+        "schema": "public",
+        "table": "customers",
+        "column": "name",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "a58379b3e3f266ad": {
+      "db": "shop",
+      "sql": "SELECT table_name\nFROM information_schema.tables\nWHERE table_schema = 'public'\nORDER BY table_name;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["table_name", "name", 19]
+          ],
+          "rowCount": 4,
+          "digest": "e99ac9fb17366a8e",
+          "rows": [
+            ["customers"],
+            ["order_items"],
+            ["orders"],
+            ["products"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

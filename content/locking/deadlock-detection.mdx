@@ -1,0 +1,112 @@
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import { CycleGraph } from "@/components/figures/locking/CycleGraph";
+import { SoftEdgeGraph } from "@/components/figures/locking/SoftEdgeGraph";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import { errorText, errorsIn } from "@/components/figures/locking/lanes";
+import three from "./traces/deadlock-three.pgtrace.json";
+import soft from "./traces/soft-edge.pgtrace.json";
+
+{/* both captured on a real postgres 18.6 server with three sessions. deadlock-three gives
+    T1 and T2 deadlock_timeout = 10s and T3 10ms, so T3 runs the check first and is the victim
+    on every run. soft-edge logs T1's lock waits (log_lock_waits on for T1 only, terse errors). */}
+
+export const dl = errorsIn(three).find((e) => e.sqlstate === "40P01");
+export const softLog = soft.steps[5].log.join("\n");
+
+<InShort>
+postgres doesn't prevent deadlocks, it detects them. a backend that has waited **deadlock_timeout** (1 s by default) for a lock builds the **wait-for graph** and looks for a cycle that includes itself. a cycle of hard waits: it cancels **its own** transaction with 40P01. a cycle that runs through a **soft edge** (someone only queued ahead, not holding): it reorders the queue and nobody dies.
+</InShort>
+
+## the picture
+
+you know [the deadlock from the app's side](/learn/transactions/deadlocks): two transfers in opposite directions, one gets 40P01, retry. this is the other side: who notices, when, and how they decide who loses.
+
+think of a traffic warden who only shows up at a jam after cars have been stuck for a while. at most jams, traffic starts moving again before the warden arrives, so not checking right away saves effort. if it's still stuck, the warden traces who's waiting on whom. a real gridlock: someone has to reverse. a car that's only stuck because it politely stayed behind a truck: wave it through.
+
+three transfers, three accounts, each taking money from one and paying the next: alice → bob, bob → carol, carol → alice. each holds its source row and waits for the next session's.
+
+<Figure wide caption={<>step through. each UPDATE that waits asks for a <C k="meta">ShareLock on the holder's transaction id</C>. after step 5 there's a chain T1 → T2 → T3, no cycle. step 6 closes it, and T3, the session with the 10 ms timeout, gets <C k="dead">40P01</C>. the other two then finish in order.</>}>
+<LockLanes trace={three} locks={{ types: ["transactionid"] }} sideTitle="transaction id locks (pg_locks)" />
+</Figure>
+
+## the wait-for graph
+
+nodes are transactions, an edge A → B means "A waits for a lock B holds". a deadlock is a cycle. here's the one T3 found, drawn from nothing but its error's DETAIL lines:
+
+<Figure caption={<>each box is a session and the <C k="meta">transaction id</C> it holds a lock on. each "waits for" is a ShareLock request on the next session's. the <C k="dead">dashed</C> waits close a three-way cycle.</>}>
+<CycleGraph trace={three} />
+</Figure>
+
+<Figure caption={<>T3's error, word for word, SQLSTATE 40P01. the DETAIL is the cycle, one wait per line, starting from the session that found it. (on a real server the "process" names are pids; the capture swaps in session names.)</>}>
+<SqlPanel code={errorText(dl)} lang="text" nolines file="T3: UPDATE accounts SET balance = balance + 10 WHERE id = 1" />
+<Provenance trace={prov(three)} />
+</Figure>
+
+## the check runs late, and in the waiter
+
+nobody checks for cycles when a lock is requested. checking means locking every partition of the lock table and walking the graph, and nearly every wait ends on its own within milliseconds. so a backend that has to wait sets a timer for `deadlock_timeout` and sleeps. if the lock comes first, no check ever happens. if the timer fires, that backend runs the check, once, looking for a cycle that leads back to itself.
+
+that's why the capture gives T3 10 ms and the others 10 s. T1 and T2 started waiting first, but their timers are long; when T3 closes the cycle, its timer is the first to fire. T3 finds the cycle and cancels **itself**: the detector never kills another backend. so the victim is simply whoever's check runs first after the cycle closes, with no notion of which transaction did less work.
+
+```sql run
+SHOW deadlock_timeout;
+```
+
+<Predict question="three sessions close a deadlock cycle. T1 and T2 run with deadlock_timeout = 10s, T3 with 10ms. T1 started waiting first. who gets 40P01?" options={["T1: it waited longest", "T3: its check runs first", "all three"]} answer={1}>
+```sql
+-- T1 waits for T2, T2 waits for T3, then T3 waits for T1
+SET deadlock_timeout = '10s';   -- T1, T2
+SET deadlock_timeout = '10ms';  -- T3
+```
+<Explain>
+T3. T1's and T2's checks are 10 seconds away. T3's fires 10 ms after it starts waiting, finds the cycle running through itself, and aborts its own transaction. only one victim is needed: once T3's locks go, T2 gets carol's row, finishes, and releases bob's for T1. the per-session timeout is a trick to make the capture repeatable; on a real server, with everyone on 1 s, the victim depends on timing.
+</Explain>
+</Predict>
+
+raising deadlock_timeout makes real deadlocks take longer to resolve and saves checks on busy servers with lots of short waits. lowering it below the typical lock wait means paying for a check that finds nothing. 1 s is a fine default. (it's also the threshold for [log_lock_waits](/learn/locking/pg-locks).)
+
+## soft edges
+
+not every cycle is a deadlock. lock queues add a second kind of edge: if B is queued ahead of A for a lock A conflicts with, A waits for B too, though B holds nothing A wants. that's a **soft** edge, and it's the [lock queue](/learn/locking/lock-queue)'s rule showing up in the graph. a soft edge is only a matter of queue order, so the detector can fix a cycle that runs through one by reordering the queue.
+
+here's one, captured. T1 reads accounts. T2's ALTER queues behind it. T3 takes advisory lock 1 and then queues to read accounts, behind T2. then T1 asks for advisory lock 1:
+
+<Figure caption={<>the graph after T1's last request, edges classified from pg_locks: an edge is <C k="dead">hard</C> if the blocker holds a granted lock on what the waiter wants, <C k="hot">soft</C> if it's only queued ahead. T1 → T3 → T2 → T1 is a cycle with one soft edge.</>}>
+<SoftEdgeGraph trace={soft} at={4} />
+</Figure>
+
+T3's ACCESS SHARE doesn't conflict with T1's ACCESS SHARE at all; it waits only because T2 is ahead of it. so when T1's check finds the cycle, it moves T3 in front of T2, T3 gets its lock, and the cycle is gone:
+
+<Figure wide caption={<>step through. at step 5 T1 <C k="mute">waits</C> for the advisory lock, and in the same step T3's read wakes up: the queue was rearranged. T3 commits, which hands T1 the advisory lock; T1 commits, and T2's ALTER finally runs. no 40P01 anywhere.</>}>
+<LockLanes trace={soft} noObs locks={{ types: ["relation", "advisory"], objs: ["accounts"] }} sideTitle="table and advisory locks" />
+</Figure>
+
+the server log says so in plain words (log_lock_waits was on for T1):
+
+<Figure caption={<>T1's lines in the server log, wait times masked. "avoided deadlock ... by rearranging queue order" is the soft-edge fix; T1 itself keeps waiting, now on an ordinary chain.</>}>
+<SqlPanel code={softLog} lang="text" nolines file="server log" />
+<Provenance trace={prov(soft)} />
+</Figure>
+
+<Quiz question="in the soft-edge capture, why couldn't the detector fix the cycle by moving T1 instead?" options={["T1 waits for a lock T3 holds: that edge is hard", "T1 has the oldest transaction", "advisory locks can't be reordered"]} answer={0}>
+<Explain>
+T1 wants advisory lock 1 and T3 holds it, granted. no queue order changes that: only T3 ending does. the only edge in the cycle that's about order rather than ownership is T3 → T2, so that's the one the detector can remove, by letting T3 jump the queue on accounts.
+</Explain>
+</Quiz>
+
+<Deep title="what the check actually does">
+the backend whose timer fired takes every partition lock of the lock table (so the graph can't change under it), then searches outward from itself along wait-for edges, hard and soft. if it gets back to itself through hard edges only, that's a deadlock: it releases the partitions and aborts its transaction with 40P01. if every cycle it finds has a soft edge, it tries rearranging the wait queues involved (a waiter that would be granted earlier is moved up) until no cycle is left, and wakes whoever can now proceed. the search covers heavyweight locks only: [latches and LWLocks](/learn/locking/latches) are never part of it, and a cycle through them would just hang, which is why postgres's code is written so they can't form one.
+</Deep>
+
+<Interview q="how does postgres decide which transaction to abort in a deadlock?">
+it doesn't weigh them. a backend that has waited deadlock_timeout for a lock runs the deadlock check itself; if it finds a cycle of hard waits that includes itself, it aborts its own transaction with 40P01. so the victim is whichever waiter's timer fires first after the cycle closes, usually the last one to start waiting. the other transactions keep their work. bonus points: before declaring a deadlock it checks for soft edges (a waiter blocked only by queue order), and if the cycle can be broken by reordering a wait queue it does that instead and nobody is aborted; and the DETAIL of the 40P01 lists every edge of the cycle.
+</Interview>
+
+<Keylines>
+- a deadlock is a cycle in the wait-for graph. postgres finds it, it doesn't prevent it.
+- the check runs only after deadlock_timeout, in the waiting backend, once.
+- the victim is the backend that ran the check. it aborts itself.
+- a soft edge means "queued behind", not "held by". a cycle through one is fixed by reordering the queue.
+- the 40P01 DETAIL lists the cycle. read it before you retry.
+</Keylines>

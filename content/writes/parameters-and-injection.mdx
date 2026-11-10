@@ -1,0 +1,248 @@
+import { Injection } from "@/components/figures/writes/Injection";
+import { tableOf } from "@/components/figures/writes/frames";
+import { prov } from "@/lib/db/captured";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import trace from "./traces/injection.pgtrace.json";
+
+{/* the injection figure's outcomes and the identifier table come from traces/injection.scenario.sql,
+    captured on PGlite from shop: each glued query exactly as concatenation builds it (counted, so
+    the capture doesn't carry 2,000 rows), and the same inputs through PREPARE / EXECUTE. the
+    figure tokenizes whatever the reader types live; only the three tries were run. */}
+
+export const count = (i) => Number(trace.steps[i].result.data[0][0]);
+export const rows = (i) => trace.steps[i].result.rows;
+export const err = (i) => ({ sqlstate: trace.steps[i].error.sqlstate, message: trace.steps[i].error.message });
+export const tries = [
+  { input: "ada@example.com", glued: { rows: count(0) }, bound: { rows: rows(4) } },
+  { input: "' OR 1=1 --", glued: { rows: count(1) }, bound: { rows: rows(5) } },
+  { input: "'; DROP TABLE customers; --", glued: { error: err(2) }, bound: { rows: rows(6) } },
+];
+export const idents = tableOf(trace, 7);
+export const source = prov(trace);
+
+<InShort>
+**SQL injection** is user input that ends up being parsed as SQL. glue a value into a query string and a single quote in it closes your string literal: everything after it is code, written by whoever typed it.
+
+a **bound parameter** is sent separately, after the query has been parsed, so it can only ever be a value. use parameters for every value. identifiers can't be parameters: quote them with `format('%I')` and check them against a list.
+</InShort>
+
+## the picture
+
+you know the login form that looks up a user by email? somewhere behind it is a line like `"... WHERE email = '" + email + "'"`. it works for every email anyone has ever typed. then someone types a quote.
+
+think of a form letter with a blank: "dear ____, your order has shipped." a mail merge fills the blank with a name. now imagine the letter is read aloud by someone who obeys any instructions in it, and a customer's name is "Bob. also, refund every order". string glue is that. a bound parameter is a letter where the blank is a sealed envelope: whatever's inside is read as a name, and only as a name.
+
+<Figure wide caption={<>type into the email box, or pick a try. the left side is the query string glued together, tokenized as you type: the moment a quote closes the string, your characters turn into <C k="dead">keywords and operators</C>, and the app's own leftovers become a comment. the right side sends the same text as <C k="ref">$1</C>: it stays <C k="live">one value</C> whatever you type. the results under each are postgres's real answers for the three tries.</>}>
+<Injection
+  before="SELECT id, name FROM customers WHERE email = '"
+  after="' ORDER BY id;"
+  bound="SELECT id, name FROM customers WHERE email = $1 ORDER BY id;"
+  tries={tries}
+  trace={source}
+/>
+</Figure>
+
+`' OR 1=1 --` is four tokens of SQL and one comment. the quote ends the email string (it's now the empty string), `OR 1=1` is true for every row, and `--` comments out the app's closing quote and its ORDER BY, so what's left still parses. the WHERE that was supposed to find one customer finds all of them.
+
+## the real thing, on shop
+
+shop's customers table has 2,000 rows and one Ada. here's the app's query with her email glued in, and then with the try from the figure. (each is wrapped in a count, on lines of its own, so a `--` inside ends at the line break and the page doesn't print 2,000 rows. the inner line is exactly what concatenation produces.)
+
+```sql run db=shop
+SELECT count(*) AS rows FROM (
+SELECT id, name FROM customers WHERE email = 'ada@example.com' ORDER BY id
+) AS app_query;
+
+SELECT count(*) AS rows FROM (
+SELECT id, name FROM customers WHERE email = '' OR 1=1 --' ORDER BY id
+) AS app_query;
+```
+
+1 row, then 2,000. every block here runs on a fresh copy of shop, so nothing you run sticks, injections included.
+
+<Predict options={["nobody, the login fails", "Ada Lovelace", "whoever comes back first"]} answer={2}>
+```sql
+-- the app runs the glued query, takes the first row it gets
+-- back, and logs you in as that customer. the email was:
+--   ' OR 1=1 --
+```
+<Explain>
+whoever comes back first. the ORDER BY id that would have made "first" mean something is inside the comment now, so it's whichever row the scan happens to produce first. on shop that's customer 1, Maya Chen, the first row on the table's first page. not you, not Ada, and nothing in the query asked for anybody's password.
+</Explain>
+</Predict>
+
+the third try, `'; DROP TABLE customers; --`, uses a semicolon to end the first statement and start a second one. psql, and any client that sends a plain query string, runs both:
+
+```sql run db=shop expect=error
+SELECT id, name FROM customers WHERE email = ''; DROP TABLE customers; --' ORDER BY id;
+```
+
+the SELECT ran (0 rows), then `DROP TABLE customers` ran too. it failed only because the orders table has a foreign key pointing at customers. that's luck, not security. the actual safety net here is permissions: an application's database role has no business being allowed to drop tables ([roles and GRANT](/learn/design/schemas-roles-and-rls)).
+
+## parameters
+
+the fix is to never put the value into the SQL text at all. the query goes to the server with a numbered slot (`$1`), and the value goes separately. in SQL you can do this with PREPARE and EXECUTE:
+
+```sql run db=shop session=bind
+PREPARE login(text) AS
+SELECT id, name FROM customers WHERE email = $1 ORDER BY id;
+
+EXECUTE login('ada@example.com');
+EXECUTE login(''' OR 1=1 --');
+```
+
+1 row, then 0. the second EXECUTE looked for a customer whose email is, character for character, `' OR 1=1 --`, and there isn't one. (the doubled quotes are only how you write a quote inside a literal in this one SQL demo. a driver never needs them.) the server keeps the parsed statement, slot and all:
+
+```sql run session=bind
+SELECT name, statement, parameter_types FROM pg_prepared_statements;
+```
+
+your application never types PREPARE. drivers speak postgres's **extended query protocol**, which splits one query into separate messages:
+
+<Figure caption={<>the extended query protocol, hover each step. the sql is parsed before any value exists, so a value can't change what the query means. (the simple protocol sends one string and parses all of it, which is what string glue relies on.)</>}>
+<Flow
+  stages={[
+    { label: "Parse", sub: "the sql, with $1", note: "postgres parses the statement and checks its names and types. $1 is a typed slot: there's no value yet." },
+    { label: "Bind", sub: "$1 = the value", note: "the value arrives in a message of its own, as a typed value. it is never handed to the sql parser." },
+    { label: "Execute", sub: "run it", note: "the parsed statement runs with the value in the slot, and the rows come back." },
+  ]}
+/>
+</Figure>
+
+<Docs href="https://www.postgresql.org/docs/18/protocol-flow.html#PROTOCOL-FLOW-EXT-QUERY" title="extended query">the manual's protocol chapter describes the Parse, Bind and Execute messages, and notes that a Parse message holds a single SQL statement.</Docs>
+
+that last point closes the `; DROP TABLE` door too. through the extended protocol, two statements in one query string are refused outright. recorded with node-postgres 8.23.1 against postgres 18.6, sending `SELECT id FROM customers WHERE email = $1; DROP TABLE customers` with one parameter:
+
+```text
+ERROR:  cannot insert multiple commands into a prepared statement   (SQLSTATE 42601)
+```
+
+here's the same lookup in three drivers. the shape is always the same: the SQL is a constant with placeholders, and the values travel next to it.
+
+<Tabs>
+<Tab label="python (psycopg)">
+```python
+# psycopg 3 binds on the server: postgres receives $1, not the email
+cur.execute(
+    "SELECT id, name FROM customers WHERE email = %s ORDER BY id",
+    (email,),
+)
+```
+</Tab>
+<Tab label="java (JDBC)">
+```java
+try (PreparedStatement ps = conn.prepareStatement(
+        "SELECT id, name FROM customers WHERE email = ? ORDER BY id")) {
+    ps.setString(1, email);
+    try (ResultSet rs = ps.executeQuery()) { /* ... */ }
+}
+```
+</Tab>
+<Tab label="node (node-postgres)">
+```js
+const { rows } = await client.query(
+  "SELECT id, name FROM customers WHERE email = $1 ORDER BY id",
+  [email],
+);
+```
+</Tab>
+</Tabs>
+
+the placeholder spelling differs (`%s`, `?`, `$1`), and with each driver's default settings what reaches postgres is `$1`. the java book walks through JDBC's side of this, PreparedStatement and all, in [JDBC](https://java.harshpreet.com/learn/io/jdbc). a prepared statement can also save planning on repeat runs; that's a separate story, told in [prepared statements and generic plans](/learn/optimizer/generic-plans).
+
+## why escaping by hand is the wrong fix
+
+the tempting fix is to keep gluing and escape the quotes first: replace every `'` with `''`. it handles the try in the figure. it's still the wrong fix, three ways.
+
+**not every value sits in quotes.** a number glued into `WHERE id = ` + id has no string to break out of:
+
+```sql run db=shop
+SELECT count(*) AS rows FROM (
+SELECT id, name FROM customers WHERE id = 42 OR 1=1 ORDER BY id
+) AS app_query;
+```
+
+the "id" was `42 OR 1=1`. no quote anywhere, nothing for an escaper to escape, 2,000 rows.
+
+**the rules depend on the database.** mysql's habit is to escape a quote with a backslash, `\'`. in postgres, with `standard_conforming_strings` on (the default, and the setting here), a backslash in a plain string is just a backslash. so an escaper written for mysql turns `x' OR 1=1 --` into `x\' OR 1=1 --`, and postgres reads the string as `x\` and the rest as code:
+
+```sql run db=shop
+SELECT count(*) AS rows FROM (
+SELECT id, name FROM customers WHERE email = 'x\' OR 1=1 --' ORDER BY id
+) AS app_query;
+```
+
+escaped, and injected anyway.
+
+**it has to be right everywhere, forever.** one call site that forgets, one new developer, one quick report script, and it's open. with parameters, the safe version is the only shape the call has.
+
+<Gotcha title="a bound LIKE pattern is still a pattern">
+parameters stop SQL injection. they don't stop LIKE from treating `%` and `_` in the *value* as wildcards. a search box bound to `name LIKE $1 || '%'` returns everyone when someone searches for `%`:
+
+```sql run db=shop
+PREPARE search(text) AS SELECT count(*) FROM customers WHERE name LIKE $1 || '%';
+EXECUTE search('Ada');
+EXECUTE search('%');
+
+PREPARE search2(text) AS SELECT count(*) FROM customers WHERE starts_with(name, $1);
+EXECUTE search2('%');
+```
+
+1, then 2,000. `starts_with` compares plain text, so the `%` finds nobody. (or escape `\`, `%` and `_` in the value before binding it: that's LIKE's syntax, not SQL's, and the one escaping job that's yours. [LIKE and regular expressions](/learn/basics/pattern-matching) has the details.)
+</Gotcha>
+
+lists are values too. instead of building `IN (1, 7, 42)` out of strings, bind one array, however many ids it holds:
+
+```sql run db=shop
+PREPARE by_ids(int[]) AS
+SELECT string_agg(name, ', ' ORDER BY id) AS names FROM customers WHERE id = ANY($1);
+
+EXECUTE by_ids('{1,7,42}');
+```
+
+## identifiers can't be parameters
+
+a parameter is a value. a table name, a column name, a sort direction is part of the statement's structure, and the parser needs it before any value arrives:
+
+```sql run db=shop expect=error
+PREPARE count_rows(text) AS SELECT count(*) FROM $1;
+```
+
+so when a name really has to come from outside (a report that lets you pick a column to sort by, a tool that works on any table), you build the SQL, and quote the name properly while you do. `format('%I', name)` quotes it as an identifier when it needs quoting, `%L` quotes a literal, and `%s` pastes it in raw:
+
+<Figure wide caption={<>six inputs through the three placeholders of <code>format()</code>. <code>%I</code> leaves a plain lowercase name alone and double-quotes everything else, doubling any <code>"</code> inside. <code>%s</code> pastes the text as is, which is string glue with a nicer name.</>}>
+<ResultTable {...idents} />
+<Provenance trace={source} />
+</Figure>
+
+in [PL/pgSQL](/learn/writes/plpgsql), dynamic SQL looks like this, with the name quoted and the value still bound:
+
+```plpgsql
+EXECUTE format('SELECT count(*) FROM %I WHERE city = $1', tbl)
+INTO n
+USING city;
+```
+
+quoting makes a name safe to *parse*. it doesn't make it safe to *allow*: `%I` will happily quote `pg_authid` or `salaries`. when names come from users, check them against a fixed list (the columns this report may sort by), and only then quote.
+
+<Deep title="second-order injection">
+injection doesn't have to happen on the way in. a value can be stored perfectly safely, with a parameter, and become a problem later, when some other code glues it into a query. the school database has a student whose name is a classic ([xkcd 327](https://xkcd.com/327/)):
+
+```sql run db=school
+SELECT id, name FROM students WHERE name LIKE 'Robert%' ORDER BY id;
+```
+
+stored as data, it's harmless: a string with some punctuation in it. the day a nightly script builds `"... WHERE name = '" + row.name + "'"` from it, it isn't. "it came from our own database" is not the same as "it's safe to glue". the rule doesn't change with the source: values are parameters, always.
+</Deep>
+
+<Interview q="how do you prevent SQL injection?">
+use bound parameters (prepared statements) for every value that comes from outside the code: the SQL text is fixed, values go in a separate message after parsing, so they can't change what the query means. identifiers can't be bound, so validate them against an allow-list and quote them (`format('%I')`, `quote_ident`). escaping by hand is fragile: numbers and identifiers have no quotes, the escaping rules differ between databases (a backslash escape doesn't escape anything in postgres), and one forgotten call site is enough. bonus points: least privilege for the application's role, the extended protocol refusing multiple statements in one query, and second-order injection from data that was stored safely but glued later.
+</Interview>
+
+<Keylines>
+- injection happens when input is parsed as SQL. a quote in a glued value is all it takes.
+- a bound parameter arrives after parsing, so it can only ever be one value.
+- PREPARE / EXECUTE is binding in SQL. drivers do it with $1, ? or %s, through the extended protocol.
+- escaping by hand fails on numbers, on other databases' rules, and on the call site that forgot.
+- identifiers can't be parameters: allow-list them, then quote them with format('%I').
+</Keylines>

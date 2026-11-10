@@ -1,0 +1,217 @@
+{
+ "v": 1,
+ "scenario": "content/execution/traces/sorting.scenario.sql",
+ "title": "sorting events: quicksort, top-N heapsort and external merge at three work_mem settings, then an incremental sort",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"},
+  "events_user_id_idx": {"kind":"index","am":"btree","columns":[{"name":"user_id","type":"int4"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SET work_mem = '4MB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at FROM events ORDER BY kind, occurred_at DESC",
+   "note": "4MB of work_mem: all 25,000 rows fit, so they're sorted in memory with quicksort.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Sort (actual rows=25000.00 loops=1)"],
+     ["  Sort Key: kind, occurred_at DESC"],
+     ["  Sort Method: quicksort  Memory: 1684kB"],
+     ["  Buffers: shared hit=6 read=335"],
+     ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["        Buffers: shared read=335"],
+     ["Planning:"],
+     ["  Buffers: shared hit=58 read=2"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SET work_mem = '4MB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at FROM events ORDER BY kind, occurred_at DESC LIMIT 10",
+   "note": "with LIMIT 10 the sort only ever keeps the best 10 rows, in a heap: a top-N heapsort.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Limit (actual rows=10.00 loops=1)"],
+     ["  Buffers: shared hit=335"],
+     ["  ->  Sort (actual rows=10.00 loops=1)"],
+     ["        Sort Key: kind, occurred_at DESC"],
+     ["        Sort Method: top-N heapsort  Memory: 18kB"],
+     ["        Buffers: shared hit=335"],
+     ["        ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["              Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SET work_mem = '1MB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at FROM events ORDER BY kind, occurred_at DESC",
+   "note": "1MB: the rows don't fit. sorted runs go to temp files on disk and are merged at the end: an external merge.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Sort (actual rows=25000.00 loops=1)"],
+     ["  Sort Key: kind, occurred_at DESC"],
+     ["  Sort Method: external merge  Disk: 1040kB"],
+     ["  Buffers: shared hit=335, temp read=130 written=131"],
+     ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["        Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SET work_mem = '1MB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at FROM events ORDER BY kind, occurred_at DESC LIMIT 10",
+   "note": "the same LIMIT 10 at 1MB: still a top-N heapsort in a few kB. 10 rows always fit.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Limit (actual rows=10.00 loops=1)"],
+     ["  Buffers: shared hit=335"],
+     ["  ->  Sort (actual rows=10.00 loops=1)"],
+     ["        Sort Key: kind, occurred_at DESC"],
+     ["        Sort Method: top-N heapsort  Memory: 18kB"],
+     ["        Buffers: shared hit=335"],
+     ["        ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["              Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SET work_mem = '64kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at FROM events ORDER BY kind, occurred_at DESC",
+   "note": "64kB, the minimum: many more, smaller runs to write and merge. more temp traffic for the same 25,000 rows.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Sort (actual rows=25000.00 loops=1)"],
+     ["  Sort Key: kind, occurred_at DESC"],
+     ["  Sort Method: external merge  Disk: 1080kB"],
+     ["  Buffers: shared hit=335, temp read=265 written=289"],
+     ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["        Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SET work_mem = '64kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, kind, occurred_at FROM events ORDER BY kind, occurred_at DESC LIMIT 10",
+   "note": "even at 64kB, keeping 10 rows is easy. no disk at all.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Limit (actual rows=10.00 loops=1)"],
+     ["  Buffers: shared hit=335"],
+     ["  ->  Sort (actual rows=10.00 loops=1)"],
+     ["        Sort Key: kind, occurred_at DESC"],
+     ["        Sort Method: top-N heapsort  Memory: 18kB"],
+     ["        Buffers: shared hit=335"],
+     ["        ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["              Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "RESET work_mem;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, occurred_at FROM events ORDER BY user_id, occurred_at LIMIT 10",
+   "note": "no index: sorting by user_id, occurred_at means reading all 25,000 rows into a top-N heapsort.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Limit (actual rows=10.00 loops=1)"],
+     ["  Buffers: shared hit=338"],
+     ["  ->  Sort (actual rows=10.00 loops=1)"],
+     ["        Sort Key: user_id, occurred_at"],
+     ["        Sort Method: top-N heapsort  Memory: 18kB"],
+     ["        Buffers: shared hit=338"],
+     ["        ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["              Buffers: shared hit=335"],
+     ["Planning:"],
+     ["  Buffers: shared hit=14"]
+    ]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "RESET work_mem;\nCREATE INDEX ON events (user_id);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, user_id, occurred_at FROM events ORDER BY user_id, occurred_at LIMIT 10",
+   "note": "an index on user_id hands rows over sorted by user_id. sorting by user_id, occurred_at then only means sorting within each user.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Limit (actual rows=10.00 loops=1)"],
+     ["  Buffers: shared hit=334 read=3"],
+     ["  ->  Incremental Sort (actual rows=10.00 loops=1)"],
+     ["        Sort Key: user_id, occurred_at"],
+     ["        Presorted Key: user_id"],
+     ["        Full-sort Groups: 1  Sort Method: top-N heapsort  Average Memory: 17kB  Peak Memory: 17kB"],
+     ["        Pre-sorted Groups: 1  Sort Method: top-N heapsort  Average Memory: 17kB  Peak Memory: 17kB"],
+     ["        Buffers: shared hit=334 read=3"],
+     ["        ->  Index Scan using events_user_id_idx on events (actual rows=1135.00 loops=1)"],
+     ["              Index Searches: 1"],
+     ["              Buffers: shared hit=331 read=3"],
+     ["Planning:"],
+     ["  Buffers: shared hit=16 read=1"]
+    ]
+   }
+  }
+ ],
+ "db": "events"
+}

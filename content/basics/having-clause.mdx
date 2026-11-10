@@ -1,0 +1,141 @@
+import { GroupBuckets } from "@/components/figures/basics/GroupBuckets";
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { prov, resultOf, stagesOf } from "@/components/figures/basics/captured";
+import courses from "./traces/having-clause.pgtrace.json";
+import shop from "./traces/having-clause-shop.pgtrace.json";
+
+{/* GroupBuckets reads traces/having-clause.scenario.sql (school's courses, GROUP BY dept with a
+    WHERE, a HAVING, both, or neither). the bucket table and the WHERE-or-HAVING switch read
+    traces/having-clause-shop.scenario.sql. both captured on PGlite. */}
+
+export const filters = Object.fromEntries(["no filter", "WHERE credits >= 4", "HAVING count(*) >= 2", "both"].map((k, i) => [k, { ...stagesOf(courses, i), keys: ["dept"] }]));
+export const groups = resultOf(shop, 0);
+export const kept = new Set(resultOf(shop, 1).rows.map((r) => r[0]));
+export const ghosts = groups.rows.flatMap((r, i) => (kept.has(r[0]) ? [] : [i]));
+export const versus = { "WHERE price > 100": resultOf(shop, 2), "HAVING avg(price) > 100": resultOf(shop, 3) };
+
+<InShort>
+**HAVING** is WHERE for buckets. it runs after GROUP BY, so it judges whole groups and can use aggregates like `count(*)`. WHERE runs before, on single rows, so it can't.
+
+a HAVING condition that doesn't use an aggregate **should have been a WHERE**.
+</InShort>
+
+## the picture
+
+you know how `WHERE count(*) > 1` is an error, and `HAVING count(*) > 1` is fine? same condition, different place, and one of them is allowed to count. that's because they stand at two different points on the line.
+
+think of a restaurant on a busy night. at the door, a host checks each guest on their own: no shoes, no entry (WHERE). inside, guests sit down in parties at their tables (GROUP BY). later a manager walks round and looks at whole tables: any table of fewer than two gets moved to the bar (HAVING). the host can't apply the manager's rule, because at the door there are no tables yet. the manager could apply the host's rule, but by then everyone's already been seated for nothing.
+
+<Figure wide caption={<>pick a filter and step through. WHERE strikes single rows before the buckets exist. HAVING strikes whole buckets, after. with both, MATH loses two courses at the door and then fails HAVING with the one it has left.</>}>
+<GroupBuckets options={{ key: "filter", values: ["no filter", "WHERE credits >= 4", "HAVING count(*) >= 2", "both"] }} runs={filters} start="both" trace={prov(courses)} />
+</Figure>
+
+the order is the [logical order](/learn/basics/logical-order): FROM, WHERE, GROUP BY, HAVING, SELECT. so the two filters see different tables. WHERE sees rows. HAVING sees buckets.
+
+## what HAVING sees
+
+by the time HAVING runs, every bucket has been summed up. picture the table it gets as one row per group, with the aggregates already filled in, and HAVING as a WHERE over that table:
+
+<Figure caption={<>one row per category, aggregates computed. <code>HAVING avg(price) &gt; 100</code> keeps six; the five it drops are struck. the 3 products with no category are a bucket too, and it goes.</>}>
+<ResultTable columns={groups.columns} rows={groups.rows} ghostRows={ghosts} footer={`${groups.rows.length - ghosts.length} groups kept, ${ghosts.length} removed`} />
+</Figure>
+
+so HAVING may use what that table has: the grouping key, and any aggregate. that's the same rule as for SELECT after a GROUP BY ([grouped or aggregated](/learn/basics/group-by)). a plain column has no single value per bucket, so HAVING can't ask about it:
+
+```sql run db=shop expect=error
+SELECT category, count(*) AS products
+FROM products
+GROUP BY category
+HAVING price > 100;
+```
+
+`price` belongs to single products, and HAVING is looking at categories. if you meant "count only the products over 100", that's a filter on rows, which is WHERE's job. and that's where it gets interesting, because the two give very different answers.
+
+## WHERE or HAVING?
+
+"categories, and products over 100" can mean two things. throw out the cheap products and then group what's left. or group everything and then keep the categories whose average is over 100.
+
+<Figure caption={<>switch between them. WHERE keeps all 11 categories, each with fewer products and a higher average. HAVING keeps every product, and only 6 categories pass.</>}>
+<RunSwitch options={[{ key: "filter", values: ["WHERE price > 100", "HAVING avg(price) > 100"] }]} runs={versus} hot={["WHERE price > 100", "HAVING avg(price) > 100"]} trace={prov(shop)} />
+</Figure>
+
+neither is wrong. they answer different questions, and the question decides which one you need: a condition on **single rows** goes in WHERE, a condition on **a whole group** goes in HAVING. you can, and often do, use both in one query.
+
+<Predict options={["one row: 200", "no rows", "an error"]} answer={1}>
+```sql
+SELECT count(*) FROM products HAVING count(*) > 1000;
+```
+<Explain>
+no GROUP BY, so the whole table is one bucket, and `count(*)` is 200. HAVING judges that one bucket, finds 200 isn't over 1000, and throws it out. an aggregate without GROUP BY always returns exactly one row, unless a HAVING removes it. this is the one way to get zero rows out of it.
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT count(*) FROM products HAVING count(*) > 1000;
+SELECT count(*) FROM products HAVING count(*) > 100;
+```
+
+zero rows, then one row with 200 in it. HAVING without GROUP BY is legal, and rare. now you know what it does.
+
+## the HAVING that should have been a WHERE
+
+this works, and gives the right answer:
+
+```sql run db=shop
+SELECT category, count(*) AS products
+FROM products
+GROUP BY category
+HAVING category = 'kitchen';
+```
+
+19 kitchen products. but read it the way it runs: build all 11 buckets, then throw away 10. the condition only looks at the key, never at an aggregate, so it would give the same answer on single rows, before grouping. it's a WHERE wearing the wrong coat.
+
+postgres notices. it moves a condition like that down into the scan, so the other categories are never grouped at all ([the logical order](/learn/basics/logical-order) shows the plan). write it as a WHERE anyway: it says what you mean (keep the kitchen rows), it doesn't rely on the planner being clever, and the next person reading the query doesn't have to wonder whether the HAVING was doing something subtle.
+
+```sql run db=shop
+SELECT category, count(*) AS products
+FROM products
+WHERE category = 'kitchen'
+GROUP BY category;
+```
+
+## finding duplicates
+
+the most useful HAVING you'll ever write is "more than one". group by whatever should be unique, and keep the buckets with company. the shop's customers have a UNIQUE email, but UNIQUE compares exact strings. compare them ignoring case:
+
+```sql run db=shop
+SELECT lower(email) AS email, count(*) AS customers
+FROM customers
+GROUP BY lower(email)
+HAVING count(*) > 1
+ORDER BY email NULLS FIRST;
+```
+
+two buckets. `zoe.martin@example.com` holds Zoë and Zoe Martin, two different people whose emails differ only in capital letters, which UNIQUE happily allowed. and the NULL bucket holds the 46 customers with no email at all: as far as grouping is concerned, [their NULLs are the same](/learn/basics/null-and-three-valued-logic). that's not a duplicate, that's missing data, and it's a row-level fact, so it gets filtered with WHERE:
+
+```sql run db=shop
+SELECT lower(email) AS email, count(*) AS customers
+FROM customers
+WHERE email IS NOT NULL
+GROUP BY lower(email)
+HAVING count(*) > 1
+ORDER BY email;
+```
+
+one real duplicate left. the cure belongs in the schema: a unique index on `lower(email)` ([partial and expression indexes](/learn/indexes/partial-and-expression)).
+
+<Gotcha title="HAVING can't see aliases either">
+`HAVING products > 1` fails in postgres even if SELECT says `count(*) AS products`. HAVING runs before SELECT, so the name doesn't exist yet: write the aggregate again. mysql allows the alias as an extension, so a query copied from there can fail here ([the logical order](/learn/basics/logical-order) has the details).
+</Gotcha>
+
+<Interview q="what's the difference between WHERE and HAVING?">
+WHERE filters rows before grouping, so it sees single rows and can't use aggregates. HAVING filters groups after GROUP BY, so it sees one row per group and can use aggregates and the grouping columns, but not other columns. a condition on single rows belongs in WHERE even if HAVING would accept it, because it shrinks the input before the expensive part. bonus point: without GROUP BY, HAVING treats the whole table as one group, which is the only way an aggregate query returns zero rows.
+</Interview>
+
+<Keylines>
+- WHERE judges rows before GROUP BY. HAVING judges buckets after it.
+- HAVING can use the grouping key and aggregates, nothing else, same as SELECT.
+- WHERE price > 100 and HAVING avg(price) > 100 answer different questions.
+- a HAVING with no aggregate in it should have been a WHERE.
+- GROUP BY x HAVING count(*) > 1 finds duplicates. watch for the NULL bucket.
+</Keylines>

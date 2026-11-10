@@ -1,0 +1,148 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "2e051b4513f1b393": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, customer_id, ordered_at FROM orders ORDER BY ordered_at DESC LIMIT 10;\nCREATE INDEX orders_ordered_at ON orders (ordered_at);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, customer_id, ordered_at FROM orders ORDER BY ordered_at DESC LIMIT 10;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c1cd1522b425100e",
+          "rows": [
+            ["Limit (actual rows=10.00 loops=1)"],
+            ["  Buffers: shared hit=3 read=83"],
+            ["  ->  Sort (actual rows=10.00 loops=1)"],
+            ["        Sort Key: ordered_at DESC"],
+            ["        Sort Method: top-N heapsort  Memory: 17kB"],
+            ["        Buffers: shared hit=3 read=83"],
+            ["        ->  Seq Scan on orders (actual rows=10000.00 loops=1)"],
+            ["              Buffers: shared read=83"],
+            ["Planning:"],
+            ["  Buffers: shared hit=41 read=7 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "9cadfd6a2140be3e",
+          "rows": [
+            ["Limit (actual rows=10.00 loops=1)"],
+            ["  Buffers: shared hit=1 read=2"],
+            ["  ->  Index Scan Backward using orders_ordered_at on orders (actual rows=10.00 loops=1)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=1 read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=15 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d5f449b63edfaf2f": {
+      "db": "shop",
+      "sql": "SELECT count(*) FILTER (WHERE shipped_at IS NULL) AS unshipped FROM orders;\nSELECT id, shipped_at FROM orders ORDER BY shipped_at DESC, id LIMIT 5;\nSELECT id, shipped_at FROM orders ORDER BY shipped_at DESC NULLS LAST, id LIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["unshipped", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "7318867d0ac52fb7",
+          "rows": [
+            ["430"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["shipped_at", "timestamptz", 1184]
+          ],
+          "rowCount": 5,
+          "digest": "baf7ac55684b7bc7",
+          "rows": [
+            ["1", null],
+            ["6", null],
+            ["10", null],
+            ["30", null],
+            ["56", null]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["shipped_at", "timestamptz", 1184]
+          ],
+          "rowCount": 5,
+          "digest": "0b73dee0310f5a8f",
+          "rows": [
+            ["9959", "2026-06-27 09:12:00+00"],
+            ["9915", "2026-06-26 23:00:00+00"],
+            ["9908", "2026-06-26 08:16:00+00"],
+            ["9898", "2026-06-25 17:59:00+00"],
+            ["9877", "2026-06-25 05:09:00+00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "93ca138f72f63ba6": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_customer_at ON orders (customer_id, ordered_at);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, ordered_at FROM orders WHERE customer_id = 42 ORDER BY ordered_at DESC LIMIT 3;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "83156b38ee6893f1",
+          "rows": [
+            ["Limit (actual rows=3.00 loops=1)"],
+            ["  Buffers: shared hit=3 read=2"],
+            ["  ->  Index Scan Backward using orders_customer_at on orders (actual rows=3.00 loops=1)"],
+            ["        Index Cond: (customer_id = 42)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=3 read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=58 read=8 dirtied=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

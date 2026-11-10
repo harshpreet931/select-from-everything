@@ -1,0 +1,206 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/constraints.scenario.sql",
+ "title": "one table, five rules, and the row each one turns away",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"gtin","type":"text"},
+    {"name":"shelf","type":"text"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "products_gtin_key": {"kind":"index","am":"btree","columns":[{"name":"gtin","type":"text"}],"on":"products"},
+  "products_shelf_key": {"kind":"index","am":"btree","columns":[{"name":"shelf","type":"text"}],"on":"products"},
+  "plain": {"kind":"table","am":"heap","columns":[{"name":"pos","type":"int4"},{"name":"song","type":"text"}]},
+  "plain_pos_key": {"kind":"index","am":"btree","columns":[{"name":"pos","type":"int4"}],"on":"plain"},
+  "later": {"kind":"table","am":"heap","columns":[{"name":"pos","type":"int4"},{"name":"song","type":"text"}]},
+  "later_pos_key": {"kind":"index","am":"btree","columns":[{"name":"pos","type":"int4"}],"on":"later"},
+  "deferred": {"kind":"table","am":"heap","columns":[{"name":"pos","type":"int4"},{"name":"song","type":"text"}]},
+  "deferred_pos_key": {"kind":"index","am":"btree","columns":[{"name":"pos","type":"int4"}],"on":"deferred"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE products (\n  id    int  PRIMARY KEY,\n  sku   text NOT NULL UNIQUE,\n  name  text NOT NULL,\n  price numeric(8,2) NOT NULL CHECK (price >= 0),\n  gtin  text UNIQUE,\n  shelf text UNIQUE NULLS NOT DISTINCT\n);\nINSERT INTO products VALUES (1, 'TEA-01', 'assam tea', 6.50, NULL, NULL)",
+   "note": "a products table with a rule on every column that needs one.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO products VALUES (2, 'TEA-02', NULL, 5.00, NULL, 'A1')",
+   "note": "a product with no name. NOT NULL turns it away: 23502.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23502",
+    "message": "null value in column \"name\" of relation \"products\" violates not-null constraint",
+    "detail": "Failing row contains (2, TEA-02, null, 5.00, null, A1)."
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO products VALUES (2, 'TEA-02', 'green tea', -5.00, NULL, 'A1')",
+   "note": "a negative price. the CHECK is false for this row: 23514.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23514",
+    "message": "new row for relation \"products\" violates check constraint \"products_price_check\"",
+    "detail": "Failing row contains (2, TEA-02, green tea, -5.00, null, A1)."
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "INSERT INTO products VALUES (2, 'TEA-01', 'green tea', 5.00, NULL, 'A1')",
+   "note": "a sku that's taken. UNIQUE finds it in its index: 23505.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"products_sku_key\"",
+    "detail": "Key (sku)=(TEA-01) already exists."
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO products VALUES (2, 'TEA-02', 'green tea', 5.00, NULL, 'A1')",
+   "note": "a second product with no gtin. plain UNIQUE treats NULLs as distinct, so two NULLs are fine.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT id, sku, gtin, shelf FROM products ORDER BY id",
+   "note": "the table now.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"sku","type":"text"},
+     {"name":"gtin","type":"text"},
+     {"name":"shelf","type":"text"}
+    ],
+    "data": [["1","TEA-01",null,null],["2","TEA-02",null,"A1"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "INSERT INTO products VALUES (3, 'MUG-01', 'blue mug', 9.00, NULL, NULL)",
+   "note": "shelf is UNIQUE NULLS NOT DISTINCT: Assam already has a NULL shelf, so a second NULL is a duplicate.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"products_shelf_key\"",
+    "detail": "Key (shelf)=(null) already exists."
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "CREATE TABLE plain (pos int UNIQUE, song text);\nCREATE TABLE later (pos int UNIQUE DEFERRABLE, song text);\nCREATE TABLE deferred (pos int UNIQUE DEFERRABLE INITIALLY DEFERRED, song text);\nINSERT INTO plain VALUES (1, 'intro'), (2, 'verse'), (3, 'outro');\nINSERT INTO later VALUES (1, 'intro'), (2, 'verse'), (3, 'outro');\nINSERT INTO deferred VALUES (1, 'intro'), (2, 'verse'), (3, 'outro')",
+   "note": "a playlist with positions, unique per playlist. three kinds of UNIQUE, one shift.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":3,"columns":[],"data":[]}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "UPDATE plain SET pos = pos + 1",
+   "note": "plain UNIQUE is checked row by row. moving 1 to 2 collides with the 2 that hasn't moved yet.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"plain_pos_key\"",
+    "detail": "Key (pos)=(2) already exists."
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "UPDATE later SET pos = pos + 1",
+   "note": "DEFERRABLE (initially immediate) is checked at the end of the statement, when every row has moved. no collision.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":3,"columns":[],"data":[]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SELECT pos, song FROM later ORDER BY pos",
+   "note": "the result.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"pos","type":"int4"},{"name":"song","type":"text"}],
+    "data": [["2","intro"],["3","verse"],["4","outro"]]
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE deferred SET pos = 2 WHERE song = 'intro';\nSELECT pos, song FROM deferred ORDER BY pos, song",
+   "note": "INITIALLY DEFERRED waits until COMMIT. in between, a transaction can hold duplicates.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"pos","type":"int4"},{"name":"song","type":"text"}],
+    "data": [["2","intro"],["2","verse"],["3","outro"]]
+   }
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "and if they're still duplicates at COMMIT, the COMMIT fails and the whole transaction rolls back.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"deferred_pos_key\"",
+    "detail": "Key (pos)=(2) already exists."
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "SELECT pos, song FROM deferred ORDER BY pos",
+   "note": "back where it started.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"pos","type":"int4"},{"name":"song","type":"text"}],
+    "data": [["1","intro"],["2","verse"],["3","outro"]]
+   }
+  }
+ ]
+}

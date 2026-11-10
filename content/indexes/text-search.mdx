@@ -1,0 +1,168 @@
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import { Postings } from "@/components/figures/indexes/Postings";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/text-search.pgtrace.json";
+
+{/* the lexeme table, the posting lists, the plans and the ranks read
+    traces/text-search.scenario.sql, captured on PGlite. the pg_trgm blocks at the end run
+    in the browser too (ext=pg_trgm). */}
+
+export const lex = trace.steps[0].result;
+export const ranks = trace.steps[4].result;
+export const gin = trace.steps[2].explain.Plan;
+export const pg = (i) => trace.steps[i].explain.Plan["Shared Hit Blocks"] + trace.steps[i].explain.Plan["Shared Read Blocks"];
+
+<InShort>
+`LIKE '%whisk%'` scans every row and only matches letters. **full-text search** turns text into a `tsvector` of normalized words (**lexemes**: "wobbles" becomes `wobbl`, "the" disappears), turns the search into a `tsquery`, and matches them with `@@`. `ts_rank` orders the hits. a **GIN** index holds one entry per lexeme with the list of rows that contain it, so a search reads a few lists instead of every row.
+
+for "contains these letters" and typo tolerance, the **pg_trgm** extension indexes three-letter fragments instead.
+</InShort>
+
+## the picture
+
+you know the index at the back of a textbook? it's the original full-text index. every important word, normalized ("pour" and "pouring" under one entry, "the" not at all), with the pages it appears on. to find pages about pouring teapots, you look up two entries and see which pages are in both.
+
+postgres builds exactly that. first, a sentence becomes lexemes:
+
+<Figure wide caption={<>how the <code>english</code> configuration takes a sentence apart: each token, and the lexeme it became. "The", "the" and "other" are stop words and vanish. "teapots" is stemmed to <code>teapot</code>, "handed" to <code>hand</code>, and the hyphenated word is kept whole and in parts.</>}>
+<ResultTable columns={lex.columns} rows={lex.data} rowTones={lex.data.map((r) => (r[2] === "{}" ? null : "live"))} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+then each lexeme points at the rows that contain it. here are a few words from shop's product names, and which products have them:
+
+<Figure caption={<>an inverted index, built with a real query over product names: each lexeme and the ids of the products whose name contains it. a GIN index stores the same thing, as a b-tree of lexemes with <C k="ref">a list of row addresses</C> under each.</>}>
+<Postings trace={trace} step={1} hot="whisk" />
+</Figure>
+
+a search for `whisk & steel` reads two lists and intersects them. that's why GIN is the index for "contains" questions ([index types](/learn/indexes/index-types)), and why its insides are called an inverted index ([GIN](/learn/index-internals/gin)).
+
+## tsvector and tsquery
+
+```sql run
+SELECT to_tsvector('english', 'The left-handed teapot pours the other way.') AS doc;
+SELECT to_tsquery('english', 'teapots & pouring') AS query;
+SELECT to_tsvector('english', 'The left-handed teapot pours the other way.')
+       @@ to_tsquery('english', 'teapots & pouring') AS matches;
+```
+
+the numbers in the tsvector are word positions, which ranking and phrase search use. the query was normalized with the same rules, so "teapots" and "pouring" meet "teapot" and "pour" in the middle. that's the whole point of lexemes, and also why the configuration (`english`) has to be the same on both sides.
+
+for text a user typed, `websearch_to_tsquery` takes the syntax people expect from a search box (quotes for phrases, `-` to exclude, `or`):
+
+```sql run
+SELECT websearch_to_tsquery('english', '"left handed" teapot -cup') AS query;
+```
+
+## an index for it
+
+the usual setup is a generated column with the tsvector, kept in sync by postgres, and a GIN index on it. here are 20,000 product reviews, generated from shop's product names:
+
+```sql run db=shop session=fts
+CREATE TABLE reviews (id int PRIMARY KEY, product_id int NOT NULL, body text NOT NULL);
+INSERT INTO reviews
+SELECT i, p.id,
+       'the ' || p.name || ' ' || (ARRAY['arrived quickly and works well', 'broke after a week', 'is smaller than it looks',
+         'is great value for the price', 'has a handle that wobbles', 'pours the wrong way', 'stopped working after a month',
+         'is exactly as described', 'is too heavy to carry', 'makes a terrible noise', 'was a gift and they loved it',
+         'feels cheap but does the job'])[1 + ((hashint4(i)::bigint + 2147483648) % 12)::int]
+FROM generate_series(1, 20000) AS i
+JOIN products AS p ON p.id = 1 + (i * 37) % 199
+ORDER BY i;
+ALTER TABLE reviews ADD COLUMN doc tsvector GENERATED ALWAYS AS (to_tsvector('english', body)) STORED;
+CREATE INDEX reviews_doc ON reviews USING gin (doc);
+VACUUM ANALYZE reviews;
+SELECT id, body FROM reviews ORDER BY id LIMIT 3;
+```
+
+(`hashint4` of the row number picks the phrase, so every engine builds the same rows.) now the search:
+
+```sql run session=fts
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, body FROM reviews WHERE doc @@ to_tsquery('english', 'whisk & wobble');
+```
+
+<Figure wide caption={<>the same search through the GIN index on <code>doc</code>, and on a tsvector computed on the fly with another configuration, which no index covers. the index reads {gin.Plans[0]["Shared Hit Blocks"] + gin.Plans[0]["Shared Read Blocks"]} index pages and then only the heap pages with a match: {pg(2)} pages against {pg(3)}.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="tsvector"
+  pages
+  plans={[
+    { label: "indexed doc", step: 2 },
+    { label: "computed, no index", step: 3 },
+  ]}
+/>
+</Figure>
+
+<Predict question="the index is on doc, built with 'english'. which WHERE can use it?" options={["to_tsvector('simple', body) @@ …", "doc @@ to_tsquery('simple', 'wobbles')", "doc @@ to_tsquery('english', 'wobbles')"]} answer={2}>
+```sql
+SELECT count(*) FROM reviews WHERE doc @@ to_tsquery('english', 'wobbles');
+```
+<Explain>
+the third. the first computes a different tsvector, which nothing indexes. the second uses the index (it's on doc, and the operator is @@), but the 'simple' configuration doesn't stem, so it searches for the lexeme `wobbles`, which isn't in any document: the english tsvectors hold `wobbl`. it returns zero rows, fast. the configuration has to match on both sides, which is the main reason to keep it in one generated column.
+</Explain>
+</Predict>
+
+```sql run session=fts
+SELECT count(*) AS english FROM reviews WHERE doc @@ to_tsquery('english', 'wobbles');
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT count(*) FROM reviews WHERE doc @@ to_tsquery('simple', 'wobbles');
+```
+
+## ranking
+
+`@@` is yes or no. to put the best matches first, `ts_rank` scores each match by how many query words it has and how often; `ts_rank_cd` also rewards them for being close together. here's the spread for `whisk | wobble`:
+
+<Figure caption={<>reviews matching <code>whisk | wobble</code>, grouped by their ts_rank. the ones with both words score twice as high as the ones with one.</>}>
+<ResultTable columns={ranks.columns} rows={ranks.data} rowTones={["live", null]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+```sql run session=fts
+SELECT id, body, round(ts_rank(doc, q)::numeric, 4) AS rank
+FROM reviews, to_tsquery('english', 'whisk | wobble') AS q
+WHERE doc @@ q
+ORDER BY rank DESC, id
+LIMIT 3;
+```
+
+ranking has to compute a score for every match, and the index doesn't help with that part: a search that matches half the table and then sorts by rank is slow however it's indexed. narrow first, rank second. and note the `id` after `rank DESC`: equal ranks are common, and without a tiebreaker the order among them isn't defined.
+
+## fuzzy: pg_trgm
+
+full-text search matches words. it won't find `whis` inside `whisk`, or `wisk` for `whisk`. for that, the `pg_trgm` extension breaks text into **trigrams** (every run of three characters, with padding at word edges) and compares the sets. these blocks load it first, the way `CREATE EXTENSION pg_trgm;` would on a server:
+
+```sql run db=shop ext=pg_trgm
+SELECT show_trgm('whisk') AS trigrams;
+SELECT id, name, round(similarity(name, 'larje wisk')::numeric, 3) AS similarity
+FROM products
+WHERE name % 'larje wisk'
+ORDER BY similarity DESC, id;
+```
+
+two misspellings, and both large whisks still come back. `%` is "similar enough" (similarity above `pg_trgm.similarity_threshold`, 0.3 by default). a GIN index with the `gin_trgm_ops` operator class serves it, and it also serves `LIKE` and `ILIKE` with a wildcard at the start, which no b-tree can:
+
+```sql run db=shop ext=pg_trgm
+CREATE INDEX products_name_trgm ON products USING gin (name gin_trgm_ops);
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT name FROM products WHERE name LIKE '%whisk%';
+EXPLAIN (COSTS OFF) SELECT name FROM products WHERE name ILIKE '%WHISK%';
+```
+
+(`products` has 200 rows, so the seq scan is switched off to show that the index can serve the query; on a real table postgres picks it by itself.) trigram indexes are big, a few entries per word of every row, and they need at least three characters of pattern to narrow anything.
+
+<Gotcha title="full-text search is not LIKE">
+`to_tsquery('english', 'whisk')` finds "whisks" and "whisk", but not "whiskey" (a different lexeme) and not a partial word. `LIKE '%whisk%'` finds "whiskey" and doesn't know that "pours" and "pouring" are the same word. they answer different questions: words in a language, vs characters in a string. pick by what users type.
+</Gotcha>
+
+<Interview q="how would you add search to a product catalog in postgres?">
+for word search: a generated tsvector column (to_tsvector with a fixed configuration, over the fields that matter, weighted with setweight if titles should count more), a GIN index on it, websearch_to_tsquery for user input, and ts_rank to order results, with a tiebreaker. for typos and substrings: pg_trgm with a GIN gin_trgm_ops index, similarity and %, or LIKE '%...%'. bonus points: the configuration has to match on both sides, stop words disappear, and ranking reads every match, so narrow the search before ranking. beyond that (language detection, synonyms, relevance tuning at scale) is where a dedicated search engine starts to earn its keep.
+</Interview>
+
+<Keylines>
+- tsvector: text as normalized lexemes. tsquery: the search, normalized the same way.
+- @@ matches, ts_rank orders. same configuration on both sides.
+- a GIN index stores each lexeme with the rows that contain it.
+- pg_trgm: trigrams for LIKE '%foo%', ILIKE and typo tolerance, also with GIN.
+</Keylines>

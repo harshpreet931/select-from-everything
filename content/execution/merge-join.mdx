@@ -1,0 +1,133 @@
+import { PlanSwitch } from "@/components/figures/execution/PlanSwitch";
+import { tableAt } from "@/components/figures/execution/source";
+import trace from "./traces/merge-join.pgtrace.json";
+
+{/* the small tables and both plan switches read traces/merge-join.scenario.sql, captured on
+    PGlite with the shop dataset. the JoinLab is the join model in src/lib/db/sim/join.ts, checked
+    against postgres in join.test.ts, fed the two captured samples. */}
+
+export const cust = tableAt(trace, 0);
+export const ords = tableAt(trace, 1);
+export const byCustomer = `SELECT c.id, c.name, o.id
+FROM customers AS c JOIN orders AS o ON o.customer_id = c.id
+ORDER BY c.id;`;
+export const selfJoin = `SELECT a.id, b.id FROM orders AS a JOIN orders AS b ON a.customer_id = b.customer_id;`;
+
+<InShort>
+a **merge join** takes two inputs **sorted on the join key** and walks them with two cursors, always advancing the one that's behind. each row is read once, apart from a short step back over runs of **duplicate keys**.
+
+the catch is the sorting. if an index (or an earlier step) already delivers the rows in order, the merge is nearly free. if not, a **Sort** has to pay for it first. sorted order is a resource.
+</InShort>
+
+## the picture
+
+you know how you'd compare two guest lists that are both in alphabetical order? one finger on each. if the names match, tick them. if not, move the finger that's on the earlier name. you never go back to the top, and you're done when either list runs out.
+
+that's the whole algorithm. the inputs being sorted is what lets one finger skip ahead without ever missing a match: everything before it is smaller, everything after it is bigger.
+
+<Figure wide caption={<>eight orders and five customers. switch to <em>merge join</em> and step through: it sorts both sides on the key, then the two <C k="ref">cursors</C> walk down together. two orders for the same customer send the customers cursor back to its mark; <em>add a duplicate key</em> gives a customer a twin, and the rewind walks a run of two. the nested loop is there to compare comparison counts with.</>}>
+<JoinLab
+  left={{ name: "orders", columns: ords.columns.map((c) => c.name), rows: ords.rows.map((r) => r.map(Number)) }}
+  right={{ name: "customers", columns: cust.columns.map((c) => c.name), rows: cust.rows.map((r) => [Number(r[0]), r[1]]) }}
+  on={["customer_id", "id"]}
+  algos={["nested-loop", "merge"]}
+/>
+</Figure>
+
+## when the index already did the sorting
+
+orders and their items, in order:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT o.id, o.status, oi.line_no, oi.qty
+FROM orders AS o JOIN order_items AS oi ON oi.order_id = o.id
+ORDER BY o.id;
+```
+
+no Sort anywhere. `orders_pkey` hands over orders by id, `order_items_pkey` starts with `order_id`, so its rows come out sorted on the join key too. the merge join walks the two index scans side by side, and its output is already in `o.id` order, so the ORDER BY costs nothing either. one sorted stream feeds the next.
+
+<Predict question="customers JOIN orders ON o.customer_id = c.id, by merge join. which input needs a Sort?" options={["customers", "orders", "both"]} answer={1}>
+```sql
+-- shop has an index on customers.id (the primary key)
+-- and none on orders.customer_id
+SELECT c.name, o.id
+FROM customers AS c JOIN orders AS o ON o.customer_id = c.id;
+```
+<Explain>
+orders. customers_pkey can hand over customers sorted by id, which is the join key on that side. nothing can hand over orders sorted by customer_id, so a Sort has to read all 10,000 of them first. add an index on orders.customer_id and neither side needs one.
+</Explain>
+</Predict>
+
+that's not hypothetical. here's the same join with an ORDER BY, before and after that index:
+
+<Figure wide caption={<>without an index on orders.customer_id, postgres hashes and then sorts all 10,000 joined rows for the ORDER BY. with one, it merges two index scans, and the result comes out in customer order for free.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "index on orders.customer_id", values: ["no", "yes"] }]}
+  runs={{
+    no: 3,
+    yes: { step: 6, sql: `CREATE INDEX ON orders (customer_id);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${byCustomer}` },
+  }}
+  hot={["Merge Join", "Sort Method", "Index Scan using orders_customer_id_idx"]}
+/>
+</Figure>
+
+that's what "sorted order is a resource" means. a b-tree is a sorted copy of its columns ([what an index actually is](/learn/indexes/what-an-index-is)), and a plan can spend that order on a merge join, an ORDER BY, a GROUP BY or a DISTINCT, sometimes all at once.
+
+## when it has to sort first
+
+switch off hash joins and nested loops, and a join with no useful index gets two Sorts:
+
+```sql run db=shop
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT p.name, oi.qty
+FROM order_items AS oi JOIN products AS p ON p.id = oi.product_id;
+```
+
+both Sorts are blocking ([the iterator model](/learn/execution/iterator-model)), so this plan can't return a row until all 24,942 order lines are sorted. and look at the products side: its scan read 200 rows, and its Sort handed over 199. product 200 is the left-handed teapot, which nobody has ever ordered: once the order lines ran out, the merge stopped, and nobody asked for the last product. a merge join is done when either side is.
+
+<Quiz question="what does a merge join need from its join condition?" options={["an equality on sortable keys", "any comparison", "a hash function"]} answer={0}>
+<Explain>
+an equality, `=`, on keys with a sort order (a b-tree operator class). the merge walks both sides in that order and matches equal keys. postgres can also run FULL JOIN this way, since the merge sees every unmatched row on both sides as it passes them. inequalities like `<` on their own are nested loops.
+</Explain>
+</Quiz>
+
+## duplicates, rewinds, and Materialize
+
+if both sides have the same key more than once, every outer row with that key has to meet every inner row with it. so when the outer cursor moves to the next row with the *same* key, the inner cursor has to go back to the start of the run. postgres calls it mark and restore: the inner side marks where a run of equal keys starts, and restores to the mark for each duplicate on the outer side.
+
+an extreme case: orders joined to itself on customer_id. every customer's orders meet each other, so a customer with 57 orders produces 57 × 57 rows.
+
+<Figure wide caption={<>the self-join, with hash joins and nested loops switched off. with Sorts on both sides, the inner Sort hands over 75,398 rows from the 10,000 it holds: every rewind replays rows from its sorted output. over the index, a <C k="hot">Materialize</C> keeps the current run in memory, so a rewind doesn't fetch the rows again.</>}>
+<PlanSwitch
+  trace={trace}
+  axes={[{ key: "inner side", values: ["Sort", "index + Materialize"] }]}
+  runs={{
+    Sort: { step: 4, sql: `SET enable_hashjoin = off;\nSET enable_nestloop = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${selfJoin}` },
+    "index + Materialize": { step: 7, sql: `CREATE INDEX ON orders (customer_id);\nSET enable_hashjoin = off;\nSET enable_nestloop = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\n${selfJoin}` },
+  }}
+  hot={["actual rows=75398", "Materialize", "Storage:"]}
+/>
+</Figure>
+
+a Sort can restore to a mark by itself: it has its whole sorted output in memory (or on disk). an index scan can too, but restoring means walking the index and fetching the rows again. so the planner may put a **Materialize** on top: a node that remembers what passed through it, and replays it on request. `Storage: Memory  Maximum Storage: 20kB` <Since v={18} /> says it never needed more than one run's worth at a time. the same node shows up under a nested loop's inner side, holding a scan's result so that 10,000 rescans cost nothing ([nested loop joins](/learn/execution/nested-loop-join)).
+
+<Gotcha title="the sort the merge join needed can be the expensive part">
+a merge join's own work is tiny: one pass over each side. the Sorts under it are where the time and memory go, and like any sort they spill to disk past work_mem ([sorting](/learn/execution/sorting)). so "it picked a merge join" really means "it found, or paid for, sorted inputs". if you see two big Sorts under a Merge Join, the question is whether an index could have supplied that order. postgres 18 can also feed a merge join from an Incremental Sort, finishing an order an index only partly provides <Since v={18} />.
+</Gotcha>
+
+<Interview q="when does postgres choose a merge join over a hash join?">
+when both inputs can be had sorted on the join key cheaply, usually from indexes, or when the result has to be sorted on that key anyway (an ORDER BY, GROUP BY or another merge join above it), so the sort is paid once and used twice. it also wins when the inputs are too big to hash in memory, because sorts spill to disk more gracefully than hash tables. it needs an equality on sortable keys, reads each side once, and rewinds over runs of duplicate keys (mark and restore), sometimes through a Materialize node. bonus point: it stops as soon as either input runs out.
+</Interview>
+
+<Keylines>
+- two inputs sorted on the key, two cursors, always advance the smaller one.
+- an index can supply the order for free; otherwise a Sort pays for it up front.
+- equal keys on both sides mean rewinds: the inner side restores to a mark.
+- Materialize keeps rows in memory so a rewind or rescan doesn't redo the work below it.
+- sorted order is a resource: one sort can serve a merge join and an ORDER BY at once.
+</Keylines>

@@ -1,0 +1,108 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5c1a0c17f86018b2": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT *\nFROM (SELECT id, name, city FROM customers WHERE country = 'FR') AS fr\nWHERE city = 'Paris'\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "47342066badbd6ca",
+          "rows": [
+            ["Sort"],
+            ["  Sort Key: customers.id"],
+            ["  ->  Seq Scan on customers"],
+            ["        Filter: ((country = 'FR'::bpchar) AND (city = 'Paris'::text))"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0e14fca0027c8f3f": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT name FROM customers\nWHERE id IN (SELECT customer_id FROM orders WHERE status = 'refunded')\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "100bee241bddca6a",
+          "rows": [
+            ["Sort"],
+            ["  Sort Key: customers.id"],
+            ["  ->  Hash Join"],
+            ["        Hash Cond: (customers.id = orders.customer_id)"],
+            ["        ->  Seq Scan on customers"],
+            ["        ->  Hash"],
+            ["              ->  HashAggregate"],
+            ["                    Group Key: orders.customer_id"],
+            ["                    ->  Seq Scan on orders"],
+            ["                          Filter: (status = 'refunded'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b4f17377b07bf47f": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT name FROM customers AS c\nWHERE c.id IN (SELECT o.customer_id FROM orders AS o WHERE o.status = 'refunded')\n   OR c.city = 'Paris'\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ed148d803cae9d52",
+          "rows": [
+            ["Index Scan using customers_pkey on customers c"],
+            ["  Filter: ((ANY (id = (hashed SubPlan 1).col1)) OR (city = 'Paris'::text))"],
+            ["  SubPlan 1"],
+            ["    ->  Seq Scan on orders o"],
+            ["          Filter: (status = 'refunded'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "cbdf459f51b72073": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT name FROM customers\nWHERE id = (SELECT customer_id FROM orders ORDER BY ordered_at DESC LIMIT 1);",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "3bb5ecdf585b0046",
+          "rows": [
+            ["Index Scan using customers_pkey on customers"],
+            ["  Index Cond: (id = (InitPlan 1).col1)"],
+            ["  InitPlan 1"],
+            ["    ->  Limit"],
+            ["          ->  Sort"],
+            ["                Sort Key: orders.ordered_at DESC"],
+            ["                ->  Seq Scan on orders"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

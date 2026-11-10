@@ -1,0 +1,166 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* the corruption transcripts are recorded: psql 18.6 (input echoed with -a) and the shell, against
+    two throwaway postgres 18.6 clusters on this mac, one initdb'd with the default (checksums on)
+    and one with --no-data-checksums. one byte of the table file was overwritten with dd while
+    the server was stopped. the script lives in the writer's scratchpad. */}
+
+export const onSide = `-- the table file was changed while the server was down:
+-- printf 'A' | dd of=$PGDATA/base/5/16430 bs=1 seek=8181 conv=notrunc
+SELECT id, owner, balance FROM accounts ORDER BY id;
+ERROR:  invalid page in block 0 of relation "base/5/16430"`;
+
+export const offSide = `-- the same byte, a cluster made with initdb --no-data-checksums:
+SELECT id, owner, balance FROM accounts ORDER BY id;
+ id | owner | balance
+----+-------+---------
+  1 | Alice |  100.00
+  2 | bob   |  100.00
+  3 | carol |   50.00
+(3 rows)`;
+
+<InShort>
+with **data checksums** on, every page gets a 16-bit checksum when it's written to disk, and it's verified every time the page is read back. a mismatch is an error, "invalid page", instead of wrong data. they're **on by default since postgres 18**. a checksum only *detects*: it can't repair the page, it can't see corruption that happened in memory, and it can't tell an old page from a current one.
+</InShort>
+
+## the picture
+
+you know how a disk that fails usually fails loudly, with an I/O error? the scary failures are the quiet ones: a firmware bug, a bad cable, a cosmic ray in a controller's cache, and a few bytes on a page change. the read succeeds. the data is wrong. nobody notices until a report doesn't add up.
+
+think of a parcel with a seal (the checksum). the warehouse seals it when it ships (writes the page) and checks the seal when it arrives (reads it). a broken seal doesn't tell you what was in the box, and it can't put the contents back. it just stops you from signing for a box that was tampered with. and if someone swapped in last week's sealed box, the seal looks fine.
+
+<Figure caption={<>where the checksum lives. hover a stage. it's computed on the way out to the file, and checked on the way back in, never in between.</>}>
+<Flow
+  stages={[
+    { label: "page in memory", sub: "shared buffers", note: "changes here don't touch the checksum. the pd_checksum field in the header goes stale and nobody minds." },
+    { label: "write", sub: "copy + checksum", note: "the page is copied, a checksum is computed over all 8 KB plus the block number, and stamped into pd_checksum on the copy. the copy goes to the file." },
+    { label: "on disk", sub: "base/5/16430", note: "anything that changes a byte from here on will be caught." },
+    { label: "read", sub: "verify", note: "the checksum is recomputed. if it doesn't match: an error, and the page never reaches shared buffers." },
+  ]}
+/>
+</Figure>
+
+the lab engine has checksums on, like any cluster initdb'd by postgres 18. right after the dataset is loaded, the stored checksum matches what `page_checksum()` (pageinspect) computes:
+
+```sql run db=lab session=ck
+SHOW data_checksums;
+SELECT checksum AS stored, page_checksum(get_raw_page('accounts', 0), 0) AS computed
+FROM page_header(get_raw_page('accounts', 0));
+```
+
+change a row and look again. the page in shared buffers has changed, its header hasn't, and that's fine: nothing checks the checksum in memory. a checkpoint writes the page out with a fresh checksum on the copy it hands to the file; once the buffer is evicted and read back, the stored value matches again:
+
+```sql run session=ck
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+SELECT checksum AS stored, page_checksum(get_raw_page('accounts', 0), 0) AS computed
+FROM page_header(get_raw_page('accounts', 0));
+CHECKPOINT;
+SELECT pg_buffercache_evict(bufferid) IS NOT NULL AS evicted FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;
+SELECT checksum AS stored, page_checksum(get_raw_page('accounts', 0), 0) AS computed
+FROM page_header(get_raw_page('accounts', 0));
+```
+
+## one byte, two clusters
+
+the browser can't damage its own files, so this is two throwaway postgres 18.6 clusters on this mac: one made with the default `initdb` (checksums on), one with `initdb --no-data-checksums`. each gets bank-style accounts, a CHECKPOINT, then the server is stopped and one byte of the table file is overwritten: the `a` of `alice` becomes `A`. then it's started and queried.
+
+<Figure wide caption={<>the same one-byte change to the same file, read back by two clusters. with checksums the read fails. without, it succeeds, and returns the damage as data.</>}>
+<Compare>
+<Good label="checksums on (the 18 default)">
+<SqlPanel code={onSide} lang="psql" nolines wrap />
+</Good>
+<Bad label="initdb --no-data-checksums">
+<SqlPanel code={offSide} lang="psql" nolines wrap />
+</Bad>
+</Compare>
+<Provenance recorded="psql 18.6 against two throwaway postgres 18.6 clusters on this mac; one byte changed with dd while each server was stopped. the -- lines are mine" />
+</Figure>
+
+that's the whole value of checksums, in one comparison. `Alice` with a capital A is plausible data. if the byte had been in a balance, it would have been a plausible number. without checksums, postgres has no way to know the page isn't what it wrote. the server log on the checksum cluster has the details the client doesn't get:
+
+```text
+LOG:  page verification failed, calculated checksum 59722 but expected 60989
+STATEMENT:  SELECT id, owner, balance FROM accounts ORDER BY id;
+ERROR:  invalid page in block 0 of relation "base/5/16430"
+```
+
+<Provenance recorded="the checksum cluster's server log, same run" />
+
+`pg_checksums` checks a whole cluster offline (the server must be stopped). it found the same page before the restart:
+
+```bash
+$ pg_checksums --check -D $PGDATA
+pg_checksums: error: checksum verification failed in file "$PGDATA/base/5/16430", block 0: calculated checksum E94A but block contains EE3D
+Checksum operation completed
+Files scanned:   954
+Blocks scanned:  2926
+Bad checksums:  1
+Data checksum version: 1
+```
+
+<Provenance recorded="pg_checksums 18.6 on the stopped checksum cluster, same run" />
+
+(E94A and EE3D are 59722 and 60989 in hex: the same two numbers.) `pg_checksums --enable` turns checksums on for an existing cluster, also offline, by rewriting every page: on the other cluster it wrote all 2,926 blocks. there's no way to turn them on while the server runs.
+
+<Predict question="with checksums on, you set ignore_checksum_failure = on and run the query again. what happens?" options={["the same ERROR", "a WARNING, then the rows, Alice included", "postgres repairs the page"]} answer={1}>
+```sql
+SET ignore_checksum_failure = on;
+SELECT id, owner, balance FROM accounts ORDER BY id;
+```
+<Explain>
+a WARNING ("ignoring checksum failure in block 0"), then the three rows, with `Alice`. the setting only skips the check; it can't know what the byte used to be. that's for getting whatever is still readable off a damaged page during a rescue. a checksum detects, it never repairs. the repair is a [backup](/learn/wal/backups-and-pitr) or a replica.
+</Explain>
+</Predict>
+
+```psql
+SET ignore_checksum_failure = on;
+SET
+SELECT id, owner, balance FROM accounts ORDER BY id;
+WARNING:  ignoring checksum failure in block 0 of relation "base/5/16430"
+ id | owner | balance
+----+-------+---------
+  1 | Alice |  100.00
+  2 | bob   |  100.00
+  3 | carol |   50.00
+(3 rows)
+```
+
+<Provenance recorded="psql 18.6 on the checksum cluster, same run" />
+
+## what a checksum can't catch
+
+<Figure caption={<>what data checksums notice, and what slips past. the right column is why you still need backups and amcheck.</>}>
+<Tree>{`
+caught #live
+    bits flipped on disk, in the controller, on the wire // any change to the 8 KB after the write
+    a page written to the wrong place // the block number is part of the checksum
+    a torn page // half old, half new rarely checksums right (and full-page writes repair it anyway)
+not caught #dead
+    corruption in memory, before the write // the checksum is computed over the bad bytes
+    a lost write // last week's page, intact, still has a valid checksum
+    bugs that write wrong but well-formed data // the page is exactly what postgres wrote
+    damage on a cluster without checksums // turning them on later checksums the damage too
+`}</Tree>
+<Provenance drawn="from the postgres 18 docs on data checksums and the page checksum code (checksum_impl.h)" />
+</Figure>
+
+the checksum is 16 bits (an FNV-1a variant, folded), so a random corruption has roughly a 1 in 65,000 chance of slipping through. for index pages and anything else, `amcheck` checks structure (`bt_index_check`, `verify_heapam`), which catches the logical damage a checksum can't. `pg_stat_database.checksum_failures` counts failures per database, worth an alert.
+
+the price is small but real. checksums mean a hint-bit change after a checkpoint has to be WAL-logged as a full page ([full-page writes](/learn/wal/full-page-writes), the `FPI_FOR_HINT` records), and every read and write computes 8 KB of hash. postgres turned them on by default in 18 because silent corruption is worse.
+
+<Gotcha title="pg_upgrade needs matching checksum settings">
+postgres 18's initdb turns checksums on, so a new 18 cluster won't accept a pg_upgrade from an old cluster that never had them: the settings must match. either `initdb --no-data-checksums` for the new cluster (the option 18 added for exactly this), or run `pg_checksums --enable` on the old one first, which means downtime proportional to its size. plan it before the upgrade window, not during.
+</Gotcha>
+
+<Interview q="what do data checksums protect against in postgres, and what don't they?">
+each page gets a 16-bit checksum computed when it's written out and verified when it's read in, so corruption anywhere between the write and the next read (disk, controller, firmware, filesystem) raises "invalid page" instead of returning wrong data. they don't repair anything, they don't catch corruption that happened in memory before the write, they can't detect a lost write where an older but valid page comes back, and they can't catch logically wrong data postgres itself wrote. on by default since 18; on older clusters, pg_checksums --enable works offline. the side cost is WAL: with checksums, hint-bit changes after a checkpoint need full-page images. bonus point: pair them with amcheck for structural checks, and with backups and replicas, because detection is only useful if you have a good copy to go back to.
+</Interview>
+
+<Keylines>
+- a checksum is computed when a page is written out and checked when it's read back.
+- a mismatch raises "invalid page in block N". without checksums, the damage comes back as data.
+- on by default since postgres 18. pg_checksums enables, disables or checks them, offline.
+- detection only: no repair, no in-memory corruption, no lost writes.
+- ignore_checksum_failure lets you read a damaged page for a rescue. it doesn't fix it.
+</Keylines>

@@ -1,0 +1,133 @@
+import { runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/grouping-sets.pgtrace.json";
+
+{/* the grouping switch and the NULL-or-total switch read traces/grouping-sets.scenario.sql,
+    captured on PGlite against shop. rows that a grouping added (GROUPING() > 0) are tinted
+    hot here, from the g column of the capture. */}
+
+export const G = ["GROUP BY year, status", "ROLLUP (year, status)", "CUBE (year, status)", "GROUPING SETS ((year), (status))"];
+export const sets = Object.fromEntries(Object.entries(runsOf(trace, G, 0)).map(([k, r]) => [k, { ...r, tones: r.rows.map((x) => (Number(x[3]) > 0 ? "hot" : null)) }]));
+export const nulls = runsOf(trace, ["category", "GROUPING() labels"], 4);
+
+<InShort>
+**GROUPING SETS** runs several GROUP BYs in one query and stacks the results: detail rows, subtotals and a grand total together. **ROLLUP (a, b)** is shorthand for the sets (a, b), (a) and (): a hierarchy of subtotals. **CUBE (a, b)** is every combination.
+
+in a subtotal row, the columns that were rolled up come out NULL. **GROUPING()** tells those NULLs apart from NULLs that were in your data.
+</InShort>
+
+## the picture
+
+you know the spreadsheet report with a subtotal under every year and a grand total at the bottom? the SQL version used to be three queries glued with UNION ALL: one GROUP BY year, status, one GROUP BY year, one with no GROUP BY at all. ROLLUP is those three, in one query, in one pass over the table.
+
+think of counting votes. first by polling station and party (the detail), then you add up each station's sheet (a subtotal per station), then everything (the grand total). same ballots each time; you just stop distinguishing one more column at each level.
+
+<Figure wide caption={<>switch the grouping. the plain GROUP BY gives 9 rows. ROLLUP adds a <C k="hot">subtotal</C> per year and a grand total; CUBE also adds a total per status; GROUPING SETS gives only the sets you list. <code>g</code> is <code>GROUPING(year, status)</code>: 0 for a detail row, more for a subtotal.</>}>
+<RunPick options={[{ key: "group by", values: G }]} runs={sets} hot={["ROLLUP (year, status)", "CUBE (year, status)", "GROUPING SETS ((year), (status))"]} maxRows={18} trace={prov(trace)} />
+</Figure>
+
+look at ROLLUP's extra rows. `2025 | null | 5,094` is every order from 2025, whatever its status. `null | null | 10,000` is every order. the NULL means "all of them" there, not "unknown". more on that collision below.
+
+## the three spellings
+
+all three are ways to write a list of grouping sets, and postgres expands them before it runs anything:
+
+<Figure caption={<>what ROLLUP and CUBE expand to. ROLLUP drops columns from the right, one at a time. CUBE takes every subset: 2ⁿ sets for n columns.</>}>
+<Tree>{`
+ROLLUP (year, status)             // n + 1 sets
+    (year, status)                    // the detail rows
+    (year)                            // a subtotal per year
+    ()                                // the grand total
+CUBE (year, status)               // 2^n sets
+    (year, status)                    // the detail rows
+    (year)                            // a subtotal per year
+    (status)                          // a subtotal per status
+    ()                                // the grand total
+GROUPING SETS ((year), (status))  // exactly what you list
+    (year)
+    (status)
+`}</Tree>
+</Figure>
+
+so this query and the UNION ALL of three GROUP BYs return the same rows (with NULL standing in for the columns a set doesn't group by):
+
+```sql run db=shop
+SELECT year, status, count(*) AS orders
+FROM (SELECT extract(year FROM ordered_at)::int AS year, status FROM orders) AS o
+GROUP BY ROLLUP (year, status)
+ORDER BY year NULLS LAST, status NULLS LAST;
+```
+
+column order matters for ROLLUP, since it's a hierarchy: `ROLLUP (status, year)` gives a subtotal per *status* instead. CUBE doesn't care about order. and you can mix: `GROUP BY year, ROLLUP (status, kind)` keeps year in every set and rolls up the rest.
+
+<Predict options={["3", "5", "8"]} answer={1}>
+```sql
+SELECT a, b, count(*)
+FROM (VALUES (1, 'x'), (1, 'y'), (2, 'x')) AS t (a, b)
+GROUP BY CUBE (a, b);
+-- how many rows come back besides the 3 detail rows?
+```
+<Explain>
+5. CUBE (a, b) is the sets (a, b), (a), (b) and (). (a, b) gives the 3 detail rows you'd get anyway. (a) adds a subtotal per value of a (2), (b) a subtotal per value of b (2), and () the grand total (1). 2 + 2 + 1 = 5 extra, 8 rows in all.
+</Explain>
+</Predict>
+
+```sql run
+SELECT a, b, count(*) AS n, GROUPING(a, b) AS g
+FROM (VALUES (1, 'x'), (1, 'y'), (2, 'x')) AS t (a, b)
+GROUP BY CUBE (a, b)
+ORDER BY g, a, b;
+```
+
+## GROUPING(): whose NULL is it?
+
+the NULL in a subtotal row means "rolled up". but your data can hold NULLs of its own, and then the two look exactly alike. the shop has three products with no category:
+
+<Figure wide caption={<>switch between the plain column and the labelled one. with just <code>category</code>, two rows say null: the three uncategorised products, and the grand total of 200. <code>GROUPING(category)</code> is 1 only on the rolled-up row, so it can label them.</>}>
+<RunPick options={[{ key: "show", values: ["category", "GROUPING() labels"] }]} runs={nulls} hot={["GROUPING(category)", "coalesce(category, '(none)')"]} maxRows={12} trace={prov(trace)} />
+</Figure>
+
+`GROUPING(col)` is 0 when `col` is part of the current row's grouping set, 1 when it was rolled up. with several arguments it packs those bits into a number, the first argument as the highest bit. for `GROUPING(year, status)`: 0 is a detail row, 1 is a per-year subtotal (status rolled up), 2 a per-status subtotal, 3 the grand total. that number is also the cleanest way to sort a report: details first, then subtotals, then the total, or the other way round.
+
+```sql run db=shop
+SELECT CASE GROUPING(year, status)
+         WHEN 0 THEN 'detail' WHEN 1 THEN 'year total'
+         WHEN 2 THEN 'status total' ELSE 'grand total' END AS kind,
+       year, status, count(*) AS orders
+FROM (SELECT extract(year FROM ordered_at)::int AS year, status FROM orders) AS o
+GROUP BY CUBE (year, status)
+HAVING GROUPING(year, status) > 0
+ORDER BY GROUPING(year, status), year, status;
+```
+
+HAVING works per grouping set, like it works per group: here it keeps only the subtotal rows.
+
+<Gotcha title="filtering a subtotal with WHERE">
+WHERE runs before grouping ([the logical order](/learn/basics/logical-order)), so `WHERE status IS NULL` won't find the subtotal rows: they don't exist yet, and no order has a NULL status. to keep or drop subtotals, use HAVING with GROUPING().
+</Gotcha>
+
+## one pass, not three
+
+ROLLUP isn't a UNION ALL in disguise. postgres plans all the sets together, often in one sort or one hash pass:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT year, status, count(*)
+FROM (SELECT extract(year FROM ordered_at)::int AS year, status FROM orders) AS o
+GROUP BY ROLLUP (year, status);
+```
+
+a `MixedAggregate`: one hash table per grouping set (`Hash Key` for (year, status), and for (year)), plus `Group Key: ()`, the single group of the grand total. all three are filled from the same scan of orders. the three-query UNION ALL would read orders three times. ([aggregation algorithms](/learn/execution/aggregation-algorithms) has hash vs sort aggregation.)
+
+<Docs href="https://www.postgresql.org/docs/18/queries-table-expressions.html#QUERIES-GROUPING-SETS" title="GROUPING SETS, CUBE, and ROLLUP">the manual's section, with the expansion rules for ROLLUP and CUBE written out, and how nested and mixed grouping specifications combine.</Docs>
+
+<Interview q="how do you get subtotals and a grand total in one query?">
+GROUP BY ROLLUP (a, b): it computes the grouping sets (a, b), (a) and (), so you get detail rows, a subtotal per a and a grand total, in one pass. CUBE gives every combination, GROUPING SETS lists them explicitly. in the subtotal rows the rolled-up columns are NULL, so use GROUPING(col), which is 1 when col was rolled up, to label them or to tell them from real NULLs. bonus point: filter subtotals with HAVING GROUPING(...), never WHERE, and ROLLUP column order defines the hierarchy.
+</Interview>
+
+<Keylines>
+- GROUPING SETS runs several GROUP BYs in one query and stacks the results.
+- ROLLUP (a, b) = (a, b), (a), (): a hierarchy of subtotals. order matters.
+- CUBE (a, b) = every subset of the columns: 2ⁿ grouping sets.
+- rolled-up columns come out NULL. GROUPING(col) = 1 tells them from your own NULLs.
+- it's one pass over the data, not a UNION ALL of separate scans.
+</Keylines>

@@ -1,0 +1,302 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "c10fec88fe380723": {
+      "db": "shop",
+      "sql": "COPY (SELECT id, name, city FROM customers WHERE id <= 5 ORDER BY id)\nTO STDOUT (FORMAT csv, HEADER);",
+      "statements": [
+        {
+          "tag": "COPY 5",
+          "command": "COPY",
+          "columns": null,
+          "rowCount": 5,
+          "copyOut": "id,name,city\n1,Maya Chen,San Francisco\n2,Grace Okafor,Lagos\n3,Sam Lee,Toronto\n4,Zoë Martin,Paris\n5,Zoe Martin,Lyon\n",
+          "digest": "fc012cf1fbd5f56e"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "fa7d9822539b15ac": {
+      "db": "shop",
+      "sql": "DO $$ BEGIN\n  EXECUTE format('COPY (SELECT * FROM order_items ORDER BY order_id, line_no) TO %L (FORMAT csv)',\n                 current_setting('data_directory') || '/order_items.csv');\nEND $$;\n\nCREATE TABLE items (LIKE order_items INCLUDING ALL);\nCOPY items FROM 'order_items.csv' (FORMAT csv);\nSELECT count(*) FROM items;",
+      "statements": [
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "digest": "10ece52cc1035a86"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "COPY 24942",
+          "command": "COPY",
+          "columns": null,
+          "rowCount": 24942,
+          "digest": "5e2901f2cef7037b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b392c04665d76493",
+          "rows": [
+            ["24942"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "3f5bdd978c49cce4": {
+      "db": "empty",
+      "sql": "CREATE TABLE src AS SELECT g AS id, 'row ' || g AS note FROM generate_series(1, 10000) AS g;\nDO $$ BEGIN\n  EXECUTE format('COPY src TO %L (FORMAT csv)', current_setting('data_directory') || '/src.csv');\nEND $$;\nCREATE TABLE by_insert (id int, note text);\nCREATE TABLE by_copy (id int, note text);\nCREATE TEMP TABLE marks (name text PRIMARY KEY, lsn pg_lsn);  -- temp tables write no WAL\n\nINSERT INTO marks VALUES ('start', pg_current_wal_insert_lsn());\nINSERT INTO by_insert SELECT * FROM src;\nINSERT INTO marks VALUES ('insert done', pg_current_wal_insert_lsn());\nCOPY by_copy FROM 'src.csv' (FORMAT csv);\nINSERT INTO marks VALUES ('copy done', pg_current_wal_insert_lsn());\n\nSELECT 'INSERT ... SELECT' AS load, count(*) AS wal_records, sum(record_length) AS wal_bytes\nFROM pg_get_wal_records_info((SELECT lsn FROM marks WHERE name = 'start'),\n                             (SELECT lsn FROM marks WHERE name = 'insert done'))\nWHERE resource_manager LIKE 'Heap%'\nUNION ALL\nSELECT 'COPY', count(*), sum(record_length)\nFROM pg_get_wal_records_info((SELECT lsn FROM marks WHERE name = 'insert done'),\n                             (SELECT lsn FROM marks WHERE name = 'copy done'))\nWHERE resource_manager LIKE 'Heap%'\nORDER BY wal_records DESC;",
+      "statements": [
+        {
+          "tag": "SELECT 10000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "64f0feab3e50f490"
+        },
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "digest": "30fce313be622839"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6c0a3f8074512e6a"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "90488e4141c2d7df"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "e50818625cce39de"
+        },
+        {
+          "tag": "INSERT 0 10000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "d0766f34115646f3"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "21d82ef8c8f71310"
+        },
+        {
+          "tag": "COPY 10000",
+          "command": "COPY",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "6fc61022098d642d"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "a4830b67c00da01f"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["load", "text", 25],
+            ["wal_records", "int8", 20],
+            ["wal_bytes", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "200e695173cd8ef0",
+          "rows": [
+            ["INSERT ... SELECT", "10000", "678894"],
+            ["COPY", "64", "222895"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "40a9896d2ff71aa0": {
+      "db": "empty",
+      "sql": "CREATE TABLE readings (id int, celsius numeric);\nDO $$ BEGIN\n  EXECUTE format('COPY (VALUES (''1'', ''21.5''), (''2'', ''warm''), (''three'', ''19.0''), (''4'', ''18.2'')) TO %L (FORMAT csv)',\n                 current_setting('data_directory') || '/readings.csv');\nEND $$;\n\nCOPY readings FROM 'readings.csv' (FORMAT csv, ON_ERROR ignore, LOG_VERBOSITY verbose);\nSELECT * FROM readings ORDER BY id;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "digest": "30fce313be622839"
+        },
+        {
+          "tag": "COPY 2",
+          "command": "COPY",
+          "columns": null,
+          "rowCount": 2,
+          "notices": [
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "skipping row due to data type incompatibility at line 2 for column \"celsius\": \"warm\"",
+              "where": "COPY readings"
+            },
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "skipping row due to data type incompatibility at line 3 for column \"id\": \"three\"",
+              "where": "COPY readings"
+            },
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "2 rows were skipped due to data type incompatibility"
+            }
+          ],
+          "digest": "a35cf8f1819e3f8b"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["celsius", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "bef93b2a44976e38",
+          "rows": [
+            ["1", "21.5"],
+            ["4", "18.2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "2c10b57357a2c06f": {
+      "db": "shop",
+      "sql": "CREATE TABLE logged (id int, note text);\nCREATE UNLOGGED TABLE unlogged (id int, note text);\nCREATE TEMP TABLE mark (lsn pg_lsn);\n\nINSERT INTO mark SELECT pg_current_wal_insert_lsn();\nINSERT INTO logged SELECT g, 'row ' || g FROM generate_series(1, 100000) AS g;\nSELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), lsn) AS wal_bytes FROM mark;\n\nUPDATE mark SET lsn = pg_current_wal_insert_lsn();\nINSERT INTO unlogged SELECT g, 'row ' || g FROM generate_series(1, 100000) AS g;\nSELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), lsn) AS wal_bytes FROM mark;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "INSERT 0 100000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "50bec79a0b4c3e2b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["wal_bytes", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "658514f4ccb4ad4b",
+          "rows": [
+            ["7221264"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "530188ba0931aadf"
+        },
+        {
+          "tag": "INSERT 0 100000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "8263b8bb3e06cf20"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["wal_bytes", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "97224a253cad8a18",
+          "rows": [
+            ["80"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

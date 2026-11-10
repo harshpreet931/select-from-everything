@@ -1,0 +1,163 @@
+import { RowVsColumn } from "@/components/figures/deep-dives/RowVsColumn";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import golden from "./columnar-and-vectorized.golden.json";
+
+{/* the RowVsColumn figure reads the first run block's golden (real lp_len values from
+    pageinspect on shop.order_items). the timing bars were measured on a throwaway native
+    postgres 18.6 (Postgres.app) on an m4 pro with a scratch script: 1,000,000 rows, 20 int
+    columns, shared_buffers = 1GB, no parallel workers, jit off, 3 warm-up runs, median of 9
+    EXPLAIN (ANALYZE, BUFFERS) execution times. no duckdb binary is installed on that machine, so
+    duckdb appears only through its documentation, with no numbers of ours. */}
+
+export const tup = Object.values(golden.blocks).find((b) => b.sql.includes("get_raw_page('order_items', 0)")).statements[0].rows;
+export const MEASURED = "on this mac (m4 pro), postgres 18.6 (Postgres.app), 1,000,000 rows, warm cache, median of 9 runs, no parallel workers, jit off";
+
+<InShort>
+a row store keeps each row's columns together, which is perfect for "fetch order 42" and wasteful for "sum one column over a billion rows". a **column store** keeps each column together, so an aggregate reads only the columns it names, and a column of one type **compresses** well. **vectorized execution** is the matching engine: operators pass batches of a few thousand values instead of one row at a time.
+
+postgres is a row store with a row-at-a-time executor. here's what that costs, measured, and what the other design does instead.
+</InShort>
+
+## the picture
+
+you know how an analytics query on a big postgres table, `SELECT sum(amount) FROM orders`, can take seconds even though "it's just adding numbers"? the adding is cheap. the problem is everything around it: postgres walks every page, every tuple header, every column you didn't ask for, and calls a function per row to hand each one up the plan.
+
+think of a filing cabinet of customer folders (rows). to total everyone's balance, you open every folder, flip to the balance page, write it down, close the folder. a column store keeps one long ledger per field instead: the balances, all on one sheet, top to bottom. you read one sheet.
+
+<Figure wide caption={<>eight real rows of <code>order_items</code>, stored both ways. the tuple lengths are pageinspect's <code>lp_len</code> from the run block below. switch the layout and the query: in the heap, <C k="hot">SUM(qty)</C> touches every byte of every tuple; in a column store it touches one strip.</>}>
+<RowVsColumn
+  columns={[{ name: "order_id", bytes: 4 }, { name: "line_no", bytes: 2 }, { name: "product_id", bytes: 4 }, { name: "qty", bytes: 4 }, { name: "unit_price", bytes: null }]}
+  rows={tup.map((r) => r.slice(2))}
+  lpLen={tup.map((r) => Number(r[1]))}
+  sumCol={3}
+  provenance="real lp_len from pageinspect, postgres 18.6 (PGlite 0.5.12), shop.order_items page 0. the column layout is the textbook model"
+/>
+</Figure>
+
+here are those eight tuples, straight off page 0 ([inside a tuple](/learn/storage/tuple-layout) explains the bytes):
+
+```sql run db=shop ext=pageinspect
+SELECT lp, lp_len, i.order_id, i.line_no, i.product_id, i.qty, i.unit_price
+FROM heap_page_items(get_raw_page('order_items', 0)) AS h
+JOIN order_items AS i ON i.ctid = h.t_ctid
+WHERE h.lp <= 8
+ORDER BY h.lp;
+```
+
+each is 45 or 47 bytes, and 24 of those are the tuple header (23 bytes, padded) that MVCC needs ([transaction ids, xmin and xmax](/learn/mvcc/transaction-ids)). the qty is 4.
+
+## what a row store pays for one column
+
+make it bigger. a table with an id and 20 integer columns, and a second table holding only one of them:
+
+```sql run session=wide
+CREATE TABLE wide AS
+SELECT g AS id,
+       (g * 7) % 1000 AS c1,  (g * 8) % 1000 AS c2,  (g * 9) % 1000 AS c3,  (g * 10) % 1000 AS c4,
+       (g * 11) % 1000 AS c5, (g * 12) % 1000 AS c6, (g * 13) % 1000 AS c7, (g * 14) % 1000 AS c8,
+       (g * 15) % 1000 AS c9, (g * 16) % 1000 AS c10, (g * 17) % 1000 AS c11, (g * 18) % 1000 AS c12,
+       (g * 19) % 1000 AS c13, (g * 20) % 1000 AS c14, (g * 21) % 1000 AS c15, (g * 22) % 1000 AS c16,
+       (g * 23) % 1000 AS c17, (g * 24) % 1000 AS c18, (g * 25) % 1000 AS c19, (g * 26) % 1000 AS c20
+FROM generate_series(1, 100000) AS g;
+CREATE TABLE narrow AS SELECT c7 FROM wide;
+VACUUM ANALYZE wide;
+VACUUM ANALYZE narrow;
+SELECT relname, relpages, pg_size_pretty(pg_relation_size(oid)) AS size
+FROM pg_class WHERE relname IN ('wide', 'narrow') ORDER BY relname;
+```
+
+100,000 values of `c7` are 400 KB of integers. as a one-column postgres table they take 3.5 MB, because every row still carries a header and a line pointer. summing `c7` from the wide table reads every page of it:
+
+```sql run session=wide
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT sum(c7) FROM wide;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT sum(c7) FROM narrow;
+```
+
+`shared hit` is pages read from the buffer pool ([EXPLAIN ANALYZE and BUFFERS](/learn/execution/explain-analyze)): 1,472 pages for the wide table, 448 for the narrow one: more than three times the pages for the same answer. on disk, that's three times the I/O. now the same thing at a million rows on a real server, timed:
+
+<Figure caption={<>execution time on a native postgres 18.6, everything already in shared buffers. the wide table is 112 MB (14,286 pages), the one-column table 35 MB (4,480 pages), and the integers themselves would be 4 MB.</>}>
+<Bars data={[
+  { label: "count(*), wide", value: 41.1 },
+  { label: "sum(c7), narrow", value: 42.4 },
+  { label: "sum(c7), wide", value: 46.9, tone: "hot" },
+  { label: "10 sums, wide", value: 70.5 },
+]} unit="ms" />
+<Provenance measured={MEASURED} />
+</Figure>
+
+this is the interesting part. with everything cached, reading three times the pages cost only about 10% more (46.9 ms vs 42.4 ms), and even `count(*)`, which adds nothing up, took 41.1 ms. so the time isn't going into bytes. it's going into *rows*: a million trips through the scan, the visibility check, the tuple deforming, and an aggregate transition call, one row at a time. that's about 40 ns of machinery per row before any arithmetic. a column store attacks both halves of this: fewer bytes (one column, compressed) and fewer trips (a batch at a time).
+
+## columns compress
+
+a column holds one type, often with few distinct values, often sorted or nearly so. that's what compression wants. orders.status has six possible values; sorted, the whole column is a handful of runs:
+
+```sql run db=shop
+WITH o AS (
+  SELECT status,
+         lag(status) OVER (ORDER BY id) AS prev_by_id,
+         lag(status) OVER (ORDER BY status, id) AS prev_sorted
+  FROM orders
+)
+SELECT count(*) AS "values",
+       count(DISTINCT status) AS distinct_values,
+       count(*) FILTER (WHERE status IS DISTINCT FROM prev_by_id) AS runs_in_id_order,
+       count(*) FILTER (WHERE status IS DISTINCT FROM prev_sorted) AS runs_sorted
+FROM o;
+```
+
+10,000 values. stored by run-length encoding (value, count), the sorted column is six pairs; in id order it would be 869. either way, a **dictionary** turns each status into a 3-bit code, since six values fit in three bits. postgres can't do either for a column: it compresses large individual values ([TOAST](/learn/storage/toast)), never a column across rows, because the rows aren't stored by column. duckdb's documentation on its vector format says dictionary-compressed columns can even stay compressed while the query runs, as an index into a small dictionary ([duckdb: vectors](https://duckdb.org/docs/2.0/internals/vector.html)).
+
+<Predict question="which query is a column store slowest at, relative to postgres?" options={["SUM over one column", "fetch one row by id", "GROUP BY a low-cardinality column"]} answer={1}>
+```sql
+SELECT sum(qty) FROM order_items;
+SELECT * FROM order_items WHERE order_id = 42 AND line_no = 1;
+SELECT status, count(*) FROM orders GROUP BY status;
+```
+<Explain>
+fetching one whole row. postgres finds it with one index descent and reads one contiguous tuple. a column store has to find position i in every column's strip, decompress around it, and stitch the row back together. that's why OLTP (many small reads and writes of whole rows) stays on row stores, and analytics (scans of a few columns over many rows) moves to column stores.
+</Explain>
+</Predict>
+
+## a batch at a time
+
+postgres's executor is the [iterator model](/learn/execution/iterator-model): every node has a `next()` that returns one row, and the aggregate at the top calls it until it runs out. a million rows, a million calls, each through a few layers of function pointers. Boncz, Zukowski and Nes's paper "MonetDB/X100: hyper-pipelining query execution" (CIDR 2005) argued that this per-tuple interpretation overhead, not I/O, dominates analytical queries on modern CPUs, and proposed handing **vectors** of values between operators instead, so each operator runs a tight loop over an array.
+
+<Figure caption={<>the same <code>SELECT sum(c7) FROM wide</code> over 1,000,000 rows, as calls between two plan nodes. postgres's side is how its executor works; the vectorized side uses duckdb's default vector size of 2,048 values, from its documentation. the call counts are arithmetic, not measurements.</>}>
+<Tabs>
+<Tab label="tuple at a time (postgres)">
+<Tree>{`
+Aggregate: sum(c7) #hot // 1,000,001 calls to next() below it
+    next() → one tuple slot // deform the tuple to get c7, then call int4_sum once
+    Seq Scan on wide #meta // every page, every tuple: visibility check per tuple
+`}</Tree>
+</Tab>
+<Tab label="vectorized (duckdb, X100)">
+<Tree>{`
+Aggregate: sum(c7) #hot // 489 calls: 488 full vectors and one partial
+    next() → a vector of 2,048 c7 values // one tight loop adds them, no per-row calls
+    column scan of c7 only #meta // reads the c7 column, decompresses a block at a time
+`}</Tree>
+</Tab>
+</Tabs>
+<Provenance drawn="after the iterator model chapter, duckdb's vector docs and the X100 paper" />
+</Figure>
+
+why vectors and not "all of it at once"? a vector small enough to stay in the CPU cache (duckdb's default `STANDARD_VECTOR_SIZE` is 2,048 tuples) gets the loop efficiency without materializing a whole column in memory. whole-column-at-a-time was the earlier MonetDB design, and X100 is named for what it changed.
+
+postgres does have pieces of this idea. [parallel query](/learn/execution/parallel-query) splits the scan across workers (turned off in the measurement above). JIT compilation (`jit = on`, used when a query's estimated cost is high enough) compiles expressions and tuple deforming to machine code, which cuts some of that per-row overhead without changing the row-at-a-time shape. neither makes the heap store columns.
+
+<Gotcha title="a column store isn't a faster postgres">
+columnar engines win big on wide scans and aggregates, and lose on what postgres is built for: single-row lookups, frequent updates of single rows, many concurrent small transactions. most column stores batch their writes and rewrite compressed blocks rather than update in place. pick by workload: OLTP on a row store, analytics on a column store, and something like [logical replication](/learn/wal/logical-replication) or a nightly export between them.
+</Gotcha>
+
+<Interview q="why are column stores faster for analytics?">
+three reasons that multiply. they read only the columns the query names, so a sum over one column of a 20-column table reads about a twentieth of the bytes. a column is one type with few distinct values and long runs, so it compresses well (dictionary, run-length, bit-packing), and less data means less I/O and more of it in cache. and they usually pair that with vectorized execution: operators pass batches of a couple of thousand values, so the per-row interpretation overhead of a row-at-a-time executor turns into tight loops over arrays. bonus point: in postgres, even with every page cached, a million-row count(*) costs tens of milliseconds of pure per-row machinery, which is the overhead vectorization removes.
+</Interview>
+
+<Keylines>
+- row store: a row's columns together. great for one row, wasteful for one column of every row.
+- column store: one column together. reads only what the query names, and compresses well.
+- in postgres a one-int table is still mostly tuple headers and line pointers.
+- warm cache, postgres's cost is per row, not per byte: that's what vectorized execution attacks.
+- vectorized: next() returns a batch (duckdb: 2,048 values), not a row.
+</Keylines>

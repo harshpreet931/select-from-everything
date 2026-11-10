@@ -1,0 +1,219 @@
+import { OnGrid } from "@/components/figures/joins/OnGrid";
+import { RunPick } from "@/components/figures/joins/RunPick";
+import { prov, resultOf } from "@/components/figures/joins/captured";
+import tiny from "./traces/on-grid.pgtrace.json";
+import div from "./traces/division.pgtrace.json";
+
+{/* the JoinLab gets the two tiny tables captured in traces/on-grid.scenario.sql (the same ones
+    joins-in-one-picture builds). the division grid and switch read traces/division.scenario.sql,
+    captured on PGlite against the school dataset. */}
+
+export const people = resultOf(tiny, 0);
+export const shops = resultOf(tiny, 1);
+export const students = resultOf(div, 2);
+export const cs = resultOf(div, 3);
+export const took = { "took | inner": resultOf(div, 4) };
+export const division = {
+  "dept = 'CS' | double NOT EXISTS": resultOf(div, 5),
+  "dept = 'CS' | counting": resultOf(div, 6),
+  "code LIKE 'CS%' | double NOT EXISTS": resultOf(div, 7),
+  "code LIKE 'CS%' | counting": resultOf(div, 8),
+  "dept = 'LAW' | double NOT EXISTS": resultOf(div, 9),
+  "dept = 'LAW' | counting": resultOf(div, 10),
+};
+export const divSrc = prov(div);
+
+<InShort>
+`EXISTS (subquery)` asks one question per row: **is there at least one match?** keep the row once if there is, and that's a **semi join**. `NOT EXISTS` keeps the rows with no match at all, an **anti join**. neither one duplicates a row, and neither adds a column.
+
+"which students took *every* CS course" is **relational division**, and it's a NOT EXISTS inside a NOT EXISTS.
+</InShort>
+
+## the picture
+
+you know how you wanted "customers who have ordered something", wrote a join, and got Maya Chen 57 times? a join answers "list every matching pair". you were asking "is there a match, yes or no?", which is a different question with a different shape.
+
+think of a bouncer with a guest list. you're on it or you're not, and being on it twice doesn't get you in twice. that's EXISTS. the bouncer who only lets in people who are *not* on the list (the club for people who've never been banned) is NOT EXISTS.
+
+<Figure wide caption={<>the two tiny tables from <a href="/learn/joins/joins-in-one-picture">the first chapter</a>. switch between inner, semi and anti, then press <em>add a duplicate key</em>: London gets a second store, inner gives Ada and Alan two rows each, semi still gives each of them one.</>}>
+<JoinLab left={{ name: "customers", columns: ["name", "city"], rows: people.rows }} right={{ name: "stores", columns: ["city", "store"], rows: shops.rows }} on={["city", "city"]} kind="semi" logical />
+</Figure>
+
+semi and anti are the two join types SQL has no keyword for. you write them as EXISTS and NOT EXISTS (or IN, carefully), and postgres runs them as joins.
+
+## EXISTS: is there at least one?
+
+<Predict options={["1 row", "57 rows", "an error"]} answer={1}>
+```sql
+SELECT c.name
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+WHERE c.id = 1;
+```
+<Explain>
+a join returns one row per matching pair, and Maya Chen (customer 1) has 57 orders. so it's her name, 57 times. if the question was "has she ordered?", that's 56 rows too many.
+</Explain>
+</Predict>
+
+for real, and the EXISTS version next to it:
+
+```sql run db=shop
+SELECT count(*) AS join_rows
+FROM customers AS c JOIN orders AS o ON o.customer_id = c.id
+WHERE c.id = 1;
+
+SELECT c.name
+FROM customers AS c
+WHERE c.id = 1
+  AND EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);
+```
+
+the subquery is correlated (it mentions `c.id`), so it's asked per customer. it stops at the first matching order it finds: one is enough to make EXISTS true. and what it selects doesn't matter at all. `SELECT 1`, `SELECT *`, even `SELECT` with nothing: EXISTS only looks at whether a row came back.
+
+across the whole shop: 10,000 joined rows, 1,962 customers who have ordered.
+
+```sql run db=shop
+SELECT count(*) AS joined FROM customers AS c JOIN orders AS o ON o.customer_id = c.id;
+
+SELECT count(*) AS have_ordered
+FROM customers AS c
+WHERE EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);
+```
+
+`DISTINCT` on the join would get the 1,962 too, by building all 10,000 rows and then throwing duplicates away. EXISTS never builds them. and `WHERE c.id IN (SELECT customer_id FROM orders)` asks the same question. postgres plans the two the same way, which you'll see in a minute.
+
+## NOT EXISTS: the lonely rows
+
+flip it, and you get the rows nothing points at. customers who have never ordered, students with no enrollments, instructors with no course:
+
+```sql run db=shop
+SELECT count(*) AS never_ordered
+FROM customers AS c
+WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);
+
+SELECT c.id, c.name
+FROM customers AS c
+WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id)
+ORDER BY c.id
+LIMIT 3;
+```
+
+```sql run db=school
+SELECT s.id, s.name
+FROM students AS s
+WHERE NOT EXISTS (SELECT 1 FROM enrollments AS e WHERE e.student_id = s.id)
+ORDER BY s.id;
+```
+
+38 customers, Ming Li (customer 7) first, and one student, Sam Rivera. the same question has two other spellings you'll meet:
+
+- `LEFT JOIN enrollments AS e ON e.student_id = s.id WHERE e.student_id IS NULL`: an outer join, then keep only the padded rows. correct, and postgres turns it into the same anti join (below).
+- `WHERE s.id NOT IN (SELECT student_id FROM enrollments)`: correct here, and wrong the moment the subquery can return a NULL. it returns nothing at all then. that's [the NOT IN trap](/learn/joins/not-in-trap), and it's why NOT EXISTS is the one to reach for.
+
+## what postgres does with them
+
+there's no SEMI JOIN keyword in SQL, but there is one in postgres's plans:
+
+```sql run db=school
+EXPLAIN (COSTS OFF)
+SELECT i.name FROM instructors AS i
+WHERE EXISTS (SELECT 1 FROM courses AS c WHERE c.instructor_id = i.id);
+
+EXPLAIN (COSTS OFF)
+SELECT i.name FROM instructors AS i
+WHERE i.id IN (SELECT c.instructor_id FROM courses AS c);
+
+EXPLAIN (COSTS OFF)
+SELECT i.name FROM instructors AS i
+WHERE NOT EXISTS (SELECT 1 FROM courses AS c WHERE c.instructor_id = i.id);
+
+EXPLAIN (COSTS OFF)
+SELECT i.name FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id
+WHERE c.instructor_id IS NULL;
+```
+
+EXISTS and IN become the same `Hash Right Semi Join` (right, because the planner chose to hash instructors, the outer side). NOT EXISTS becomes a `Hash Anti Join`, and so does the LEFT JOIN that keeps only its padded rows. the subquery is gone: it was rewritten into a join before planning, so it can use any of the [join algorithms](/learn/execution/hash-join), and the planner can pick which side to hash. [how subqueries get planned](/learn/optimizer/subquery-planning) has the rules for when that rewrite is allowed.
+
+## relational division: every single one
+
+some questions say "all": students who took *every* CS course, customers who bought from *every* category, suppliers who stock *every* part. the textbook name is **relational division**, and it's the one classic query that isn't a single join.
+
+the school has five CS courses (CS499, the senior thesis, is in dept GEN, not CS). here are the ten students who took at least three of them:
+
+<Figure wide caption={<>students down the side, CS courses across. a tick is an enrollment. division keeps the rows with a tick in every column: <C k="live">Priya Nair</C>, and nobody else.</>}>
+<OnGrid
+  left={{ name: "students", columns: students.columns, rows: students.rows, key: 0, label: [1] }}
+  right={{ name: "CS courses", columns: cs.columns, rows: cs.rows, key: 0, label: [0] }}
+  at={[0, 2]}
+  ons={[{ v: "took", label: "took" }]}
+  runs={took}
+  full
+  result={false}
+  hotOn={false}
+  trace={divSrc}
+/>
+</Figure>
+
+SQL has no "for all", so you say it with two negatives: a student took every CS course if **there is no CS course that they did not take**.
+
+```sql run db=school
+SELECT s.id, s.name
+FROM students AS s
+WHERE NOT EXISTS (
+  SELECT 1 FROM courses AS c
+  WHERE c.dept = 'CS'
+    AND NOT EXISTS (
+      SELECT 1 FROM enrollments AS e
+      WHERE e.student_id = s.id AND e.course_code = c.code))
+ORDER BY s.id;
+```
+
+read it from the inside out. the innermost query is "did this student take this course?". the middle one is "is there a CS course where the answer is no?". the outer one keeps students where the answer to *that* is no. Priya Nair is the only student with no missing CS course.
+
+the other way is to count: a student who took as many distinct CS courses as there are CS courses took them all.
+
+```sql run db=school
+SELECT s.id, s.name
+FROM students AS s
+JOIN enrollments AS e ON e.student_id = s.id
+JOIN courses AS c ON c.code = e.course_code
+WHERE c.dept = 'CS'
+GROUP BY s.id
+HAVING count(DISTINCT c.code) = (SELECT count(*) FROM courses WHERE dept = 'CS')
+ORDER BY s.id;
+```
+
+same answer. easier to read, too. but the two don't always agree:
+
+<Figure wide caption={<>change what you divide by. <code>code LIKE 'CS%'</code> drags in CS499, which nobody has taken, so nobody took them all. and with no LAW courses at all, double NOT EXISTS says every student qualifies, while counting says nobody does.</>}>
+<RunPick
+  options={[
+    { key: "divide by", values: ["dept = 'CS'", "code LIKE 'CS%'", "dept = 'LAW'"] },
+    { key: "method", values: ["double NOT EXISTS", "counting"] },
+  ]}
+  runs={division}
+  hot={["c.dept = 'CS'", "c.code LIKE 'CS%'", "c.dept = 'LAW'"]}
+  tone="live"
+  maxRows={8}
+  trace={divSrc}
+/>
+</Figure>
+
+the LAW case is the edge that matters. there are no LAW courses, so "there is no LAW course the student didn't take" is true for everyone, Sam Rivera with no enrollments at all included: 40 students. that's the logician's answer (everybody has done all of nothing). the counting query starts from the student's enrollments in LAW courses, finds none to group, and returns nobody. neither is a bug. decide which one your question means, and if "nobody" is the answer you want for an empty divisor, check for it first.
+
+<Gotcha title="what you divide by is half the query">
+"every CS course" looks obvious until you write it. `code LIKE 'CS%'` includes CS499, a course nobody has ever taken, and quietly turns the answer into zero students. `dept = 'CS'` doesn't. division answers are all-or-nothing, so one stray row in the divisor wipes out the whole result. run the divisor on its own and look at it before you divide by it.
+</Gotcha>
+
+<Interview q="find the students who took every CS course.">
+relational division. say it as a double negative: students for whom no CS course exists that they didn't take, so NOT EXISTS (CS courses WHERE NOT EXISTS (an enrollment of this student in that course)). or count: group the student's CS enrollments and keep those with `count(DISTINCT course)` equal to the number of CS courses. bonus point: point out where they differ. with an empty set of courses, double NOT EXISTS returns every student and counting returns none. and if a student could take the same course twice, the count needs its DISTINCT.
+</Interview>
+
+<Keylines>
+- EXISTS keeps a row once if at least one match exists: a semi join.
+- NOT EXISTS keeps the rows with no match: an anti join. NULLs can't break it.
+- neither duplicates rows or adds columns. postgres plans them as Semi and Anti joins.
+- IN (subquery) plans like EXISTS. NOT IN does not, and it has a trap.
+- "every" is relational division: a double NOT EXISTS, or a count that has to match.
+</Keylines>

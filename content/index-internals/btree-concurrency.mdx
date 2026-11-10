@@ -1,0 +1,146 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import sameLeaf from "./traces/same-leaf.pgtrace.json";
+
+{/* the lanes figure reads traces/same-leaf.scenario.sql (a native postgres 18.6, three
+    sessions). the crabbing and move-right figures are drawn by hand: the protocol happens
+    inside one backend in microseconds and nothing in postgres records it. */}
+
+export const page = (id, level, keys, more = {}) => ({ id, level, keys, ...more });
+export const crab = [
+  { root: "r", path: ["r"], nodes: { r: page("r", 1, [40], { kids: ["a", "c"] }), a: page("a", 0, [10, 20, 30, 35], { right: "c" }), c: page("c", 0, [40, 50, 60], {}) } },
+  { root: "r", path: ["r", "a"], hit: 25, nodes: { r: page("r", 1, [40], { kids: ["a", "c"] }), a: page("a", 0, [10, 20, 30, 35], { right: "c" }), c: page("c", 0, [40, 50, 60], {}) } },
+  { root: "r", path: ["r"], split: "a", hit: 30, nodes: { r: page("r", 1, [30, 40], { kids: ["a", "b", "c"] }), a: page("a", 0, [10, 20, 25], { right: "b" }), b: page("b", 0, [30, 35], { right: "c" }), c: page("c", 0, [40, 50, 60], {}) } },
+];
+export const ly = [
+  { root: "r", path: ["r"], hit: 35, nodes: { r: page("r", 1, [40], { kids: ["a", "c"] }), a: page("a", 0, [10, 20, 30, 35], { right: "c", high: 40 }), c: page("c", 0, [40, 50, 60], {}) } },
+  { root: "r", path: ["r"], split: "a", hit: 35, nodes: { r: page("r", 1, [40], { kids: ["a", "c"] }), a: page("a", 0, [10, 20, 25], { right: "b", high: 30 }), b: page("b", 0, [30, 35], { right: "c", high: 40 }), c: page("c", 0, [40, 50, 60], {}) } },
+  { root: "r", path: ["r", "a"], hit: 30, nodes: { r: page("r", 1, [40], { kids: ["a", "c"] }), a: page("a", 0, [10, 20, 25], { right: "b", high: 30 }), b: page("b", 0, [30, 35], { right: "c", high: 40 }), c: page("c", 0, [40, 50, 60], {}) } },
+  { root: "r", path: ["r", "a", "b"], hit: 35, nodes: { r: page("r", 1, [40], { kids: ["a", "c"] }), a: page("a", 0, [10, 20, 25], { right: "b", high: 30 }), b: page("b", 0, [30, 35], { right: "c", high: 40 }), c: page("c", 0, [40, 50, 60], {}) } },
+  { root: "r", path: [], hit: 30, nodes: { r: page("r", 1, [30, 40], { kids: ["a", "b", "c"] }), a: page("a", 0, [10, 20, 25], { right: "b", high: 30 }), b: page("b", 0, [30, 35], { right: "c", high: 40 }), c: page("c", 0, [40, 50, 60], {}) } },
+];
+
+<InShort>
+many sessions read and write one b-tree at once. the textbook protects a descent with **latch crabbing**: hold a page until you've latched the next one, and hold the parent while a child might split. postgres uses **Lehman and Yao's** design instead: every page has a **right link** and a **high key**, so a reader holds **one page at a time**, and if a split moved its key away while it was between pages, it just moves right. readers never wait for a split. and none of these page locks are in `pg_locks`: they're short LWLocks on buffers, not lock-manager locks.
+</InShort>
+
+## the picture
+
+you know how a [page split](/learn/index-internals/page-splits) moves half a page somewhere new and only *then* tells the parent? imagine a reader that read the parent just before the split, and arrives at the child just after. the key it wants isn't there anymore. in a naive tree it would conclude the key doesn't exist, which is wrong.
+
+think of a library that's reshelving. you looked up "aisle 4" in the catalog, but by the time you walk there, half of aisle 4 has been moved to a new aisle 4b. the textbook fix is to stop anyone reshelving while you walk (latches). the Lehman and Yao fix is a sign at the end of every aisle: "this aisle ends at M. for anything after that, go next door". you walk one more aisle, and nobody had to wait for anybody.
+
+first, what's observable: three real sessions on one tiny index. T1 and T2 insert neighbouring keys into the same leaf and stay open, and T3 scans that leaf.
+
+<Figure wide caption={<>three sessions on a postgres 18.6 server, all touching the same leaf. step through and watch the <C k="meta">lock manager</C> on the side: row-exclusive on the table, each transaction's own id, and that's all. no lock on the index, its pages, or its entries. nobody waits.</>}>
+<SessionLanes sessions={["T1", "T2", "T3"]} trace={sameLeaf} side="locks" sideTitle="pg_locks" />
+</Figure>
+
+two writers modified the same 8 KB page within a millisecond of each other and neither waited, because neither held the page for longer than it took to add one entry. T3 read the page while it held two uncommitted entries and counted 2 rows, not 4: an index entry carries no visibility information, so the scan checks each row in the heap and skips the ones from transactions that haven't committed ([visibility rules](/learn/mvcc/visibility-rules)).
+
+## two kinds of lock
+
+| | heavyweight locks | page locks (latches) |
+| --- | --- | --- |
+| protect | tables, rows, transaction ids: logical things | a buffer's 8 KB of memory while it's read or changed |
+| held for | until the transaction ends (usually) | a few microseconds, one page operation |
+| deadlock detection | yes | no: code takes them in a fixed order instead |
+| where you see them | `pg_locks` | `pg_stat_activity.wait_event` = `BufferContent`, if anyone ever waits |
+
+an index page is protected by the second kind: a shared or exclusive LWLock on the buffer holding it ([latches, spinlocks and LWLocks](/learn/locking/latches)). you can see the first kind for yourself, in the browser:
+
+```sql run
+CREATE TABLE c (id int);
+CREATE INDEX c_id ON c (id);
+BEGIN;
+INSERT INTO c VALUES (55);
+SELECT locktype, relation::regclass AS rel, mode
+FROM pg_locks
+WHERE pid = pg_backend_pid() AND relation IS DISTINCT FROM 'pg_locks'::regclass
+ORDER BY locktype, rel;
+SET LOCAL enable_seqscan = off;
+SELECT count(*) FROM c WHERE id = 55;
+SELECT locktype, relation::regclass AS rel, mode
+FROM pg_locks
+WHERE pid = pg_backend_pid() AND relation IS DISTINCT FROM 'pg_locks'::regclass
+ORDER BY locktype, rel;
+COMMIT;
+```
+
+after the INSERT: a lock on the table and on the transaction's id, and nothing at all on `c_id`, though the insert just wrote a leaf of it. (what stops the index from being dropped meanwhile is the table lock: DROP INDEX needs ACCESS EXCLUSIVE on the table.) the index scan adds an ACCESS SHARE on the index, which only conflicts with dropping or rebuilding it. there is no row in pg_locks for any page or entry, ever.
+
+## the textbook: latch crabbing
+
+<Figure wide caption={<>latch crabbing, the textbook way to insert 25. pages lit <C k="hot">hot</C> are latched. the root stays latched while the leaf might split, because the split will need to change it.</>}>
+<Slides>
+<Slide note="latch the root, read it: 25 goes to the left leaf.">
+<BTree view={crab[0]} />
+</Slide>
+<Slide note="latch the leaf before letting go of anything. it's full, so the insert will split it, and the split will add a separator to the root: keep both latched.">
+<BTree view={crab[1]} />
+</Slide>
+<Slide note="split the leaf, add 30 to the root, then release both. while this happened, nobody else could even read the root, which is the page every lookup needs.">
+<BTree view={crab[2]} />
+</Slide>
+</Slides>
+<Provenance drawn="the textbook protocol, 4 keys a page" />
+</Figure>
+
+the name is from how a crab walks: one leg always holding on. the rule is "latch the child, then release the parent if the child is safe" (it can't split or merge from this operation). it's correct, and it's how many engines work. the cost is the top of the tree: every writer starts by latching the root, and a writer that might split holds latches on several levels at once, blocking every reader behind it.
+
+## postgres: right links and high keys
+
+Lehman and Yao ("efficient locking for concurrent operations on B-trees", ACM TODS, 1981) add two things to every page, and postgres's nbtree has both on every level: a **right link** to the next page, and a **high key**, the upper bound of the page. with those, a reader never needs to hold two pages:
+
+<Figure wide caption={<>a reader looking for 35 races a writer that splits the page it's heading for. the reader holds at most one page, <C k="hot">hot</C>. the <C k="meta">high key</C> tells it the split happened, and the <C k="ref">right link</C> tells it where to go.</>}>
+<Slides>
+<Slide note="the reader reads the root: 35 < 40, so the left leaf. it lets go of the root before it touches the leaf.">
+<BTree view={ly[0]} />
+</Slide>
+<Slide note="in that gap, a writer inserts 25 and splits the leaf. 30 and 35 move to a new page, linked to the right. the root doesn't know yet: no downlink for the new page.">
+<BTree view={ly[1]} />
+</Slide>
+<Slide note="the reader arrives at the old leaf, which no longer has 35. but its high key is 30, and 35 ≥ 30: whatever the reader wants isn't on this page, and isn't on anything to its left.">
+<BTree view={ly[2]} />
+</Slide>
+<Slide note="so it follows the right link, and finds 35. one extra page read, no waiting, no wrong answer.">
+<BTree view={ly[3]} />
+</Slide>
+<Slide note="later the writer adds 30 to the root, as a separate step with its own short latches. readers that come now go straight to the new page.">
+<BTree view={ly[4]} />
+</Slide>
+</Slides>
+<Provenance drawn="the Lehman and Yao protocol as postgres implements it, 4 keys a page" />
+</Figure>
+
+that move-right check is in every descent postgres makes (`_bt_moveright` in the source). and it's why a split can be done in two steps, the page first and the parent later, with no lock spanning them. if the backend crashes in between, the next insert that finds the missing downlink finishes the job (an "incomplete split" flag on the page says it has to).
+
+<Predict question="a reader holds no lock while it walks from a parent page to a child. can a concurrent split make it miss a key?" options={["yes, that's why it locks the parent", "no, it moves right if needed", "no, splits wait for readers"]} answer={1}>
+```text
+reader: read root → "go to leaf A" → (no locks held) → read leaf A
+writer:                 split leaf A into A and B
+```
+<Explain>
+no. splits only ever move keys to the right, into a new page linked from the old one. the old page's high key shrinks to the new boundary. a reader that finds its key above the high key follows the right link until it isn't. it can't miss, and neither side waited. (postgres adds the same check one level up: a descent can move right on an inner page too.)
+</Explain>
+</Predict>
+
+## what writers still wait for
+
+writers still take exclusive latches, just for less time:
+
+- an insert latches only the leaf it inserts into. if the leaf splits, it also latches the new page and the right neighbour (to fix its left link), writes the split, and lets go of all but the old leaf. it keeps that one only until it has latched the parent (so it can clear the page's "split not finished" flag), then goes on up with one or two pages at a time. no writer holds the root while it works on a leaf.
+- latches are always taken left to right and bottom to top, so two splits can't deadlock on each other.
+
+the waits you *can* see in pg_locks are the logical ones: a unique index insert that finds a possible duplicate from an uncommitted transaction waits on that transaction's id, in the lock manager ([how a unique index says no](/learn/index-internals/unique-checks)). that's a row-level question, not a page one.
+
+<Gotcha title="no page locks in pg_locks doesn't mean no contention">
+an insert-heavy table with a sequence key sends every insert to the same rightmost leaf. each holds the latch only briefly, but with dozens of sessions they queue, and it shows up as `LWLock` / `BufferContent` waits in `pg_stat_activity`, never in pg_locks. the usual cure is a less concentrated key, or fewer sessions doing the inserts. (the lab engine is one session, so it can't show this: it needs a real server under load.)
+</Gotcha>
+
+<Keylines>
+- index pages are protected by short buffer latches (LWLocks), not lock-manager locks. pg_locks never shows them.
+- the textbook descent, latch crabbing, holds a parent while a child might split.
+- postgres follows Lehman and Yao: right links and high keys on every page, one latch at a time.
+- a reader whose key moved during a split sees it's above the high key and moves right.
+- splits happen in two steps, page then parent, so nobody waits for a whole split.
+</Keylines>

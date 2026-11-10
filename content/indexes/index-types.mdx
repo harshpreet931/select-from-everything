@@ -1,0 +1,140 @@
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/index-types.pgtrace.json";
+
+{/* the operator switch, the size bars and the BRIN plan read traces/index-types.scenario.sql,
+    captured on PGlite. seq scans are off for the operator switch on purpose (see the caption). */}
+
+export const size = Object.fromEntries(trace.steps[7].result.data.map((r) => [r[0], Number(r[1])]));
+export const kb = (b) => Math.round(b / 1024).toLocaleString("en-US");
+export const brin = trace.steps[9].explain.Plan.Plans[0];
+
+<InShort>
+postgres has six index types, called **access methods**: btree, hash, GiST, SP-GiST, GIN and BRIN. what decides which one can serve a query is the **operator**: `=` and `<` want a btree, `@>` on an array or jsonb wants GIN, `&&` on ranges wants GiST, a range scan over a huge append-only table can do with BRIN. each type supports a fixed set of operators per data type, listed in the catalog as **operator classes**.
+</InShort>
+
+## the picture
+
+you know how a library has more than one catalog? one by author (sorted, so you can find a name or a range of names), one by subject (each subject lists all the books about it), and a map of the shelves (roughly which aisle each decade of acquisitions sits in). each answers a different kind of question. none of them answers all of them.
+
+that's the whole idea. a btree is the author catalog. GIN is the subject catalog: one entry per element, pointing at every row that contains it. BRIN is the shelf map: one line per block range, "dates from here to here". and so on.
+
+| type | sorted? | serves | typical use | inside |
+| --- | --- | --- | --- | --- |
+| **btree** | yes | `=` `<` `<=` `>` `>=`, `BETWEEN`, `IN`, `IS NULL`, `LIKE 'abc%'` (in C collation), `ORDER BY` | almost everything: keys, foreign keys, dates, names | [b+trees](/learn/index-internals/b-plus-trees) |
+| **hash** | no | `=` only | equality lookups on long values | [hash indexes](/learn/index-internals/hash-indexes) |
+| **GIN** | no | "contains": `@>` `<@` `&&` on arrays, `@>` `?` `@?` on jsonb, `@@` full-text | tags, jsonb documents, text search | [GIN](/learn/index-internals/gin) |
+| **GiST** | no | overlap and geometry: `&&` `@>` `<<` on ranges, `<->` nearest neighbour | ranges and exclusion constraints, geometry, PostGIS | [GiST and SP-GiST](/learn/index-internals/gist-and-spgist) |
+| **SP-GiST** | no | the same family, for data that splits into non-overlapping parts: text prefixes `^@`, points, ranges | prefix search, quadtrees and k-d trees | [GiST and SP-GiST](/learn/index-internals/gist-and-spgist) |
+| **BRIN** | no | `=` `<` `>` on columns whose values follow table order | timestamps of append-only logs, huge tables | [BRIN](/learn/index-internals/brin) |
+
+only btree can hand rows back in order, so only btree can remove a Sort ([indexes for ORDER BY](/learn/indexes/indexes-and-order-by)), and of the six, only btree can enforce `UNIQUE`.
+
+## ask the catalog
+
+the table above is the catalog's, not mine. `pg_am` lists the access methods, and each one says what it can do:
+
+```sql run
+SELECT amname,
+       pg_indexam_has_property(oid, 'can_order') AS sorted,
+       pg_indexam_has_property(oid, 'can_unique') AS can_unique,
+       pg_indexam_has_property(oid, 'can_multi_col') AS multicolumn,
+       pg_indexam_has_property(oid, 'can_include') AS include
+FROM pg_am
+WHERE amtype = 'i'
+ORDER BY amname;
+```
+
+`pg_opclass` says which data types each one can index, and `pg_amop` which operators each one serves:
+
+```sql run
+SELECT am.amname AS method, opf.opfname AS family,
+       string_agg(DISTINCT op.oprname, ' ' ORDER BY op.oprname) AS operators
+FROM pg_amop AS ao
+JOIN pg_am AS am ON am.oid = ao.amopmethod
+JOIN pg_opfamily AS opf ON opf.oid = ao.amopfamily
+JOIN pg_operator AS op ON op.oid = ao.amopopr
+WHERE opf.opfname IN ('integer_ops', 'text_ops', 'text_pattern_ops', 'array_ops',
+                      'jsonb_ops', 'jsonb_path_ops', 'range_ops', 'tsvector_ops', 'integer_minmax_ops')
+GROUP BY am.amname, opf.opfname
+ORDER BY am.amname, opf.opfname;
+```
+
+read it as: "an index of this method, on a column of this family, can serve a WHERE that uses one of these operators". `hash integer_ops` serves only `=`. `gin jsonb_ops` serves `?`, `?|`, `?&`, `@>`, `@?` and `@@`, and `gin jsonb_path_ops` gives up the `?` key-exists operators for a smaller index. if your operator isn't in the list for your index, the index can't help, however you phrase the rest.
+
+## one operator each
+
+here's a real plan for each type, on shop's tables. they're small enough that postgres would rather read them whole, so for this figure seq scans are switched off: the question is which index *can* serve the operator, not whether it's worth it at this size.
+
+<Figure wide caption={<>pick an operator and see which index serves it. the hash index answers <code>=</code> on email, but not <code>&gt;</code>: for that, postgres goes back to the unique b-tree on email. seq scans off, plain EXPLAIN, so the row counts are estimates.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="operator"
+  show={["est"]}
+  plans={[
+    { label: "hash: =", step: 1 },
+    { label: "hash? >", step: 2 },
+    { label: "GIN: array @>", step: 3 },
+    { label: "GIN: jsonb @>", step: 4 },
+    { label: "GiST: range &&", step: 5 },
+    { label: "SP-GiST: text ^@", step: 6 },
+  ]}
+/>
+</Figure>
+
+<Predict question="tags is text[]. which index can serve WHERE 'steel' = ANY(tags)?" options={["a GIN index on tags", "a btree index on tags", "neither"]} answer={2}>
+```sql
+SELECT id FROM products WHERE 'steel' = ANY(tags);
+```
+<Explain>
+neither. `= ANY(tags)` is the `=` operator applied to each element, not an array operator, and no operator class indexes "some element equals". GIN's array operator class serves `@>`, `<@`, `&&` and `=` on whole arrays. rewrite it as `tags @> ARRAY['steel']` and the GIN index works.
+</Explain>
+</Predict>
+
+```sql run db=shop
+CREATE INDEX products_tags ON products USING gin (tags);
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM products WHERE 'steel' = ANY(tags);
+EXPLAIN (COSTS OFF) SELECT id FROM products WHERE tags @> ARRAY['steel'];
+```
+
+even with seq scans switched off, the first query gets one, because nothing else can answer it. postgres 18 marks a node like that with `Disabled: true` <Since v={18} />.
+
+## the same column, three ways
+
+`orders.ordered_at` is stored in time order (orders are appended as they happen), which is exactly what BRIN wants. here's that one column indexed as a btree, a hash and a BRIN:
+
+<Figure caption={<>the size of orders and of three indexes on its ordered_at column, in KB. the BRIN index keeps one min/max pair per 4 pages of table.</>}>
+<Bars data={[
+  { label: "the table", value: Math.round(size.orders / 1024) },
+  { label: "hash", value: Math.round(size.orders_at_hash / 1024), tone: "hot" },
+  { label: "btree", value: Math.round(size.orders_at_btree / 1024), tone: "hot" },
+  { label: "BRIN", value: Math.round(size.orders_at_brin / 1024), tone: "live" },
+]} unit="KB" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+the hash index is the biggest ({kb(size.orders_at_hash)} KB, more than the btree's {kb(size.orders_at_btree)}) and can only do equality, which you rarely want on a timestamp. the BRIN index is {kb(size.orders_at_brin)} KB: the minimum three pages. it can't find a row, only rule out block ranges that can't contain one:
+
+<Figure wide caption={<>a month of orders through the BRIN index. it returns <C k="hot">every page of every block range that might match</C> (Heap Blocks: lossy={brin["Lossy Heap Blocks"]}), and each row on them is rechecked: {brin["Rows Removed by Index Recheck"]} removed.</>}>
+<PlanTree plan={trace.steps[9].explain} show={["buffers"]} provenance={<Provenance trace={prov(trace)} />} />
+</Figure>
+
+that's BRIN's deal: tiny, nearly free to maintain, useless on a column that isn't stored in order. it was created here with `pages_per_range = 4`; the default, 128 pages per range, is more than this whole table, and one range covering everything rules nothing out.
+
+<Gotcha title="hash indexes are fine now, and still rarely the answer">
+before postgres 10, hash indexes weren't WAL-logged and didn't survive a crash. they are now. but a btree also does equality, plus ranges, ordering and uniqueness, and on most columns it's about as fast. a hash index can win on long values (it stores a 4-byte hash, not the value) that are only ever compared with `=`.
+</Gotcha>
+
+<Interview q="when would you use a GIN index instead of a btree?">
+when the question is "which rows contain this element", not "which rows have this value": arrays (`tags @> '{steel}'`), jsonb containment and key existence (`attrs @> '{"color": "red"}'`), full-text search (`doc @@ query`), and trigram similarity with pg_trgm. GIN stores one entry per element with the list of rows that contain it, so a row with 10 tags appears 10 times. it's slower to update than a btree (the pending list helps) and can't return rows in order. bonus points: check which operators the operator class supports (jsonb_path_ops is smaller but has no ? operators), and that = ANY(array_col) isn't one of them.
+</Interview>
+
+<Keylines>
+- the operator decides the index type. the catalog says which serves which.
+- btree: equality, ranges, ORDER BY, unique. the default for a reason.
+- GIN: contains. arrays, jsonb, full-text, trigrams.
+- GiST and SP-GiST: overlap, geometry, nearest neighbour.
+- BRIN: tiny, for columns stored in table order.
+</Keylines>

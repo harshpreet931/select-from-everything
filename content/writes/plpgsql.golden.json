@@ -1,0 +1,230 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "2bf4530065e2da3b": {
+      "db": "empty",
+      "sql": "DO $$\nDECLARE\n  total int := 0;\nBEGIN\n  FOR i IN 1..10 LOOP\n    IF i % 2 = 0 THEN\n      total := total + i;\n    END IF;\n  END LOOP;\n  RAISE NOTICE 'the even numbers up to 10 add up to %', total;\nEND $$;",
+      "statements": [
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "notices": [
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "the even numbers up to 10 add up to 30",
+              "where": "PL/pgSQL function inline_code_block line 10 at RAISE"
+            }
+          ],
+          "digest": "85fa55d8743e8044"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d851eca1c15db99c": {
+      "db": "shop",
+      "sql": "DO $$\nDECLARE\n  c record;\n  n bigint;\nBEGIN\n  FOR c IN SELECT id, name FROM customers WHERE id IN (1, 7, 42) ORDER BY id LOOP\n    SELECT count(*) INTO n FROM orders WHERE customer_id = c.id;\n    IF n = 0 THEN\n      RAISE NOTICE '% has never ordered', c.name;\n    ELSE\n      RAISE NOTICE '% has % orders', c.name, n;\n    END IF;\n  END LOOP;\nEND $$;",
+      "statements": [
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "notices": [
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "Maya Chen has 57 orders",
+              "where": "PL/pgSQL function inline_code_block line 11 at RAISE"
+            },
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "Ming Li has never ordered",
+              "where": "PL/pgSQL function inline_code_block line 9 at RAISE"
+            },
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "Ada Lovelace has 7 orders",
+              "where": "PL/pgSQL function inline_code_block line 11 at RAISE"
+            }
+          ],
+          "digest": "5166d7fd5e032ddd"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b6ef9fb0c5cab868": {
+      "db": "shop",
+      "sql": "CREATE FUNCTION order_summary(cust int)\nRETURNS TABLE (status text, n bigint)\nLANGUAGE plpgsql STABLE\nAS $$\nBEGIN\n  IF NOT EXISTS (SELECT FROM customers WHERE id = cust) THEN\n    RAISE EXCEPTION 'no customer %', cust\n      USING ERRCODE = 'no_data_found', HINT = 'ids go from 1 to 2000';\n  END IF;\n  RETURN QUERY\n    SELECT o.status, count(*) FROM orders AS o\n    WHERE o.customer_id = cust GROUP BY o.status;\nEND $$;\n\nSELECT * FROM order_summary(42) ORDER BY status;",
+      "statements": [
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "38334b4e88d620d5"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["status", "text", 25],
+            ["n", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "e2fa88848ab13233",
+          "rows": [
+            ["cancelled", "1"],
+            ["delivered", "4"],
+            ["placed", "1"],
+            ["refunded", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e7cb17b1fdb5fd93": {
+      "db": "shop",
+      "sql": "SELECT * FROM order_summary(5000);",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "P0002",
+            "message": "no customer 5000",
+            "hint": "ids go from 1 to 2000",
+            "where": "PL/pgSQL function order_summary(integer) line 4 at RAISE"
+          },
+          "digest": "25543ae1b4f97c12"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "P0002",
+        "message": "no customer 5000",
+        "hint": "ids go from 1 to 2000",
+        "where": "PL/pgSQL function order_summary(integer) line 4 at RAISE",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "00318e1346e368de": {
+      "db": "empty",
+      "sql": "CREATE TABLE t (id int PRIMARY KEY);\n\nSELECT pg_current_xact_id() AS xid;\nDO $$ BEGIN\n  FOR i IN 1..1000 LOOP\n    INSERT INTO t VALUES (i);\n  END LOOP;\nEND $$;\nSELECT pg_current_xact_id() AS xid;\n\nDO $$ BEGIN\n  FOR i IN 1001..2000 LOOP\n    BEGIN\n      INSERT INTO t VALUES (i);\n    EXCEPTION WHEN unique_violation THEN NULL;\n    END;\n  END LOOP;\nEND $$;\nSELECT pg_current_xact_id() AS xid;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["xid", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "4c303c83e12a9919",
+          "rows": [
+            ["753"]
+          ]
+        },
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a698d91ada984b08"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["xid", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "802bf00793955bed",
+          "rows": [
+            ["755"]
+          ]
+        },
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6810bd4ce135460a"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["xid", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "2e4db21386ead220",
+          "rows": [
+            ["1757"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "85305a988f6aeeaa": {
+      "db": "empty",
+      "sql": "CREATE PROCEDURE tidy() LANGUAGE plpgsql AS $$\nBEGIN\n  COMMIT;\nEND $$;\n\nBEGIN;\nCALL tidy();",
+      "statements": [
+        {
+          "tag": "CREATE PROCEDURE",
+          "command": "CREATE PROCEDURE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f8e0e8d272506aba"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5693d3fc01d98245"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "2D000",
+            "message": "invalid transaction termination",
+            "where": "PL/pgSQL function tidy() line 3 at COMMIT"
+          },
+          "digest": "d04372b44609028c"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "2D000",
+        "message": "invalid transaction termination",
+        "where": "PL/pgSQL function tidy() line 3 at COMMIT",
+        "statement": 2
+      },
+      "txn": "E"
+    }
+  }
+}

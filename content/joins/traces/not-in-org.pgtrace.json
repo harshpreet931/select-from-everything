@@ -1,0 +1,88 @@
+{
+ "v": 1,
+ "scenario": "content/joins/traces/not-in-org.scenario.sql",
+ "title": "who manages nobody: four ways to ask, one of them wrong",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "departments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"budget","type":"numeric"}]
+  },
+  "departments_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"departments"},
+  "departments_name_key": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"departments"},
+  "employees": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"manager_id","type":"int4"},
+    {"name":"dept_id","type":"int4"},
+    {"name":"title","type":"text"},
+    {"name":"salary","type":"numeric"},
+    {"name":"hired_on","type":"date"}
+   ]
+  },
+  "employees_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"employees"},
+  "oncall": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"},{"name":"on_call","type":"bool"}]
+  },
+  "oncall_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"}],
+   "on": "oncall"
+  }
+ },
+ "base": {"xid":795,"lsn":26456368},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT count(*) AS manage_nobody\nFROM employees AS e\nWHERE e.id NOT IN (SELECT manager_id FROM employees)",
+   "note": "NOT IN: the CEO's NULL manager_id is in the list, so every id gets unknown. 0 rows.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"manage_nobody","type":"int8"}],"data":[["0"]]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT count(*) AS manage_nobody\nFROM employees AS e\nWHERE e.id NOT IN (SELECT manager_id FROM employees WHERE manager_id IS NOT NULL)",
+   "note": "NOT IN, with the NULLs filtered out of the subquery: the list has only real ids now. 200.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"manage_nobody","type":"int8"}],"data":[["200"]]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT count(*) AS manage_nobody\nFROM employees AS e\nWHERE NOT EXISTS (SELECT 1 FROM employees AS r WHERE r.manager_id = e.id)",
+   "note": "NOT EXISTS: is there an employee whose manager_id = e.id? the CEO's NULL just never matches. 200.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"manage_nobody","type":"int8"}],"data":[["200"]]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT count(*) AS manage_nobody\nFROM employees AS e\nLEFT JOIN employees AS r ON r.manager_id = e.id\nWHERE r.id IS NULL",
+   "note": "LEFT JOIN, keep the padded rows: employees nobody reports to. 200.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"manage_nobody","type":"int8"}],"data":[["200"]]}
+  }
+ ],
+ "db": "org"
+}

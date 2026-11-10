@@ -1,0 +1,125 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import mx from "./traces/multixact.pgtrace.json";
+
+export const rowlocks = resultOf(mx, 2);
+export const members = resultOf(mx, 3);
+export const lp1 = mx.steps[1].heap.accounts[0].tuples[0];
+export const xidT1 = mx.steps[0].xids.T1.xid;
+export const xidT2 = mx.steps[1].xids.T2.xid;
+
+<InShort>
+a row lock is stored in the tuple's **xmax**, and xmax has room for one id. when a second transaction locks a row that's already share-locked, postgres creates a **MultiXact**: a new id, from a separate counter, that stands for a list of (transaction, lock mode) members. the tuple gets the MultiXact id in xmax and a flag that says so. that counter is 32 bits too, so it needs freezing, just like xids.
+</InShort>
+
+## the picture
+
+you know how [SELECT ... FOR UPDATE leaves its xid in xmax](/learn/mvcc/transaction-ids)? postgres has no lock table for rows: a row lock lives on the row itself, which is how millions of rows can be locked without running out of memory. that works for one locker. but FOR SHARE and FOR KEY SHARE are made to be held by many transactions at once.
+
+think of a meeting room booking sheet with space for one name. a second person wants to share the room. instead of writing two names in a one-name box, the receptionist starts a group, writes "group 1" in the box, and keeps the list of who's in group 1 in a binder at the desk (`pg_multixact`).
+
+here it is on a real postgres 18.6 server. T1 and T2 both take FOR SHARE on alice, then T3 tries to update her:
+
+<Figure wide caption={<>step through and watch slot 1's xmax. after T1 it's T1's xid, marked lock-only. after T2 it's <C k="meta">1</C>, a MultiXact id, with HEAP_XMAX_IS_MULTI set. T3's UPDATE <C k="mute">waits</C>: first for T1, then, once T1 commits, for T2. the locks panel shows each wait.</>}>
+<PgStepper trace={mx} panels={["lanes", "page:accounts", "locks"]} />
+</Figure>
+
+<Predict question="T1 and T2 both hold FOR SHARE on the same row. what's in the tuple's xmax?" options={["T1's xid", "T2's xid", "a new id for both"]} answer={2}>
+```sql
+/* T1 */ BEGIN; SELECT owner FROM accounts WHERE id = 1 FOR SHARE;
+/* T2 */ BEGIN; SELECT owner FROM accounts WHERE id = 1 FOR SHARE;
+SELECT t_xmax FROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 1;
+```
+<Explain>
+a new id: MultiXact 1. keeping only T1's would let T1's commit look like the row is free while T2 still holds it; keeping only T2's would forget T1. so postgres records both as members of a MultiXact and puts its id in xmax, with HEAP_XMAX_IS_MULTI so nobody reads it as an xid. MultiXact ids have their own counter, which is why it's 1 and not something near the xids.
+</Explain>
+</Predict>
+
+## what's inside one
+
+two ways to look inside. pgrowlocks reads the row's xmax and expands it; `pg_get_multixact_members()` takes the MultiXact id directly:
+
+<Figure caption={<>the row's lock, from pgrowlocks, and the MultiXact's members. <C k="meta">multi = t</C>: the locker is a MultiXact id, not an xid. its members are T1 ({xidT1}) and T2 ({xidT2}), both <code>sh</code>, FOR SHARE.</>}>
+<ResultTable columns={rowlocks.columns} rows={rowlocks.rows} />
+<ResultTable columns={members.columns} rows={members.rows} />
+<Provenance trace={prov(mx)} />
+</Figure>
+
+on disk, the tuple only has the id. the rest is in two SLRU areas under `pg_multixact/`, read through small caches like [the commit log](/learn/mvcc/commit-log-and-hint-bits):
+
+<Figure caption={<>where a MultiXact lives. the <C k="ref">id</C> in xmax indexes the offsets area, which points into the members area: one entry per member.</>}>
+<Tree>{`
+heap tuple (0,1) #meta
+    t_xmax = 1, HEAP_XMAX_IS_MULTI, HEAP_XMAX_LOCK_ONLY
+        pg_multixact/offsets // multixact 1 → where its members start
+            pg_multixact/members // the list, one entry per member
+                ${xidT1}  sh // T1, FOR SHARE
+                ${xidT2}  sh // T2, FOR SHARE
+`}</Tree>
+</Figure>
+
+a MultiXact is immutable. when a third locker comes along, postgres doesn't edit the list: it creates a new MultiXact with three members and swaps the id in xmax. busy rows can go through a lot of them.
+
+## one session can make one too
+
+the browser engine has one session, but a MultiXact doesn't strictly need two. a subtransaction has its own xid, so a savepoint that updates a row its parent has share-locked gives the row two "lockers":
+
+```sql run db=lab session=mx
+BEGIN;
+SELECT owner FROM accounts WHERE id = 1 FOR SHARE;
+SAVEPOINT s;
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+SELECT lp, t_xmax, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags
+FROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 1;
+SELECT * FROM pg_get_multixact_members(
+  (SELECT t_xmax FROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 1))
+ORDER BY xid::text::bigint;
+COMMIT;
+```
+
+MultiXact 1 again, with two members: the parent's share lock (`sh`) and the subtransaction's update (`nokeyupd`, an update that didn't change a key column). so a MultiXact isn't only for locks: it can hold one updater alongside lockers.
+
+## where they come from in real life
+
+hardly anyone writes FOR SHARE. the usual source is **foreign keys**. inserting a row that references a parent takes FOR KEY SHARE on the parent row, to make sure nobody deletes it or changes its key before you commit:
+
+```sql run db=lab session=fk
+CREATE TABLE owners (id int PRIMARY KEY, name text);
+CREATE TABLE pets (id int PRIMARY KEY, owner_id int REFERENCES owners);
+INSERT INTO owners VALUES (1, 'ada');
+BEGIN;
+INSERT INTO pets VALUES (1, 1);
+SELECT t_xmax, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags
+FROM heap_page_items(get_raw_page('owners', 0));
+COMMIT;
+```
+
+`HEAP_XMAX_KEYSHR_LOCK`: ada's row is key-share locked by the inserting transaction. two sessions inserting pets for the same owner at the same time make a MultiXact on ada's row, and an app with a few very popular parent rows (one tenant, one account, one product) makes them constantly. the four row lock modes and how they conflict are in [row-locking clauses](/learn/transactions/row-locking-clauses) and [how row locks are stored](/learn/locking/row-lock-internals).
+
+## the other counter that can wrap
+
+MultiXact ids are 32 bits, compared on a circle like [xids](/learn/mvcc/freezing-and-wraparound), so they need freezing too: vacuum replaces old MultiXacts in xmax (with nothing, or with a plain xid if only one member still matters), and tracks the oldest one left per table in `relminmxid`, per database in `datminmxid`:
+
+```sql run db=lab session=mxage
+SELECT datname, datminmxid, mxid_age(datminmxid) FROM pg_database ORDER BY datname;
+SELECT name, setting FROM pg_settings
+WHERE name LIKE '%multixact%freeze%' OR name LIKE '%multixact%failsafe%' ORDER BY name;
+```
+
+the same ladder as for xids, with its own settings: `autovacuum_multixact_freeze_max_age` defaults to 400 million, twice the xid one, and the failsafe sits at 1.6 billion. there's a second limit too: the members area is a 32-bit space of its own, so lots of MultiXacts with many members can run out of member space before running out of ids. the manual says vacuum turns aggressive when members storage passes about 10 GB, and, as with xids, postgres stops assigning new MultiXacts rather than wrap ([routine vacuuming](https://www.postgresql.org/docs/18/routine-vacuuming.html)).
+
+<Gotcha title="FK-heavy workloads burn MultiXacts, not xids">
+a system can have a quiet `age(datfrozenxid)` and an alarming `mxid_age(datminmxid)`: lots of concurrent child inserts against a few parent rows, each creating a new MultiXact. monitor both. and replication slots don't hold back MultiXact cleanup the way they hold back xids, but long transactions do: a MultiXact can't be cleaned up while any of its members might still matter.
+</Gotcha>
+
+<Interview q="what is a MultiXact in postgres?">
+row locks are stored in the tuple's xmax, which holds one id. when more than one transaction holds a lock on the same row (several FOR SHARE or FOR KEY SHARE lockers, often from foreign key checks, or a locker plus an updater), postgres creates a MultiXact: an id from a separate counter that maps to a list of member xids with their lock modes, stored in pg_multixact/offsets and pg_multixact/members. the tuple gets the MultiXact id in xmax with HEAP_XMAX_IS_MULTI. they're immutable, so adding a locker creates a new one. bonus point: MultiXact ids are 32-bit and wrap like xids, so vacuum freezes them too, governed by the multixact freeze settings and tracked in relminmxid and datminmxid.
+</Interview>
+
+<Keylines>
+- one locker: its xid goes in xmax. two or more: a MultiXact id goes in xmax.
+- a MultiXact is an id from its own counter, mapping to (xid, mode) members in pg_multixact.
+- foreign key checks (FOR KEY SHARE) are where most of them come from.
+- they're immutable: a new locker means a new MultiXact.
+- 32 bits, so they wrap too: relminmxid, datminmxid, mxid_age(), their own freeze ages.
+</Keylines>

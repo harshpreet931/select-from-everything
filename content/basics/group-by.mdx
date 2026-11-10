@@ -1,0 +1,160 @@
+import { GroupBuckets } from "@/components/figures/basics/GroupBuckets";
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { prov, resultOf, stagesOf } from "@/components/figures/basics/captured";
+import courses from "./traces/group-by.pgtrace.json";
+import shop from "./traces/group-by-shop.pgtrace.json";
+
+{/* GroupBuckets reads traces/group-by.scenario.sql (school's courses, one @stages capture per
+    grouping key, plus the refused query with title in SELECT). the month bars and the Sam Lee
+    switch read traces/group-by-shop.scenario.sql. both captured on PGlite. */}
+
+export const keys = { nothing: [], dept: ["dept"], credits: ["credits"], "dept, credits": ["dept", "credits"], instructor_id: ["instructor_id"] };
+export const buckets = Object.fromEntries(Object.entries(keys).map(([k, ks], j) => [k, { ...stagesOf(courses, 2 * j), keys: ks, bad: resultOf(courses, 2 * j + 1) }]));
+export const months = resultOf(shop, 0).rows.map(([m, n]) => ({ label: m.slice(0, 7), value: Number(n) }));
+export const sams = { name: resultOf(shop, 1), "c.id": resultOf(shop, 2) };
+
+<InShort>
+**GROUP BY** sorts rows into buckets, one bucket per different value of the key, and hands on **one row per bucket**. so every column SELECT asks for has to be **grouped** (the bucket's label, one value by definition) or **aggregated** (many values folded into one).
+
+that's the rule behind the most common error in SQL. it isn't bureaucracy, it's arithmetic.
+</InShort>
+
+## the picture
+
+you know this one: `column "courses.title" must appear in the GROUP BY clause or be used in an aggregate function`. it reads like a form you filled in wrong. it's actually a very reasonable complaint, and it makes sense the moment you see what GROUP BY does to a table.
+
+think of a mail room. every letter (a row) goes into a pigeonhole by its department (the key). when the sorting's done, you write one card per pigeonhole: the label on the hole, how many letters are in it, how many pages they add up to. what you can't write on the card is "the sender": the CS hole has five letters from five senders, and the card has one line.
+
+<Figure wide caption={<>pick a key and step through. the rows sort into buckets, then each bucket collapses into one row: the key in <C k="hot">hot</C>, plus the aggregates. switch on <code>+ title</code> to ask for a column that has many values per bucket, and see what postgres says. every table is a real intermediate result from school's 12 courses.</>}>
+<GroupBuckets
+  options={{ key: "GROUP BY", values: [{ v: "nothing", label: "(nothing)" }, "dept", "credits", "dept, credits", "instructor_id"] }}
+  runs={buckets}
+  extra="title"
+  start="dept"
+  trace={prov(courses)}
+/>
+</Figure>
+
+a few things to notice. the 12 rows never change, only where they sit: GROUP BY doesn't throw anything away (that's [HAVING](/learn/basics/having-clause)'s job). two keys make a bucket per *combination*, so MATH splits into its 3-credit and 4-credit courses. and with no GROUP BY at all, an aggregate still works: the whole table is one bucket, and you get one row.
+
+## buckets are made by equality
+
+rows land in the same bucket when their keys are equal. "equal" here has one twist you've met before: two NULLs count as the same key. the senior thesis has no instructor, so `GROUP BY instructor_id` gives it a bucket of its own, labelled null. the shop's three products with no category do the same:
+
+```sql run db=shop
+SELECT category, count(*) AS products
+FROM products
+GROUP BY category
+ORDER BY category NULLS FIRST;
+```
+
+11 buckets, the NULL one holding 3. that's the [split personality of NULL](/learn/basics/null-and-three-valued-logic): `NULL = NULL` is unknown, but sorting rows into piles needs every row to land somewhere, so the NULLs share one.
+
+notice the ORDER BY, too. GROUP BY makes buckets, it doesn't line them up. postgres often builds them with a hash table, and a hash table has no order:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT status, count(*) FROM orders GROUP BY status ORDER BY status;
+```
+
+`HashAggregate` makes the buckets, and the `Sort` on top is there only because the query asked for ORDER BY. leave it out and the six statuses come back in whatever order the hash table holds them. ([aggregation algorithms](/learn/execution/aggregation-algorithms) shows the sort-based way postgres can group, too.)
+
+## grouped or aggregated
+
+after GROUP BY, a row *is* a bucket. a column can appear in SELECT if it has exactly one value per bucket. two kinds of thing qualify:
+
+- **the key.** every row in the dept bucket has the same dept, by construction.
+- **an aggregate.** `count(*)`, `sum(credits)`, `min(title)`: each folds the bucket's values into one. ([aggregate functions](/learn/basics/aggregates) has the whole family.)
+
+anything else would be several values fighting for one cell, so postgres refuses before it reads a single row.
+
+<Predict options={["one row per dept", "an error", "one row per course"]} answer={1}>
+```sql
+SELECT dept, title, count(*) AS courses
+FROM courses
+GROUP BY dept;
+```
+<Explain>
+the CS bucket holds five courses with five titles, and the output row has one title cell. postgres won't pick one for you. it says so even for GEN and HIST, whose buckets hold one course each: the check looks at the query, not at the data, so it can't depend on how many rows a bucket happens to have today.
+</Explain>
+</Predict>
+
+the real error, with the SQLSTATE that [reading an error](/learn/start/reading-errors) taught you to look for (42803):
+
+```sql run db=school expect=error
+SELECT dept, title, count(*) AS courses
+FROM courses
+GROUP BY dept;
+```
+
+three ways out, and they mean different things. put title in GROUP BY, and every course becomes its own bucket (probably not what you wanted). or say which title you mean, with an aggregate: the first one alphabetically, or all of them glued together.
+
+```sql run db=school
+SELECT dept,
+       count(*) AS courses,
+       min(title) AS first_title,
+       string_agg(title, ', ' ORDER BY title) AS titles
+FROM courses
+GROUP BY dept
+ORDER BY dept;
+```
+
+`string_agg` with an ORDER BY inside it keeps the glued list in a fixed order, which is the same lesson as ever: no ORDER BY, no promised order.
+
+### group by the key, not the label
+
+there's one more way to get a column into SELECT: group by the table's primary key. a primary key picks out one row, so every other column of that table has exactly one value per bucket, and postgres lets you select them without listing them. ([functional dependencies](/learn/design/functional-dependencies) is the name for this.)
+
+it matters more than it sounds. the shop has two different customers called Sam Lee:
+
+<Figure caption={<>switch the key. by <code>name</code>, Toronto's Sam and Seoul's Sam become one bucket of 37 orders. by <code>c.id</code>, they're two people again, and <code>c.city</code> is allowed in SELECT without being grouped.</>}>
+<RunSwitch options={[{ key: "GROUP BY", values: ["name", "c.id"] }]} runs={sams} hot={["GROUP BY c.name", "GROUP BY c.id"]} trace={prov(shop)} />
+</Figure>
+
+a name is a label, not an identity. group by the key (and select the name next to it), or two people's orders end up in one total and nobody can tell.
+
+## grouping by an expression
+
+the key doesn't have to be a column. any expression works, and the bucket is "every row where it comes out the same". `date_trunc('month', ordered_at)` turns every timestamp into the first moment of its month, so orders land in one bucket per month:
+
+<Figure caption={<>orders per month, one bar per bucket. july 2025 to june 2026: february is short because february is short, and june is cut off where the data ends.</>}>
+<Bars data={months} />
+</Figure>
+
+```sql run db=shop
+SELECT date_trunc('month', ordered_at)::date AS month, count(*) AS orders
+FROM orders
+GROUP BY date_trunc('month', ordered_at)
+ORDER BY month
+LIMIT 3;
+```
+
+858 orders in july 2025, the first bucket. a timestamptz is cut into months in the session's time zone, which on this page is UTC: on a server in Tokyo the midnight boundaries move, and so would a few orders. ([timestamptz](/learn/types/timestamptz) is that story.) GROUP BY can also name a SELECT alias or position in postgres, as in `GROUP BY month` or `GROUP BY 1`; [the logical order](/learn/basics/logical-order) explains why that's an extension and where it gets confusing.
+
+## no GROUP BY, one bucket
+
+an aggregate without GROUP BY doesn't fail. it treats the whole table as one bucket and returns one row. so the rule still applies: a plain column next to an aggregate needs a GROUP BY to tell it what its buckets are.
+
+```sql run db=school expect=error
+SELECT dept, count(*) AS courses FROM courses;
+```
+
+and GROUP BY without any aggregate is a perfectly good way to get one row per different value. it's the same answer as `SELECT DISTINCT dept FROM courses`, and postgres often runs both the same way ([DISTINCT](/learn/basics/distinct-rows)).
+
+<Deep title="what mysql and sqlite do instead">
+the standard says a selected column must be grouped, aggregated, or functionally dependent on the grouped columns, which is the rule postgres follows. not everyone was always that strict.
+
+mysql used to accept `SELECT dept, title ... GROUP BY dept` and return a title from some row of each bucket. since 5.7.5 the `ONLY_FULL_GROUP_BY` mode is on by default and the query fails like it does here, but servers that switch the mode off still exist ([mysql's GROUP BY handling](https://dev.mysql.com/doc/refman/8.4/en/group-by-handling.html)). sqlite still accepts these "bare columns": each one gets a value from an arbitrary row of the bucket, except when the query uses `min()` or `max()`, where it comes from the row that had the minimum or maximum ([sqlite's SELECT](https://www.sqlite.org/lang_select.html)). handy when you know about it, and a source of quietly wrong reports when you don't.
+</Deep>
+
+<Interview q="why does every column in SELECT have to be in GROUP BY or inside an aggregate?">
+because after GROUP BY each output row stands for a whole bucket of input rows. a grouped column has one value per bucket by definition, an aggregate folds many values into one, and any other column could hold different values for different rows in the same bucket, with nowhere to put them. bonus point: postgres also accepts columns that are functionally dependent on the grouping columns, so `GROUP BY customers.id` lets you select `customers.name`. and if you want to filter on an aggregate, that's HAVING, which runs after the buckets exist.
+</Interview>
+
+<Keylines>
+- GROUP BY turns rows into buckets, one per different key, and hands on one row per bucket.
+- a selected column must be grouped, aggregated, or decided by a grouped primary key.
+- NULL keys share one bucket. buckets come back in no order unless you ORDER BY.
+- the key can be any expression: a month, a first letter, a lower-cased email.
+- group by the key, not the label: two Sam Lees are still two people.
+</Keylines>

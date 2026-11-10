@@ -1,0 +1,618 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "2560cbfa37ccad1d": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT order_id, qty FROM order_items WHERE product_id = 150;\nCREATE INDEX order_items_product_id ON order_items (product_id);\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT order_id, qty FROM order_items WHERE product_id = 150;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c5ab684ce5a4c482",
+          "rows": [
+            ["Seq Scan on order_items (actual rows=81.00 loops=1)"],
+            ["  Filter: (product_id = 150)"],
+            ["  Rows Removed by Filter: 24861"],
+            ["  Buffers: shared read=159"],
+            ["Planning:"],
+            ["  Buffers: shared hit=30 read=3"]
+          ]
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "3016d9d6fb593c9c",
+          "rows": [
+            ["Bitmap Heap Scan on order_items (actual rows=81.00 loops=1)"],
+            ["  Recheck Cond: (product_id = 150)"],
+            ["  Heap Blocks: exact=65"],
+            ["  Buffers: shared hit=65 read=2"],
+            ["  ->  Bitmap Index Scan on order_items_product_id (actual rows=81.00 loops=1)"],
+            ["        Index Cond: (product_id = 150)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=18 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d25929f8fa20b029": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, name FROM customers WHERE lower(email) = 'ada@example.com';\nCREATE INDEX customers_lower_email ON customers (lower(email));\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, name FROM customers WHERE lower(email) = 'ada@example.com';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c8b716201f4c6612",
+          "rows": [
+            ["Seq Scan on customers (actual rows=1.00 loops=1)"],
+            ["  Filter: (lower(email) = 'ada@example.com'::text)"],
+            ["  Rows Removed by Filter: 1999"],
+            ["  Buffers: shared read=24"],
+            ["Planning:"],
+            ["  Buffers: shared hit=39 read=4 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "c62d6d773ca42f10",
+          "rows": [
+            ["Bitmap Heap Scan on customers (actual rows=1.00 loops=1)"],
+            ["  Recheck Cond: (lower(email) = 'ada@example.com'::text)"],
+            ["  Heap Blocks: exact=1"],
+            ["  Buffers: shared hit=1 read=2"],
+            ["  ->  Bitmap Index Scan on customers_lower_email (actual rows=1.00 loops=1)"],
+            ["        Index Cond: (lower(email) = 'ada@example.com'::text)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=19 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "823c05154cd85a31": {
+      "db": "shop",
+      "sql": "CREATE TABLE recent AS SELECT * FROM orders WHERE status <> 'delivered' ORDER BY id;\nCREATE INDEX recent_status ON recent (status);\nANALYZE recent;\nINSERT INTO recent SELECT * FROM orders WHERE status = 'delivered' ORDER BY id;\nEXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)\nSELECT id, customer_id FROM recent WHERE status = 'cancelled';\nANALYZE recent;\nEXPLAIN (ANALYZE, BUFFERS, TIMING OFF, SUMMARY OFF)\nSELECT id, customer_id FROM recent WHERE status = 'cancelled';",
+      "statements": [
+        {
+          "tag": "SELECT 648",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 648,
+          "digest": "18b21770ce4e6231"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "INSERT 0 9352",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 9352,
+          "digest": "5ec8694ba0ea7d2e"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "40d5758351f4957b",
+          "rows": [
+            ["Seq Scan on recent  (cost=0.00..171.06 rows=3368 width=8) (actual rows=317.00 loops=1)"],
+            ["  Filter: (status = 'cancelled'::text)"],
+            ["  Rows Removed by Filter: 9683"],
+            ["  Buffers: shared hit=85"],
+            ["Planning:"],
+            ["  Buffers: shared hit=11"]
+          ]
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "0158666dab518b98"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "6c691e577f020d6a",
+          "rows": [
+            ["Bitmap Heap Scan on recent  (cost=6.74..95.70 rows=317 width=8) (actual rows=317.00 loops=1)"],
+            ["  Recheck Cond: (status = 'cancelled'::text)"],
+            ["  Heap Blocks: exact=5"],
+            ["  Buffers: shared hit=7"],
+            ["  ->  Bitmap Index Scan on recent_status  (cost=0.00..6.66 rows=317 width=0) (actual rows=317.00 loops=1)"],
+            ["        Index Cond: (status = 'cancelled'::text)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=26"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "767aafb51b4afa6c": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT count(*) FROM customers WHERE city = 'London' AND country = 'GB';\nCREATE STATISTICS customers_city_country (dependencies) ON city, country FROM customers;\nANALYZE customers;\nEXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT count(*) FROM customers WHERE city = 'London' AND country = 'GB';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2d96e4f0c1d47a6b",
+          "rows": [
+            ["Aggregate  (cost=54.05..54.06 rows=1 width=8) (actual rows=1.00 loops=1)"],
+            ["  ->  Seq Scan on customers  (cost=0.00..54.00 rows=20 width=0) (actual rows=159.00 loops=1)"],
+            ["        Filter: ((city = 'London'::text) AND (country = 'GB'::bpchar))"],
+            ["        Rows Removed by Filter: 1841"]
+          ]
+        },
+        {
+          "tag": "CREATE STATISTICS",
+          "command": "CREATE STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b5b404511314961f"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "02505aa65c863282",
+          "rows": [
+            ["Aggregate  (cost=54.39..54.40 rows=1 width=8) (actual rows=1.00 loops=1)"],
+            ["  ->  Seq Scan on customers  (cost=0.00..54.00 rows=155 width=0) (actual rows=159.00 loops=1)"],
+            ["        Filter: ((city = 'London'::text) AND (country = 'GB'::bpchar))"],
+            ["        Rows Removed by Filter: 1841"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ce6d10375bf79f47": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT c.name, (SELECT count(*) FROM orders AS o WHERE o.customer_id = c.id) AS orders\nFROM customers AS c WHERE c.city = 'Berlin';\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT c.name, count(o.id) AS orders\nFROM customers AS c LEFT JOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'Berlin'\nGROUP BY c.id, c.name;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d6301f3d877f8f65",
+          "rows": [
+            ["Seq Scan on customers c (actual rows=133.00 loops=1)"],
+            ["  Filter: (city = 'Berlin'::text)"],
+            ["  Rows Removed by Filter: 1867"],
+            ["  Buffers: shared hit=10956 read=107"],
+            ["  SubPlan 1"],
+            ["    ->  Aggregate (actual rows=1.00 loops=133)"],
+            ["          Buffers: shared hit=10956 read=83"],
+            ["          ->  Seq Scan on orders o (actual rows=4.83 loops=133)"],
+            ["                Filter: (customer_id = c.id)"],
+            ["                Rows Removed by Filter: 9995"],
+            ["                Buffers: shared hit=10956 read=83"],
+            ["Planning:"],
+            ["  Buffers: shared hit=65 read=8 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "bd3612c8dd8b7bf1",
+          "rows": [
+            ["HashAggregate (actual rows=133.00 loops=1)"],
+            ["  Group Key: c.id"],
+            ["  Batches: 1  Memory Usage: 32kB"],
+            ["  Buffers: shared hit=107"],
+            ["  ->  Hash Right Join (actual rows=648.00 loops=1)"],
+            ["        Hash Cond: (o.customer_id = c.id)"],
+            ["        Buffers: shared hit=107"],
+            ["        ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+            ["              Buffers: shared hit=83"],
+            ["        ->  Hash (actual rows=133.00 loops=1)"],
+            ["              Buckets: 1024  Batches: 1  Memory Usage: 10kB"],
+            ["              Buffers: shared hit=24"],
+            ["              ->  Seq Scan on customers c (actual rows=133.00 loops=1)"],
+            ["                    Filter: (city = 'Berlin'::text)"],
+            ["                    Rows Removed by Filter: 1867"],
+            ["                    Buffers: shared hit=24"],
+            ["Planning:"],
+            ["  Buffers: shared hit=34 read=5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "81da5521bb10f602": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, status FROM orders ORDER BY id OFFSET 9000 LIMIT 20;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, status FROM orders WHERE id > 9000 ORDER BY id LIMIT 20;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "54369e880fab74db",
+          "rows": [
+            ["Limit (actual rows=20.00 loops=1)"],
+            ["  Buffers: shared read=102"],
+            ["  ->  Index Scan using orders_pkey on orders (actual rows=9020.00 loops=1)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared read=102"],
+            ["Planning:"],
+            ["  Buffers: shared hit=29 read=4 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "0610e9c5041ee444",
+          "rows": [
+            ["Limit (actual rows=20.00 loops=1)"],
+            ["  Buffers: shared hit=4"],
+            ["  ->  Index Scan using orders_pkey on orders (actual rows=20.00 loops=1)"],
+            ["        Index Cond: (id > 9000)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=4"],
+            ["Planning:"],
+            ["  Buffers: shared hit=3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "90c929c75835cce7": {
+      "db": "shop",
+      "sql": "SET work_mem = '64kB';\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM customers WHERE id NOT IN (SELECT customer_id FROM orders);\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM customers AS c WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id);",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "add1b4bb32522a73",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared read=107, temp read=8356 written=18"],
+            ["  ->  Seq Scan on customers (actual rows=38.00 loops=1)"],
+            ["        Filter: (NOT (ANY (id = (SubPlan 1).col1)))"],
+            ["        Rows Removed by Filter: 1962"],
+            ["        Buffers: shared read=107, temp read=8356 written=18"],
+            ["        SubPlan 1"],
+            ["          ->  Materialize (actual rows=2278.08 loops=2000)"],
+            ["                Storage: Disk  Maximum Storage: 137kB"],
+            ["                Buffers: shared read=83, temp read=8356 written=18"],
+            ["                ->  Seq Scan on orders (actual rows=10000.00 loops=1)"],
+            ["                      Buffers: shared read=83"],
+            ["Planning:"],
+            ["  Buffers: shared hit=49 read=8 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ee73bd3294af6a27",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=107"],
+            ["  ->  Hash Right Anti Join (actual rows=38.00 loops=1)"],
+            ["        Hash Cond: (o.customer_id = c.id)"],
+            ["        Buffers: shared hit=107"],
+            ["        ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+            ["              Buffers: shared hit=83"],
+            ["        ->  Hash (actual rows=2000.00 loops=1)"],
+            ["              Buckets: 2048  Batches: 1  Memory Usage: 63kB"],
+            ["              Buffers: shared hit=24"],
+            ["              ->  Seq Scan on customers c (actual rows=2000.00 loops=1)"],
+            ["                    Buffers: shared hit=24"],
+            ["Planning:"],
+            ["  Buffers: shared hit=111 read=6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "40ddc32282e964c5": {
+      "db": "shop",
+      "sql": "SET work_mem = '64kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT order_id, line_no, unit_price FROM order_items ORDER BY unit_price DESC, order_id, line_no;\nSET work_mem = '8MB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT order_id, line_no, unit_price FROM order_items ORDER BY unit_price DESC, order_id, line_no;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "93fbc64575efd9b3",
+          "rows": [
+            ["Sort (actual rows=24942.00 loops=1)"],
+            ["  Sort Key: unit_price DESC, order_id, line_no"],
+            ["  Sort Method: external merge  Disk: 592kB"],
+            ["  ->  Seq Scan on order_items (actual rows=24942.00 loops=1)"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1e914ba1b0835f7f"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "344f7f0c20026937",
+          "rows": [
+            ["Sort (actual rows=24942.00 loops=1)"],
+            ["  Sort Key: unit_price DESC, order_id, line_no"],
+            ["  Sort Method: quicksort  Memory: 1292kB"],
+            ["  ->  Seq Scan on order_items (actual rows=24942.00 loops=1)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "daaa3d2e97847c1b": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nDELETE FROM customers WHERE id = 7;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT 1 FROM ONLY orders AS x WHERE customer_id = 7 FOR KEY SHARE OF x;\nCREATE INDEX orders_customer_id ON orders (customer_id);\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT 1 FROM ONLY orders AS x WHERE customer_id = 7 FOR KEY SHARE OF x;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e018ffd5b4a59b2a",
+          "rows": [
+            ["Delete on customers (actual rows=0.00 loops=1)"],
+            ["  ->  Index Scan using customers_pkey on customers (actual rows=1.00 loops=1)"],
+            ["        Index Cond: (id = 7)"],
+            ["        Index Searches: 1"],
+            ["Trigger for constraint orders_customer_id_fkey: calls=1"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "3d9e1466a4cf8d21",
+          "rows": [
+            ["LockRows (actual rows=0.00 loops=1)"],
+            ["  Buffers: shared hit=83"],
+            ["  ->  Seq Scan on orders x (actual rows=0.00 loops=1)"],
+            ["        Filter: (customer_id = 7)"],
+            ["        Rows Removed by Filter: 10000"],
+            ["        Buffers: shared hit=83"]
+          ]
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "146ab095df65ff29",
+          "rows": [
+            ["LockRows (actual rows=0.00 loops=1)"],
+            ["  Buffers: shared read=2"],
+            ["  ->  Bitmap Heap Scan on orders x (actual rows=0.00 loops=1)"],
+            ["        Recheck Cond: (customer_id = 7)"],
+            ["        Buffers: shared read=2"],
+            ["        ->  Bitmap Index Scan on orders_customer_id (actual rows=0.00 loops=1)"],
+            ["              Index Cond: (customer_id = 7)"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=15 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "47dad08f2b824f7e": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_customer_id ON orders (customer_id);\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.id FROM orders AS o JOIN customers AS c ON c.id = o.customer_id\nWHERE c.email = 'ada@example.com' OR o.id = 5000;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.id FROM orders AS o JOIN customers AS c ON c.id = o.customer_id WHERE c.email = 'ada@example.com'\nUNION\nSELECT o.id FROM orders AS o WHERE o.id = 5000;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "8f40cc97ba62c7ce",
+          "rows": [
+            ["Hash Join (actual rows=8.00 loops=1)"],
+            ["  Hash Cond: (o.customer_id = c.id)"],
+            ["  Join Filter: ((c.email = 'ada@example.com'::text) OR (o.id = 5000))"],
+            ["  Rows Removed by Join Filter: 9992"],
+            ["  Buffers: shared hit=83 read=24"],
+            ["  ->  Seq Scan on orders o (actual rows=10000.00 loops=1)"],
+            ["        Buffers: shared hit=83"],
+            ["  ->  Hash (actual rows=2000.00 loops=1)"],
+            ["        Buckets: 2048  Batches: 1  Memory Usage: 116kB"],
+            ["        Buffers: shared read=24"],
+            ["        ->  Seq Scan on customers c (actual rows=2000.00 loops=1)"],
+            ["              Buffers: shared read=24"],
+            ["Planning:"],
+            ["  Buffers: shared hit=162 read=15 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b03e7179e18cba4a",
+          "rows": [
+            ["Unique (actual rows=8.00 loops=1)"],
+            ["  Buffers: shared hit=11 read=4"],
+            ["  ->  Sort (actual rows=8.00 loops=1)"],
+            ["        Sort Key: o.id"],
+            ["        Sort Method: quicksort  Memory: 17kB"],
+            ["        Buffers: shared hit=11 read=4"],
+            ["        ->  Append (actual rows=8.00 loops=1)"],
+            ["              Buffers: shared hit=11 read=4"],
+            ["              ->  Nested Loop (actual rows=7.00 loops=1)"],
+            ["                    Buffers: shared hit=10 read=2"],
+            ["                    ->  Index Scan using customers_email_key on customers c (actual rows=1.00 loops=1)"],
+            ["                          Index Cond: (email = 'ada@example.com'::text)"],
+            ["                          Index Searches: 1"],
+            ["                          Buffers: shared hit=1 read=2"],
+            ["                    ->  Bitmap Heap Scan on orders o (actual rows=7.00 loops=1)"],
+            ["                          Recheck Cond: (customer_id = c.id)"],
+            ["                          Heap Blocks: exact=7"],
+            ["                          Buffers: shared hit=9"],
+            ["                          ->  Bitmap Index Scan on orders_customer_id (actual rows=7.00 loops=1)"],
+            ["                                Index Cond: (customer_id = c.id)"],
+            ["                                Index Searches: 1"],
+            ["                                Buffers: shared hit=2"],
+            ["              ->  Index Only Scan using orders_pkey on orders o_1 (actual rows=1.00 loops=1)"],
+            ["                    Index Cond: (id = 5000)"],
+            ["                    Heap Fetches: 0"],
+            ["                    Index Searches: 1"],
+            ["                    Buffers: shared hit=1 read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=12"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

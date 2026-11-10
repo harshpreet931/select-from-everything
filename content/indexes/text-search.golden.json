@@ -1,0 +1,310 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "ce25cda5a052e0f8": {
+      "db": "empty",
+      "sql": "SELECT to_tsvector('english', 'The left-handed teapot pours the other way.') AS doc;\nSELECT to_tsquery('english', 'teapots & pouring') AS query;\nSELECT to_tsvector('english', 'The left-handed teapot pours the other way.')\n       @@ to_tsquery('english', 'teapots & pouring') AS matches;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["doc", "tsvector", 3614]
+          ],
+          "rowCount": 1,
+          "digest": "85febdf7ff38e8a5",
+          "rows": [
+            ["'hand':4 'left':3 'left-hand':2 'pour':6 'teapot':5 'way':9"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["query", "tsquery", 3615]
+          ],
+          "rowCount": 1,
+          "digest": "4f8bf60ac7b35c1e",
+          "rows": [
+            ["'teapot' & 'pour'"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["matches", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "d67ea4005a2cff48",
+          "rows": [
+            ["t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b4e45c95a5d9bbad": {
+      "db": "empty",
+      "sql": "SELECT websearch_to_tsquery('english', '\"left handed\" teapot -cup') AS query;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["query", "tsquery", 3615]
+          ],
+          "rowCount": 1,
+          "digest": "f80f35e6af60b54d",
+          "rows": [
+            ["'left' <-> 'hand' & 'teapot' & !'cup'"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bd7ab5a5a35c657a": {
+      "db": "shop",
+      "sql": "CREATE TABLE reviews (id int PRIMARY KEY, product_id int NOT NULL, body text NOT NULL);\nINSERT INTO reviews\nSELECT i, p.id,\n       'the ' || p.name || ' ' || (ARRAY['arrived quickly and works well', 'broke after a week', 'is smaller than it looks',\n         'is great value for the price', 'has a handle that wobbles', 'pours the wrong way', 'stopped working after a month',\n         'is exactly as described', 'is too heavy to carry', 'makes a terrible noise', 'was a gift and they loved it',\n         'feels cheap but does the job'])[1 + ((hashint4(i)::bigint + 2147483648) % 12)::int]\nFROM generate_series(1, 20000) AS i\nJOIN products AS p ON p.id = 1 + (i * 37) % 199\nORDER BY i;\nALTER TABLE reviews ADD COLUMN doc tsvector GENERATED ALWAYS AS (to_tsvector('english', body)) STORED;\nCREATE INDEX reviews_doc ON reviews USING gin (doc);\nVACUUM ANALYZE reviews;\nSELECT id, body FROM reviews ORDER BY id LIMIT 3;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 20000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 20000,
+          "digest": "fd5ccf5e58c66eff"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "473cf6d7179df0b7"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bcd692886675ef7c"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["body", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "26d23f88b88641e0",
+          "rows": [
+            ["1", "the spare trowel stopped working after a month"],
+            ["2", "the heavy lantern stopped working after a month"],
+            ["3", "the smart speaker is exactly as described"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3780da83be635e3f": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, body FROM reviews WHERE doc @@ to_tsquery('english', 'whisk & wobble');",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ec7e895215ddf156",
+          "rows": [
+            ["Bitmap Heap Scan on reviews (actual rows=38.00 loops=1)"],
+            ["  Recheck Cond: (doc @@ '''whisk'' & ''wobbl'''::tsquery)"],
+            ["  Heap Blocks: exact=37"],
+            ["  Buffers: shared hit=42"],
+            ["  ->  Bitmap Index Scan on reviews_doc (actual rows=38.00 loops=1)"],
+            ["        Index Cond: (doc @@ '''whisk'' & ''wobbl'''::tsquery)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared hit=5"],
+            ["Planning:"],
+            ["  Buffers: shared hit=9 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7b500b008e8abf75": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS english FROM reviews WHERE doc @@ to_tsquery('english', 'wobbles');\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT count(*) FROM reviews WHERE doc @@ to_tsquery('simple', 'wobbles');",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["english", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "587306bf8eedc3fa",
+          "rows": [
+            ["1605"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "affd1d4acbe1438e",
+          "rows": [
+            ["Aggregate (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=3"],
+            ["  ->  Bitmap Heap Scan on reviews (actual rows=0.00 loops=1)"],
+            ["        Recheck Cond: (doc @@ '''wobbles'''::tsquery)"],
+            ["        Buffers: shared hit=3"],
+            ["        ->  Bitmap Index Scan on reviews_doc (actual rows=0.00 loops=1)"],
+            ["              Index Cond: (doc @@ '''wobbles'''::tsquery)"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared hit=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=10"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d307c58bda43b5bc": {
+      "db": "shop",
+      "sql": "SELECT id, body, round(ts_rank(doc, q)::numeric, 4) AS rank\nFROM reviews, to_tsquery('english', 'whisk | wobble') AS q\nWHERE doc @@ q\nORDER BY rank DESC, id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["body", "text", 25],
+            ["rank", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "83962e63c2d74a03",
+          "rows": [
+            ["165", "the heavy whisk has a handle that wobbles", "0.0608"],
+            ["394", "the compact whisk has a handle that wobbles", "0.0608"],
+            ["792", "the compact whisk has a handle that wobbles", "0.0608"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "30a8a107c59c888f": {
+      "db": "shop",
+      "sql": "SELECT show_trgm('whisk') AS trigrams;\nSELECT id, name, round(similarity(name, 'larje wisk')::numeric, 3) AS similarity\nFROM products\nWHERE name % 'larje wisk'\nORDER BY similarity DESC, id;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["trigrams", "text[]", 1009]
+          ],
+          "rowCount": 1,
+          "digest": "1b9fb2406e486452",
+          "rows": [
+            ["{\"  w\",\" wh\",his,isk,\"sk \",whi}"]
+          ]
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["similarity", "numeric", 1700]
+          ],
+          "rowCount": 2,
+          "digest": "4dfaf5374619f456",
+          "rows": [
+            ["9", "large whisk", "0.353"],
+            ["19", "large whisk", "0.353"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ed5c4984f4e15590": {
+      "db": "shop",
+      "sql": "CREATE INDEX products_name_trgm ON products USING gin (name gin_trgm_ops);\nSET enable_seqscan = off;\nEXPLAIN (COSTS OFF) SELECT name FROM products WHERE name LIKE '%whisk%';\nEXPLAIN (COSTS OFF) SELECT name FROM products WHERE name ILIKE '%WHISK%';",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "1ebea8e418bdee72",
+          "rows": [
+            ["Bitmap Heap Scan on products"],
+            ["  Recheck Cond: (name ~~ '%whisk%'::text)"],
+            ["  ->  Bitmap Index Scan on products_name_trgm"],
+            ["        Index Cond: (name ~~ '%whisk%'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a55470a2047a0b65",
+          "rows": [
+            ["Bitmap Heap Scan on products"],
+            ["  Recheck Cond: (name ~~* '%WHISK%'::text)"],
+            ["  ->  Bitmap Index Scan on products_name_trgm"],
+            ["        Index Cond: (name ~~* '%WHISK%'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

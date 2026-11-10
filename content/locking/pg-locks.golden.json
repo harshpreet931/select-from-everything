@@ -1,0 +1,138 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "eb353f3905880acc": {
+      "db": "empty",
+      "sql": "SELECT column_name, data_type\nFROM information_schema.columns\nWHERE table_schema = 'pg_catalog' AND table_name = 'pg_locks'\nORDER BY ordinal_position;",
+      "statements": [
+        {
+          "tag": "SELECT 16",
+          "command": "SELECT",
+          "columns": [
+            ["column_name", "name", 19],
+            ["data_type", "varchar", 1043]
+          ],
+          "rowCount": 16,
+          "digest": "cfe9019985f672cd",
+          "rows": [
+            ["locktype", "text"],
+            ["database", "oid"],
+            ["relation", "oid"],
+            ["page", "integer"],
+            ["tuple", "smallint"],
+            ["virtualxid", "text"],
+            ["transactionid", "xid"],
+            ["classid", "oid"],
+            ["objid", "oid"],
+            ["objsubid", "smallint"],
+            ["virtualtransaction", "text"],
+            ["pid", "integer"],
+            ["mode", "text"],
+            ["granted", "boolean"],
+            ["fastpath", "boolean"],
+            ["waitstart", "timestamp with time zone"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5da65ccd82262f72": {
+      "db": "empty",
+      "sql": "CREATE TABLE accounts (id int PRIMARY KEY, balance numeric(12,2) NOT NULL);\nINSERT INTO accounts VALUES (1, 100.00);\nBEGIN;\nUPDATE accounts SET balance = balance - 10 WHERE id = 1;\nSELECT locktype, relation::regclass, transactionid, virtualxid, mode, granted, fastpath\nFROM pg_locks\nWHERE pid = pg_backend_pid() AND relation IS DISTINCT FROM 'pg_locks'::regclass\nORDER BY locktype, relation::regclass::text;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "982af26933a33534"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["relation", "regclass", 2205],
+            ["transactionid", "xid", 28],
+            ["virtualxid", "text", 25],
+            ["mode", "text", 25],
+            ["granted", "bool", 16],
+            ["fastpath", "bool", 16]
+          ],
+          "rowCount": 4,
+          "digest": "a3474267ca9822ae",
+          "rows": [
+            ["relation", "accounts", null, null, "RowExclusiveLock", "t", "t"],
+            ["relation", "accounts_pkey", null, null, "RowExclusiveLock", "t", "t"],
+            ["transactionid", null, "754", null, "ExclusiveLock", "t", "f"],
+            ["virtualxid", null, null, "0/5", "ExclusiveLock", "t", "t"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a9a261271328ed1"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "94332c39240d3d3c": {
+      "db": "empty",
+      "sql": "SHOW log_lock_waits;\nSHOW deadlock_timeout;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["log_lock_waits", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "a8208ff57073ec64",
+          "rows": [
+            ["off"]
+          ]
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["deadlock_timeout", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "bf41cd418c2b2352",
+          "rows": [
+            ["1s"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

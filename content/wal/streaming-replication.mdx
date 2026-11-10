@@ -1,0 +1,203 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* pgtrace has no two-server mode, so the replication output here is recorded: a bash script in
+    the writer's scratchpad started a throwaway postgres 18.6 primary on this mac, cloned a
+    standby from it with pg_basebackup -R, and drove both with psql 18.6 (input echoed with -a).
+    the slot block is native (sql-check's support list treats slot functions as needing a second server). */}
+
+export const standbyLog = `LOG:  entering standby mode
+LOG:  redo starts at 0/2000028
+LOG:  consistent recovery state reached at 0/2000120
+LOG:  database system is ready to accept read-only connections
+LOG:  started streaming WAL from primary at 0/3000000 on timeline 1`;
+
+export const lag = {
+  columns: [{ name: "application_name", type: "name" }, { name: "sent_lsn", type: "pg_lsn" }, { name: "flush_lsn", type: "pg_lsn" }, { name: "replay_lsn", type: "pg_lsn" }, { name: "replay_behind_bytes", type: "numeric" }],
+  rows: [["standby1", "0/3000238", "0/3000238", "0/30001C8", "112"]],
+};
+
+<InShort>
+a **standby** is a server stuck in recovery on purpose. the primary's **walsender** streams WAL to the standby's **walreceiver** as it's written, and the standby replays it, the same redo as after a crash, forever. it can serve reads meanwhile (**hot standby**). `pg_stat_replication` shows how far it has **written**, **flushed** and **replayed**. a **replication slot** makes the primary keep WAL until the standby has it, and `synchronous_standby_names` makes COMMIT wait for the standby too.
+</InShort>
+
+## the picture
+
+you know how [crash recovery](/learn/wal/crash-recovery) replays WAL until it runs out, then opens for business? a standby is the same thing, except it never runs out: whenever it reaches the end of the WAL, more arrives over the network.
+
+think of a court stenographer's transcript (the WAL) being faxed, page by page, to a second courtroom that acts out every line as it arrives (replay). people can sit in the second courtroom and watch (read-only queries). they can't speak (no writes). and the second courtroom is always a little behind, by however long the fax and the acting take (lag).
+
+<Figure caption={<>one change, from a primary backend to a read on the standby. hover a stage. write, flush and replay are the three positions the primary can see.</>}>
+<Flow
+  stages={[
+    { label: "primary backend", sub: "COMMIT", note: "the transaction's WAL is flushed locally, as always." },
+    { label: "walsender", sub: "on the primary", note: "one process per standby. it reads WAL from pg_wal or wal_buffers and sends it as soon as it's flushed." },
+    { label: "walreceiver", sub: "write, flush", note: "writes the WAL into the standby's own pg_wal (write_lsn), then fsyncs it (flush_lsn), and reports both back." },
+    { label: "startup process", sub: "replay", note: "the redo loop from crash recovery, never finishing. replay_lsn is how far it has applied." },
+    { label: "hot standby", sub: "read-only queries", note: "sees the data as of replay_lsn. writes are refused." },
+  ]}
+/>
+</Figure>
+
+## making one
+
+the browser has one server, so it can't stream to anyone. it is a primary, though, with nobody connected:
+
+```sql run db=lab
+SELECT pg_is_in_recovery() AS standby, (SELECT count(*) FROM pg_stat_replication) AS standbys;
+SELECT name, setting FROM pg_settings
+WHERE name IN ('wal_level', 'max_wal_senders', 'max_replication_slots', 'hot_standby')
+ORDER BY name;
+```
+
+`wal_level = replica` (the default) is enough for streaming. everything else is a throwaway primary and standby on this mac. `pg_basebackup -R` copies the primary and writes the standby's config; `-C -S standby1` creates a **replication slot** for it on the primary:
+
+```bash
+$ pg_basebackup -h /tmp/w17prim2 -D $STANDBY -R -C -S standby1 --checkpoint=fast
+$ cat $STANDBY/postgresql.auto.conf
+primary_conninfo = 'user=postgres … host=''/tmp/w17prim2'' port=5495 …'
+primary_slot_name = 'standby1'
+$ ls $STANDBY/standby.signal
+$STANDBY/standby.signal
+$ pg_ctl -D $STANDBY start
+```
+
+<Provenance recorded="pg_basebackup 18.6 and the shell on this mac; the connection string is cut where it lists libpq defaults" />
+
+`standby.signal` is what makes it a standby: on start it enters recovery and stays there.
+
+<Figure caption={<>the standby's log as it starts: crash-recovery-style replay from the backup's redo pointer, then "ready to accept read-only connections", then streaming. it never says "redo done".</>}>
+<SqlPanel code={standbyLog} lang="text" nolines file="standby log" />
+<Provenance recorded="the standby's server log, same run, lines about the base backup left out" />
+</Figure>
+
+an insert on the primary shows up on the standby almost at once, and the standby refuses to write:
+
+```psql
+-- on the standby
+SELECT pg_is_in_recovery();
+ pg_is_in_recovery
+-------------------
+ t
+(1 row)
+
+SELECT id, owner, balance FROM accounts ORDER BY id;
+ id | owner | balance
+----+-------+---------
+  1 | alice |  100.00
+  2 | bob   |  100.00
+  3 | carol |   50.00
+(3 rows)
+
+INSERT INTO accounts VALUES (4, 'dave', 10.00);
+ERROR:  cannot execute INSERT in a read-only transaction
+```
+
+<Provenance recorded="psql 18.6 on the standby, same run (the -- line is mine)" />
+
+## lag
+
+replication is asynchronous by default: the primary commits, returns, and the WAL reaches the standby a moment later. to make the moment visible, this run paused replay on the standby (`pg_wal_replay_pause()`), then took 25.00 from alice on the primary:
+
+<Figure caption={<>pg_stat_replication on the primary while the standby's replay is paused. the WAL has arrived and been flushed there; it just hasn't been applied.</>}>
+<ResultTable columns={lag.columns} rows={lag.rows} />
+<Provenance recorded="psql 18.6 on the primary, same run" />
+</Figure>
+
+`sent_lsn` and `flush_lsn` are equal: the standby has the update on disk. `replay_lsn` is 112 bytes behind, and a query on the standby still says alice has 100.00. after `pg_wal_replay_resume()`, it says 75.00. on a live system the three positions are usually within milliseconds of each other, and `write_lag`, `flush_lag` and `replay_lag` in the same view give it in time instead of bytes. a read sent to a standby right after a write on the primary can come back stale: [read replicas](/learn/scale/read-replicas) is about living with that.
+
+<Predict question="the standby crashes and stays down for a day. the primary has a replication slot for it. what happens on the primary?" options={["nothing", "pg_wal keeps growing", "the primary stops accepting writes"]} answer={1}>
+```sql
+-- primary: slot standby1, standby offline since yesterday
+SELECT slot_name, active, restart_lsn FROM pg_replication_slots;
+```
+<Explain>
+pg_wal keeps growing. the slot promises the standby every segment from its restart_lsn on, so no checkpoint may recycle them. a day of WAL on a busy primary can fill the disk, and a primary with a full pg_wal stops. `max_slot_wal_keep_size` caps it (the slot is invalidated past the limit, and the standby has to be re-cloned), and since postgres 18 `idle_replication_slot_timeout` can invalidate slots nobody has used for a while.
+</Explain>
+</Predict>
+
+a slot is just a row in pg_replication_slots with a restart_lsn. one created with `immediately_reserve = true` starts holding WAL right away, before any standby has connected (a native block: it's cluster-wide state, so it drops the slot again at the end):
+
+```sql native db=lab
+SELECT slot_name FROM pg_create_physical_replication_slot('standby1', true);
+UPDATE notes SET body = 'x' WHERE id <= 200;
+SELECT slot_name, active, wal_status,
+       pg_wal_lsn_diff(pg_current_wal_insert_lsn(), restart_lsn) > 0 AS holding_wal
+FROM pg_replication_slots;
+SELECT pg_drop_replication_slot('standby1');
+```
+
+## hot standby conflicts
+
+a standby's queries see an old snapshot, but replay keeps applying the primary's changes, including VACUUM removing row versions that snapshot might still need. replay can wait for the query (up to `max_standby_streaming_delay`, 30 s by default; this run set 2 s) or cancel it. this standby session opened a repeatable read transaction and slept while the primary deleted a row and vacuumed:
+
+```psql
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+BEGIN
+SELECT count(*) FROM accounts;
+ count
+-------
+     3
+(1 row)
+
+SELECT pg_sleep(6);
+ERROR:  canceling statement due to conflict with recovery
+DETAIL:  User query might have needed to see row versions that must be removed.
+```
+
+<Provenance recorded="psql 18.6 on the standby, max_standby_streaming_delay = 2s, while the primary ran DELETE and VACUUM" />
+
+the knobs pull in opposite directions: a longer delay lets standby queries finish but lets replay fall behind; `hot_standby_feedback = on` tells the primary which rows the standby still needs, so VACUUM on the primary leaves them, which avoids the cancel and brings bloat to the primary instead.
+
+## synchronous replicas
+
+with `synchronous_standby_names` naming a standby, COMMIT waits for it too, at the level `synchronous_commit` asks for ([what COMMIT waits for](/learn/wal/commit-path)):
+
+| synchronous_commit | COMMIT waits until the standby has | pg_stat_replication column |
+| --- | --- | --- |
+| `remote_write` | written it (in the OS cache) | write_lsn |
+| `on` | flushed it to disk | flush_lsn |
+| `remote_apply` | replayed it (visible to its queries) | replay_lsn |
+
+the catch is what happens when the synchronous standby goes away. this run made `standby1` synchronous, stopped it, and inserted a row on the primary. the INSERT didn't return. a second session found it waiting, and cancelled it:
+
+```psql
+-- another session, 3 s later
+SELECT wait_event_type, wait_event, state, query FROM pg_stat_activity WHERE wait_event = 'SyncRep';
+ wait_event_type | wait_event | state  |                      query
+-----------------+------------+--------+--------------------------------------------------
+ IPC             | SyncRep    | active | INSERT INTO accounts VALUES (6, 'frank', 30.00);
+(1 row)
+
+SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE wait_event = 'SyncRep';
+ pg_cancel_backend
+-------------------
+ t
+(1 row)
+
+-- the waiting session
+INSERT INTO accounts VALUES (6, 'frank', 30.00);
+WARNING:  canceling wait for synchronous replication due to user request
+DETAIL:  The transaction has already committed locally, but might not have been replicated to the standby.
+INSERT 0 1
+```
+
+<Provenance recorded="psql 18.6 on the primary, two sessions, same run (the -- lines are mine)" />
+
+read that DETAIL twice. the row is committed on the primary and visible; it just isn't guaranteed on the standby. synchronous replication doesn't mean "never committed unless replicated": it means "COMMIT doesn't return until replicated". listing two standbys (`FIRST 1 (a, b)` or `ANY 1 (a, b)`) keeps one dead standby from stopping all writes.
+
+<Gotcha title="a standby is a copy, not a history">
+everything the primary does, the standby does a moment later, including `DROP TABLE` and the DELETE without a WHERE. replication protects against losing a machine. for losing data to a bad statement you need [point-in-time recovery](/learn/wal/backups-and-pitr), or a standby deliberately held back with `recovery_min_apply_delay`.
+</Gotcha>
+
+<Interview q="how does postgres streaming replication work, and what does synchronous replication guarantee?">
+a standby is a server in continuous recovery. it connects to the primary with a replication connection, the primary's walsender streams WAL as it's flushed, the standby's walreceiver writes and flushes it locally, and the startup process replays it. with hot_standby on (the default) it answers read-only queries as of its replay position. pg_stat_replication on the primary shows sent, write, flush and replay LSNs and the corresponding lag times. a replication slot makes the primary retain WAL until the standby confirms it, at the risk of filling pg_wal if the standby disappears. with synchronous_standby_names set, commit waits for the standby to write, flush or apply the WAL depending on synchronous_commit; if the standby is unreachable, commits hang, and a cancelled wait leaves the transaction committed locally but not confirmed on the standby. bonus point: query cancels on the standby ("conflict with recovery") are tuned with max_standby_streaming_delay and hot_standby_feedback.
+</Interview>
+
+<Keylines>
+- a standby is recovery that never ends: walsender streams WAL, walreceiver writes it, startup replays it.
+- pg_stat_replication: sent, write, flush, replay. the gaps between them are lag.
+- a replication slot keeps WAL until the standby has it. an abandoned slot fills pg_wal.
+- standby queries can be cancelled by replay ("conflict with recovery").
+- synchronous replication makes COMMIT wait for the standby. a dead sync standby blocks commits.
+- a replica copies mistakes too. it isn't a backup.
+</Keylines>

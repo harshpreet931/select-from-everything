@@ -1,0 +1,228 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "587816b765b9d1ec": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT * FROM customers WHERE city = 'Stockholm' AND country = 'SE';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2072b8b4322b2bcb",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..54.00 rows=1 width=61) (actual rows=35.00 loops=1)"],
+            ["  Filter: ((city = 'Stockholm'::text) AND (country = 'SE'::bpchar))"],
+            ["  Rows Removed by Filter: 1965"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "081afd532d05e378": {
+      "db": "shop",
+      "sql": "CREATE STATISTICS customers_city_country (dependencies) ON city, country FROM customers;\nANALYZE customers;\nSELECT dependencies FROM pg_stats_ext WHERE statistics_name = 'customers_city_country';\nEXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT * FROM customers WHERE city = 'Stockholm' AND country = 'SE';",
+      "statements": [
+        {
+          "tag": "CREATE STATISTICS",
+          "command": "CREATE STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9dcd404da219f63e"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["dependencies", "pg_dependencies", 3402]
+          ],
+          "rowCount": 1,
+          "digest": "1adaa86e43b2314e",
+          "rows": [
+            ["{\"4 => 5\": 0.972500, \"5 => 4\": 0.093000}"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "177ec2354e02147c",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..54.00 rows=34 width=61) (actual rows=35.00 loops=1)"],
+            ["  Filter: ((city = 'Stockholm'::text) AND (country = 'SE'::bpchar))"],
+            ["  Rows Removed by Filter: 1965"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c2d193d25e85874a": {
+      "db": "shop",
+      "sql": "DROP STATISTICS customers_city_country;\nCREATE STATISTICS customers_city_country (mcv) ON city, country FROM customers;\nANALYZE customers;\nSELECT m.values, m.frequency\nFROM pg_statistic_ext AS s\nJOIN pg_statistic_ext_data AS d ON d.stxoid = s.oid,\n     pg_mcv_list_items(d.stxdmcv) AS m\nWHERE s.stxname = 'customers_city_country'\nORDER BY m.frequency DESC, m.index\nLIMIT 5;\nEXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT * FROM customers WHERE city = 'Paris' AND country = 'US';",
+      "statements": [
+        {
+          "tag": "DROP STATISTICS",
+          "command": "DROP STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e4e39dadd9920871"
+        },
+        {
+          "tag": "CREATE STATISTICS",
+          "command": "CREATE STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b5b404511314961f"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["values", "text[]", 1009],
+            ["frequency", "float8", 701]
+          ],
+          "rowCount": 5,
+          "digest": "e038b80b9cd4efec",
+          "rows": [
+            ["{\"New York\",US}", "0.1885"],
+            ["{London,GB}", "0.0795"],
+            ["{Berlin,DE}", "0.0665"],
+            ["{Mumbai,IN}", "0.0505"],
+            ["{Chicago,US}", "0.048"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "6b99b1dac09059fb",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..54.00 rows=1 width=61) (actual rows=0.00 loops=1)"],
+            ["  Filter: ((city = 'Paris'::text) AND (country = 'US'::bpchar))"],
+            ["  Rows Removed by Filter: 2000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7040cdedbb6f89ac": {
+      "db": "shop",
+      "sql": "DROP STATISTICS customers_city_country;\nCREATE STATISTICS customers_city_country (ndistinct) ON city, country FROM customers;\nANALYZE customers;\nEXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF)\nSELECT city, country, count(*) FROM customers GROUP BY city, country;",
+      "statements": [
+        {
+          "tag": "DROP STATISTICS",
+          "command": "DROP STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e4e39dadd9920871"
+        },
+        {
+          "tag": "CREATE STATISTICS",
+          "command": "CREATE STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b5b404511314961f"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "4a66cd2b3bdce9b0",
+          "rows": [
+            ["HashAggregate  (cost=59.00..59.41 rows=41 width=18) (actual rows=41.00 loops=1)"],
+            ["  Group Key: city, country"],
+            ["  Batches: 1  Memory Usage: 32kB"],
+            ["  ->  Seq Scan on customers  (cost=0.00..44.00 rows=2000 width=10) (actual rows=2000.00 loops=1)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d807a6f89985eae2": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT * FROM customers WHERE lower(city) = 'paris';\nCREATE STATISTICS customers_city_lower ON (lower(city)) FROM customers;\nANALYZE customers;\nEXPLAIN SELECT * FROM customers WHERE lower(city) = 'paris';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "f79350fcacc586d9",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..54.00 rows=10 width=61)"],
+            ["  Filter: (lower(city) = 'paris'::text)"]
+          ]
+        },
+        {
+          "tag": "CREATE STATISTICS",
+          "command": "CREATE STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b5b404511314961f"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5d3ee6dff348024d",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..54.00 rows=66 width=61)"],
+            ["  Filter: (lower(city) = 'paris'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

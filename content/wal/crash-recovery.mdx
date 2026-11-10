@@ -1,0 +1,147 @@
+import { WalRecovery } from "@/components/figures/wal/WalRecovery";
+import { lsn } from "@/components/figures/kit/format";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import crash from "./traces/crash-recovery.pgtrace.json";
+import skip from "./traces/crash-skip.pgtrace.json";
+import asyncCommit from "./traces/async-commit.pgtrace.json";
+
+{/* every figure here reads a capture from a real postgres 18.6 server: traces/crash-recovery
+    (insert, commit, kill, restart), traces/crash-skip (the same with full_page_writes off and
+    the page written out mid-way) and traces/async-commit (synchronous_commit off for one session).
+    numbers in the prose are read from those files. */}
+
+export const t2ins = crash.steps[2].wal.records[0];
+export const t1ins = crash.steps[4].wal.records[0];
+export const ctl = crash.steps[6].control;
+export const crashLog = crash.steps[7].log.filter((l) => /interrupted|not properly|redo|invalid record|end-of-recovery|ready/.test(l)).join("\n").replaceAll("<time>", "…");
+export const onDisk = crash.steps[6].wal.records.length;
+export const skipDisk = skip.steps[2].heap.notes[0].lsn;
+export const skipRec = skip.steps[1].wal.records[0];
+export const lostBytes = asyncCommit.steps[3].wal.insert - asyncCommit.steps[3].wal.flush;
+export const ctlRows = ["Database cluster state", "Latest checkpoint location", "Latest checkpoint's REDO location", "Latest checkpoint's TimeLineID", "Latest checkpoint's full_page_writes", "Latest checkpoint's NextXID"].map((k) => [k, ctl[k]]);
+
+<InShort>
+when postgres starts after a crash, it reads **pg_control**, finds the last checkpoint's **redo pointer**, and replays the WAL from there to the end, record by record. a page whose **LSN** says it already has a change gets skipped. there is no undo: a transaction with no commit record in the log just counts as **aborted**, and its rows stay on the page, invisible.
+</InShort>
+
+## the picture
+
+you know how postgres promises your COMMIT survives a crash, even though the table's files hadn't been touched when COMMIT returned? that only works if something puts the pages back afterwards. that something is recovery, and it runs every time the server starts after not shutting down cleanly.
+
+think of a restaurant where the cook writes every order on the rail before cooking it (the WAL), and the dining room only gets a full inventory count once an hour (a checkpoint). the power goes out mid-service. nobody remembers what was on the stove. but the rail survives, so the next morning the cook finds the last inventory count, and re-cooks every ticket after it, skipping any plate that's already on a table (a page that already has the change). tickets nobody paid for get thrown out by the cashier (the commit log), not un-cooked.
+
+<Figure caption={<>what a restart after a crash does, in order. hover a stage. only the middle one takes real time, and how long depends on how much WAL there is since the last checkpoint.</>}>
+<Flow
+  stages={[
+    { label: "pg_control", sub: "global/pg_control", note: "8 KB of cluster state. it says the cluster was 'in production' when it died, and where the last checkpoint's redo pointer is." },
+    { label: "find the redo pointer", sub: "a WAL position", note: "everything the WAL describes before this point was on disk when that checkpoint finished. recovery starts here." },
+    { label: "redo", sub: "the startup process", note: "read each record, apply it to its page unless the page already has it. commit records go into pg_xact." },
+    { label: "end of WAL", sub: "a record that doesn't parse", note: "an empty or half-written record is where the log ends. that's normal, not damage." },
+    { label: "checkpoint", sub: "end-of-recovery", note: "write all the replayed pages out, so the next crash doesn't have to replay this again." },
+    { label: "open", sub: "ready to accept connections", note: "only now can anyone connect." },
+  ]}
+/>
+</Figure>
+
+## kill it mid-sentence
+
+the browser engine can't crash and restart, so this is a real postgres 18.6 server, killed with `pg_ctl stop -m immediate` (every process dies, no checkpoint, nothing flushed on the way out) and started again. the table is `notes`, one page. after a CHECKPOINT, T2 inserts a row and never commits. T1 inserts a row and commits. then the kill.
+
+<Figure wide caption={<>step through. before the crash, records past the <C k="live">flush line</C> are only in memory (dashed), and the page's pd_lsn in memory runs ahead of the one on disk (the <C k="accent">dirty</C> corner). at the crash, everything in memory is gone. then redo replays the WAL that was on disk, one record at a time (<C k="hot">hot</C>), while the page's LSN climbs back. switch captures for a lost asynchronous commit and for a record that redo skips.</>}>
+<WalRecovery
+  variants={[
+    { key: "crash", label: "the crash", trace: crash, rel: "notes" },
+    { key: "async", label: "synchronous_commit = off", trace: asyncCommit, rel: "notes" },
+    { key: "skip", label: "full_page_writes = off", trace: skip, rel: "notes" },
+  ]}
+/>
+</Figure>
+
+three things to notice in the first capture.
+
+**the WAL went first.** T2's insert is the first change to the page since the checkpoint, so its record is {t2ins.len} bytes, {t2ins.fpiLen} of them a copy of the page ([full-page writes](/learn/wal/full-page-writes) explains why). T1's insert into the same page is {t1ins.len} bytes, just the new tuple. neither touched the table's file. at T1's COMMIT, postgres flushed the WAL up to the end of T1's commit record, which drags T2's records to disk with it: the log is one sequence, and you can only flush a prefix of it ([the write-ahead rule](/learn/wal/write-ahead-rule)).
+
+**the file was stale and that was fine.** at the crash, the page on disk still said pd_lsn {lsn(crash.steps[0].heap.notes[0].lsn)}, from before the checkpoint. the {onDisk} records on disk from the redo pointer are everything recovery needs to bring it forward.
+
+**redo restored the page from its image.** the first record for the page carries a full-page image, so redo overwrites the page with it and never even looks at what the file said. the next record lands on top. then T1's commit record marks its xid committed in [pg_xact](/learn/mvcc/commit-log-and-hint-bits).
+
+here's what the server said about it. postgres 18.6's own words, from the restart:
+
+<Figure caption={<>the restart's log. "invalid record length ... got 0" is how the end of the WAL looks: the next record slot is zeros. it is not an error.</>}>
+<SqlPanel code={crashLog} lang="text" nolines file="server log" />
+<Provenance trace={{ engine: crash.engine, scenario: crash.scenario }} />
+</Figure>
+
+## where redo starts
+
+recovery doesn't scan the whole log. it reads `global/pg_control`, a small file the checkpointer rewrites at the end of every checkpoint, and starts from the redo pointer it names. this is pg_control as `pg_controldata` read it, a moment after the kill:
+
+<Figure caption={<>pg_control at the crash. "in production" means nobody shut it down cleanly, so the next start runs recovery. the redo location is where it will start reading.</>}>
+<ResultTable columns={[{ name: "field", type: "text" }, { name: "value", type: "text" }]} rows={ctlRows} />
+<Provenance trace={{ engine: crash.engine, scenario: crash.scenario }} />
+</Figure>
+
+the redo location ({ctl["Latest checkpoint's REDO location"]}) is not the checkpoint record itself ({ctl["Latest checkpoint location"]}). it's where the checkpoint *started*: pages dirtied while the checkpoint was writing may not have made it out, so replay begins at the start. [checkpoints](/learn/wal/checkpoints) has the full story. you can read the same fields from SQL. in the browser, CHECKPOINT runs inside your own session (there's no checkpointer process), but pg_control moves the same way:
+
+```sql run db=lab
+SELECT checkpoint_lsn, redo_lsn, redo_wal_file, timeline_id, full_page_writes
+FROM pg_control_checkpoint();
+CHECKPOINT;
+SELECT checkpoint_lsn, redo_lsn FROM pg_control_checkpoint();
+```
+
+## pages newer than a record get skipped
+
+replaying a record is not always safe. a heap INSERT says "put this tuple in slot 2". do that to a page that already has slot 2 and you get a corrupt page, or a crash in the middle of recovery. so every page header carries **pd_lsn**, the end of the last WAL record applied to it, and redo checks it first: if the page's LSN is at or past the record's end, the page already has the change, skip it.
+
+with full-page writes on (the default), you rarely see a skip: the first record for each page after the redo pointer carries the whole page, redo restores it from that image, and every later record is newer by construction. the check earns its keep when there's no image to restore from. so the third capture turns `full_page_writes` off, inserts row 2, pushes the page out to its file with `pg_buffercache_evict()`, inserts row 3, and kills the server.
+
+pick **full_page_writes = off** in the figure above. the file says pd_lsn {lsn(skipDisk)}. row 2's record starts at {lsn(skipRec.lsn)} and is {skipRec.len} bytes, so it ends at or before what the page already has: skipped. row 3's record is newer: applied. the query after the restart returns all three rows, once each. if redo had applied row 2's insert again, it would have tried to put a tuple into a slot that was already taken, and postgres would have stopped recovery with a PANIC instead.
+
+<Predict question="T2 inserted row 3 but never committed. after the crash and restart, what's on the page?" options={["nothing: redo skips it", "row 3, invisible", "row 3, visible", "row 3, removed by undo"]} answer={1}>
+```sql
+/* T2 */ BEGIN;
+/* T2 */ INSERT INTO notes VALUES (3, 'in flight at the crash');
+/* T1 */ INSERT INTO notes VALUES (2, 'committed');   -- autocommit
+-- pg_ctl stop -m immediate, pg_ctl start
+SELECT id FROM notes ORDER BY id;   -- 1, 2. and on the page?
+```
+<Explain>
+row 3 is on the page, invisible. T1's commit flushed the WAL past T2's insert record, so redo replayed it like any other change: redo repeats everything in the log, committed or not. what makes row 3 invisible is the commit log: T2's xid has no commit record, so after recovery pg_xact reports it as aborted, and every reader skips its tuples. nothing undid the insert. VACUUM removes the tuple later, the same way it removes any [aborted version](/learn/mvcc/update-is-insert).
+</Explain>
+</Predict>
+
+step the first capture to the end: the page has three tuples. lp 2 is T2's row, with its xmin now reported `aborted`. postgres doesn't run an undo pass at all, because its old versions live in the table and its rollback is a status change. textbook recovery ([ARIES](/learn/wal/aries)) needs undo because it updates in place.
+
+## an async commit, gone
+
+pick **synchronous_commit = off**. T1 commits normally: its COMMIT waits for the flush. T2 runs with `synchronous_commit = off`: its COMMIT returns as soon as the commit record is in wal_buffers, and T2's client is told it committed. on a normal server the WAL writer flushes it soon after: the manual puts the window at three times `wal_writer_delay`, which is 200 ms by default (this capture sets it to 10 s, so the window is easy to hit). the kill comes first. the {lostBytes} bytes between the flush pointer and the insert pointer, T2's insert and its commit, were never written, so they are not there to replay. after the restart, row 2 is back and row 3 isn't, even though its client heard "COMMIT".
+
+that is the whole trade of [synchronous_commit = off](/learn/wal/commit-path): the database never ends up inconsistent (T2 is cleanly absent, not half there), but a commit that was acknowledged can disappear.
+
+<Gotcha title="a process crash is not a power cut">
+these captures kill postgres's processes, but the operating system keeps running, and with it the page cache. WAL that postgres had written with `write()` but not yet flushed with `fsync()` would still have reached the disk. a power cut doesn't give you that: only what was fsynced survives. that's why durability depends on `fsync = on` and on a disk that doesn't lie about flushing its cache. turn fsync off, or run on a drive with a volatile write cache, and recovery can find a WAL that skips records it promised to keep. that isn't a crash you recover from. it's a restore from backup.
+</Gotcha>
+
+## how long it takes
+
+recovery replays every record from the redo pointer to the end of the WAL. so the time it takes is set by how much WAL was written since the last checkpoint started: with the defaults (`checkpoint_timeout = 5min`, `max_wal_size = 1GB`) that's at most around a gigabyte, usually much less. the knobs that make checkpoints rarer, and steady-state I/O smoother, make recovery longer. that's the trade [checkpoints](/learn/wal/checkpoints) is about. the same replay loop, never stopping, is what a [streaming replica](/learn/wal/streaming-replication) runs all day, and pointed at archived WAL with a stopping point it's [point-in-time recovery](/learn/wal/backups-and-pitr).
+
+<Deep title="what recovery doesn't replay">
+- **unlogged tables** write no WAL, so after a crash postgres resets them to empty instead of replaying anything ([UNLOGGED tables](/learn/writes/copy-and-bulk-loads) has the capture). temporary tables are gone with their sessions anyway.
+- **the end-of-recovery checkpoint** is written as a shutdown checkpoint (`XLOG CHECKPOINT_SHUTDOWN` in the captures), so the first thing in the log after recovery says "everything before this is on disk".
+- **hint bits** set after the restart (`HEAP_XMIN_INVALID` on T2's tuple, once something reads it) are a fresh change, logged or not like any other ([commit log and hint bits](/learn/mvcc/commit-log-and-hint-bits)).
+</Deep>
+
+<Interview q="walk me through what postgres does when it restarts after a crash.">
+it reads pg_control, sees the state wasn't "shut down", and enters crash recovery. the control file names the last checkpoint and its redo pointer, the WAL position where that checkpoint began. the startup process reads WAL from there to the end, and for each record it locks the pages it references: if the record has a full-page image it restores the page from it, otherwise it applies the change only if the page's LSN is older than the record's end, else skips it. commit and abort records update pg_xact. at the end of the WAL (a record that doesn't parse), it writes an end-of-recovery checkpoint and starts accepting connections. there's no undo pass: transactions without a commit record are treated as aborted, and MVCC visibility hides their tuples until VACUUM removes them. bonus point: recovery time is bounded by the WAL written since the last checkpoint, so checkpoint_timeout and max_wal_size trade steady I/O against restart time.
+</Interview>
+
+<Keylines>
+- recovery starts at the last checkpoint's redo pointer, from pg_control, and replays to the end of the WAL.
+- a record is applied only if the page's LSN is older than it. full-page images restore the page outright.
+- redo repeats everything, committed or not. commit status in pg_xact decides what's visible.
+- no undo pass: an uncommitted transaction's rows stay on the page, aborted, until VACUUM.
+- synchronous_commit = off can lose an acknowledged commit, never consistency.
+- "invalid record length ... got 0" is just the end of the log.
+</Keylines>

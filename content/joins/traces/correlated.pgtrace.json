@@ -1,0 +1,265 @@
+{
+ "v": 1,
+ "scenario": "content/joins/traces/correlated.scenario.sql",
+ "title": "a correlated subquery, run once per outer row: each product against its category's average",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT id, name, category, price FROM products WHERE id IN (1, 3, 5, 7) ORDER BY id",
+   "note": "the outer rows: four products, one with no category.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"category","type":"text"},
+     {"name":"price","type":"numeric"}
+    ],
+    "data": [
+     ["1","chef's knife","kitchen","49.00"],
+     ["3","the art of sql","books","32.00"],
+     ["5","studio headphones","audio","129.99"],
+     ["7","wooden train",null,"24.00"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT round(avg(p2.price), 2) AS category_avg FROM products AS p2 WHERE p2.category = 'kitchen'",
+   "note": "the chef's knife is in kitchen, so the inner query averages kitchen: 88.62. the knife costs 49.00, well under.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"category_avg","type":"numeric"}],"data":[["88.62"]]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT round(avg(p2.price), 2) AS category_avg FROM products AS p2 WHERE p2.category = 'books'",
+   "note": "the art of sql is in books. a new outer row, a new value, the inner query runs again: 92.15.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"category_avg","type":"numeric"}],"data":[["92.15"]]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT round(avg(p2.price), 2) AS category_avg FROM products AS p2 WHERE p2.category = 'audio'",
+   "note": "studio headphones, audio: 119.84. and again.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"category_avg","type":"numeric"}],"data":[["119.84"]]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT round(avg(p2.price), 2) AS category_avg FROM products AS p2 WHERE p2.category = NULL",
+   "note": "the wooden train has no category. category = NULL matches no row, the average of no rows is NULL, so its category_avg is NULL. no error.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"category_avg","type":"numeric"}],"data":[[null]]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT p.id, p.name, p.price,\n       (SELECT round(avg(p2.price), 2) FROM products AS p2 WHERE p2.category = p.category) AS category_avg\nFROM products AS p\nWHERE p.id IN (1, 3, 5, 7)\nORDER BY p.id",
+   "note": "the whole query: one inner run per outer row, glued on as a column.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"price","type":"numeric"},
+     {"name":"category_avg","type":"numeric"}
+    ],
+    "data": [
+     ["1","chef's knife","49.00","88.62"],
+     ["3","the art of sql","32.00","92.15"],
+     ["5","studio headphones","129.99","119.84"],
+     ["7","wooden train","24.00",null]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT p.id, p.name, p.price,\n       (SELECT round(avg(p2.price), 2) FROM products AS p2 WHERE p2.category = p.category) AS category_avg\nFROM products AS p",
+   "note": "the plan for all 200 products: the SubPlan under the scan runs once per row.",
+   "status": "ok",
+   "explain": {
+    "Plan": {
+     "Node Type": "Seq Scan",
+     "Parallel Aware": false,
+     "Async Capable": false,
+     "Relation Name": "products",
+     "Alias": "p",
+     "Startup Cost": 0,
+     "Total Cost": 1520,
+     "Plan Rows": 200,
+     "Plan Width": 57,
+     "Actual Rows": 200,
+     "Actual Loops": 1,
+     "Disabled": false,
+     "Shared Hit Blocks": 1005,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0,
+     "Plans": [
+      {
+       "Node Type": "Aggregate",
+       "Strategy": "Plain",
+       "Partial Mode": "Simple",
+       "Parent Relationship": "SubPlan",
+       "Subplan Name": "SubPlan 1",
+       "Parallel Aware": false,
+       "Async Capable": false,
+       "Startup Cost": 7.55,
+       "Total Cost": 7.57,
+       "Plan Rows": 1,
+       "Plan Width": 32,
+       "Actual Rows": 1,
+       "Actual Loops": 200,
+       "Disabled": false,
+       "Shared Hit Blocks": 1000,
+       "Shared Read Blocks": 0,
+       "Shared Dirtied Blocks": 0,
+       "Shared Written Blocks": 0,
+       "Local Hit Blocks": 0,
+       "Local Read Blocks": 0,
+       "Local Dirtied Blocks": 0,
+       "Local Written Blocks": 0,
+       "Temp Read Blocks": 0,
+       "Temp Written Blocks": 0,
+       "Plans": [
+        {
+         "Node Type": "Seq Scan",
+         "Parent Relationship": "Outer",
+         "Parallel Aware": false,
+         "Async Capable": false,
+         "Relation Name": "products",
+         "Alias": "p2",
+         "Startup Cost": 0,
+         "Total Cost": 7.5,
+         "Plan Rows": 20,
+         "Plan Width": 6,
+         "Actual Rows": 20.61,
+         "Actual Loops": 200,
+         "Disabled": false,
+         "Filter": "(category = p.category)",
+         "Rows Removed by Filter": 179,
+         "Shared Hit Blocks": 1000,
+         "Shared Read Blocks": 0,
+         "Shared Dirtied Blocks": 0,
+         "Shared Written Blocks": 0,
+         "Local Hit Blocks": 0,
+         "Local Read Blocks": 0,
+         "Local Dirtied Blocks": 0,
+         "Local Written Blocks": 0,
+         "Temp Read Blocks": 0,
+         "Temp Written Blocks": 0
+        }
+       ]
+      }
+     ]
+    },
+    "Planning": {
+     "Shared Hit Blocks": 0,
+     "Shared Read Blocks": 0,
+     "Shared Dirtied Blocks": 0,
+     "Shared Written Blocks": 0,
+     "Local Hit Blocks": 0,
+     "Local Read Blocks": 0,
+     "Local Dirtied Blocks": 0,
+     "Local Written Blocks": 0,
+     "Temp Read Blocks": 0,
+     "Temp Written Blocks": 0
+    },
+    "Triggers": []
+   }
+  }
+ ],
+ "db": "shop"
+}

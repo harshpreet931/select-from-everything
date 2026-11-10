@@ -1,0 +1,10 @@
+{
+  "name": "school",
+  "title": "school",
+  "blurb": "a small university: 8 instructors, 40 students, 12 courses, who took what, and what each course requires first.",
+  "files": ["schema.sql", "data.sql"],
+  "analyze": true,
+  "extensions": [],
+  "setups": [],
+  "maxRowsPerTable": 30000
+}

@@ -1,0 +1,177 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0e09e00042ed2586": {
+      "db": "shop",
+      "sql": "CREATE TABLE tickets (id int PRIMARY KEY, team int NOT NULL, queue int NOT NULL, region int NOT NULL,\n                      customer_id int NOT NULL REFERENCES customers);\nINSERT INTO tickets\nSELECT i, i % 30, i % 30, i % 30, 1 + (i * 37) % 2000\nFROM generate_series(1, 30000) AS i\nORDER BY i;\nCREATE INDEX orders_customer_id ON orders (customer_id);\nANALYZE tickets;\nANALYZE orders;\nEXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF)\nSELECT * FROM tickets WHERE team = 7 AND queue = 7 AND region = 7;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 30000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 30000,
+          "digest": "f0124b2913aa797c"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4e5fc8411bd30366"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e9ea2cf09baac279"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "eb50d3558075af97",
+          "rows": [
+            ["Seq Scan on tickets  (cost=0.00..717.00 rows=1 width=20) (actual rows=1000.00 loops=1)"],
+            ["  Filter: ((team = 7) AND (queue = 7) AND (region = 7))"],
+            ["  Rows Removed by Filter: 29000"],
+            ["  Buffers: shared hit=192"],
+            ["Planning:"],
+            ["  Buffers: shared hit=26"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "29a0f724da1ce2c3": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS)\nSELECT count(*)\nFROM tickets AS t\nJOIN orders AS o ON o.customer_id = t.customer_id\nWHERE t.team = 7 AND t.queue = 7 AND t.region = 7;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "24cdb9e4cb9804fd",
+          "rows": [
+            ["Aggregate  (cost=721.43..721.44 rows=1 width=8) (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=2180 read=13"],
+            ["  ->  Nested Loop  (cost=0.29..721.42 rows=5 width=0) (actual rows=4705.00 loops=1)"],
+            ["        Buffers: shared hit=2180 read=13"],
+            ["        ->  Seq Scan on tickets t  (cost=0.00..717.00 rows=1 width=4) (actual rows=1000.00 loops=1)"],
+            ["              Filter: ((team = 7) AND (queue = 7) AND (region = 7))"],
+            ["              Rows Removed by Filter: 29000"],
+            ["              Buffers: shared hit=192"],
+            ["        ->  Index Only Scan using orders_customer_id on orders o  (cost=0.29..4.37 rows=5 width=4) (actual rows=4.71 loops=1000)"],
+            ["              Index Cond: (customer_id = t.customer_id)"],
+            ["              Heap Fetches: 0"],
+            ["              Index Searches: 1000"],
+            ["              Buffers: shared hit=1988 read=13"],
+            ["Planning:"],
+            ["  Buffers: shared hit=33 read=6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "07f8b64c58fb66e3": {
+      "db": "shop",
+      "sql": "CREATE STATISTICS tickets_team (dependencies) ON team, queue, region FROM tickets;\nANALYZE tickets;\nEXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS)\nSELECT count(*)\nFROM tickets AS t\nJOIN orders AS o ON o.customer_id = t.customer_id\nWHERE t.team = 7 AND t.queue = 7 AND t.region = 7;",
+      "statements": [
+        {
+          "tag": "CREATE STATISTICS",
+          "command": "CREATE STATISTICS",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9dcd404da219f63e"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e13611d8220f3629",
+          "rows": [
+            ["Aggregate  (cost=1097.61..1097.62 rows=1 width=8) (actual rows=1.00 loops=1)"],
+            ["  Buffers: shared hit=209"],
+            ["  ->  Merge Join  (cost=767.11..1085.11 rows=5000 width=0) (actual rows=4705.00 loops=1)"],
+            ["        Merge Cond: (o.customer_id = t.customer_id)"],
+            ["        Buffers: shared hit=209"],
+            ["        ->  Index Only Scan using orders_customer_id on orders o  (cost=0.29..218.28 rows=10000 width=4) (actual rows=10000.00 loops=1)"],
+            ["              Heap Fetches: 0"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared hit=17"],
+            ["        ->  Sort  (cost=766.83..769.33 rows=1000 width=4) (actual rows=4740.00 loops=1)"],
+            ["              Sort Key: t.customer_id"],
+            ["              Sort Method: quicksort  Memory: 17kB"],
+            ["              Buffers: shared hit=192"],
+            ["              ->  Seq Scan on tickets t  (cost=0.00..717.00 rows=1000 width=4) (actual rows=1000.00 loops=1)"],
+            ["                    Filter: ((team = 7) AND (queue = 7) AND (region = 7))"],
+            ["                    Rows Removed by Filter: 29000"],
+            ["                    Buffers: shared hit=192"],
+            ["Planning:"],
+            ["  Buffers: shared hit=36"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "53911b695b8f9ac3": {
+      "db": "events",
+      "sql": "EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF)\nSELECT * FROM events WHERE lower(kind) = 'view';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "cdb9a6b15c062e00",
+          "rows": [
+            ["Seq Scan on events  (cost=0.00..710.00 rows=125 width=78) (actual rows=15112.00 loops=1)"],
+            ["  Filter: (lower(kind) = 'view'::text)"],
+            ["  Rows Removed by Filter: 9888"],
+            ["  Buffers: shared read=335"],
+            ["Planning:"],
+            ["  Buffers: shared hit=45 read=2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

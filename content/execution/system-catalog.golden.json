@@ -1,0 +1,310 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f84db62e2658d8c5": {
+      "db": "shop",
+      "sql": "SELECT oid, nspname FROM pg_namespace WHERE nspname IN ('pg_catalog', 'public') ORDER BY oid;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["nspname", "name", 19]
+          ],
+          "rowCount": 2,
+          "digest": "cb5551c4f745e253",
+          "rows": [
+            ["11", "pg_catalog"],
+            ["2200", "public"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8154fc56b338d144": {
+      "db": "shop",
+      "sql": "SELECT oid, relname, relnamespace, relkind\nFROM pg_class\nWHERE relname LIKE 'customers%'\nORDER BY oid;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["relname", "name", 19],
+            ["relnamespace", "oid", 26],
+            ["relkind", "char", 18]
+          ],
+          "rowCount": 4,
+          "digest": "0cc0a2a36a2c922b",
+          "rows": [
+            ["16384", "customers_id_seq", "2200", "S"],
+            ["16385", "customers", "2200", "r"],
+            ["16394", "customers_pkey", "2200", "i"],
+            ["16396", "customers_email_key", "2200", "i"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f2706a3379dab217": {
+      "db": "shop",
+      "sql": "SELECT attrelid, attnum, attname, atttypid\nFROM pg_attribute\nWHERE attrelid = 16385\nORDER BY attnum;",
+      "statements": [
+        {
+          "tag": "SELECT 12",
+          "command": "SELECT",
+          "columns": [
+            ["attrelid", "oid", 26],
+            ["attnum", "int2", 21],
+            ["attname", "name", 19],
+            ["atttypid", "oid", 26]
+          ],
+          "rowCount": 12,
+          "digest": "22cbe2cdfd588de7",
+          "rows": [
+            ["16385", "-6", "tableoid", "26"],
+            ["16385", "-5", "cmax", "29"],
+            ["16385", "-4", "xmax", "28"],
+            ["16385", "-3", "cmin", "29"],
+            ["16385", "-2", "xmin", "28"],
+            ["16385", "-1", "ctid", "27"],
+            ["16385", "1", "id", "23"],
+            ["16385", "2", "name", "25"],
+            ["16385", "3", "email", "25"],
+            ["16385", "4", "city", "25"],
+            ["16385", "5", "country", "1042"],
+            ["16385", "6", "created_at", "1184"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "645c13555e8e63d3": {
+      "db": "shop",
+      "sql": "SELECT oid, typname, typlen\nFROM pg_type\nWHERE oid IN (23, 25, 1042, 1184)\nORDER BY oid;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["typname", "name", 19],
+            ["typlen", "int2", 21]
+          ],
+          "rowCount": 4,
+          "digest": "f00b0eedaadb02b3",
+          "rows": [
+            ["23", "int4", "4"],
+            ["25", "text", "-1"],
+            ["1042", "bpchar", "-1"],
+            ["1184", "timestamptz", "8"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f7035fd2de81df30": {
+      "db": "shop",
+      "sql": "SELECT oid, relname, relkind\nFROM pg_class\nWHERE relname IN ('pg_class', 'pg_attribute', 'pg_type', 'pg_namespace')\nORDER BY oid;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["relname", "name", 19],
+            ["relkind", "char", 18]
+          ],
+          "rowCount": 4,
+          "digest": "e2101176d20c602c",
+          "rows": [
+            ["1247", "pg_type", "r"],
+            ["1249", "pg_attribute", "r"],
+            ["1259", "pg_class", "r"],
+            ["2615", "pg_namespace", "r"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0e045c1db9923fbf": {
+      "db": "shop",
+      "sql": "SELECT relnamespace::regnamespace AS schema, count(*) AS relations\nFROM pg_class\nGROUP BY relnamespace\nORDER BY relations DESC, schema;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["schema", "regnamespace", 4089],
+            ["relations", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "2d61c05f3f1e0756",
+          "rows": [
+            ["pg_catalog", "268"],
+            ["pg_toast", "84"],
+            ["information_schema", "69"],
+            ["public", "13"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6f312f4914dc5899": {
+      "db": "shop",
+      "sql": "SELECT 'customers'::regclass::oid AS oid, 16385::regclass AS name;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["name", "regclass", 2205]
+          ],
+          "rowCount": 1,
+          "digest": "83a37f2e886061e6",
+          "rows": [
+            ["16385", "customers"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ebf3e9560dec46cc": {
+      "db": "shop",
+      "sql": "SELECT 'custmers'::regclass;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P01",
+            "message": "relation \"custmers\" does not exist",
+            "position": 8
+          },
+          "digest": "c613350ea67e2c59"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P01",
+        "message": "relation \"custmers\" does not exist",
+        "position": 8,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "c0df466b193944df": {
+      "db": "shop",
+      "sql": "CREATE TABLE notes (body text);\nSELECT 'notes'::regclass::oid AS oid;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26]
+          ],
+          "rowCount": 1,
+          "digest": "2c632596a55c67c0",
+          "rows": [
+            ["24576"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "19bb8c14d3f5cd1b": {
+      "db": "shop",
+      "sql": "CREATE VIEW paris AS SELECT name FROM customers WHERE city = 'Paris';\nALTER TABLE customers RENAME TO clients;\n\nSELECT count(*) FROM paris;\nSELECT pg_get_viewdef('paris');",
+      "statements": [
+        {
+          "tag": "CREATE VIEW",
+          "command": "CREATE VIEW",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9b07abe7a60de54c"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "09faaedc5586cc0c"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "1d4586d22b559a87",
+          "rows": [
+            ["66"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_get_viewdef", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "2a572cd897477040",
+          "rows": [
+            [" SELECT name\n   FROM clients\n  WHERE (city = 'Paris'::text);"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "75f1ef93f014d591": {
+      "db": "shop",
+      "sql": "SELECT column_name, data_type, is_nullable\nFROM information_schema.columns\nWHERE table_name = 'customers'\nORDER BY ordinal_position;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["column_name", "name", 19],
+            ["data_type", "varchar", 1043],
+            ["is_nullable", "varchar", 1043]
+          ],
+          "rowCount": 6,
+          "digest": "71547c0a2fd85e7e",
+          "rows": [
+            ["id", "integer", "NO"],
+            ["name", "text", "NO"],
+            ["email", "text", "YES"],
+            ["city", "text", "YES"],
+            ["country", "character", "NO"],
+            ["created_at", "timestamp with time zone", "NO"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

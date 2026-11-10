@@ -1,0 +1,274 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0cfc28171435d2b9": {
+      "db": "lab",
+      "sql": "SELECT lp, t_xmin, t_xmax, t_field3 AS t_cid, t_ctid, t_infomask2, t_infomask, t_hoff, t_bits\nFROM heap_page_items(get_raw_page('accounts', 0))\nORDER BY lp;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["t_xmax", "xid", 28],
+            ["t_cid", "int4", 23],
+            ["t_ctid", "tid", 27],
+            ["t_infomask2", "int4", 23],
+            ["t_infomask", "int4", 23],
+            ["t_hoff", "int2", 21],
+            ["t_bits", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "0b4a8bc7df22abbf",
+          "rows": [
+            ["1", "752", "0", "207", "(0,1)", "3", "2050", "24", null],
+            ["2", "752", "0", "207", "(0,2)", "3", "2050", "24", null],
+            ["3", "752", "0", "207", "(0,3)", "3", "2050", "24", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b1517ceee06448d3": {
+      "db": "lab",
+      "sql": "SELECT lp, raw_flags\nFROM heap_page_items(get_raw_page('accounts', 0)),\n     heap_tuple_infomask_flags(t_infomask, t_infomask2)\nORDER BY lp;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["raw_flags", "text[]", 1009]
+          ],
+          "rowCount": 3,
+          "digest": "7ec490e8f335ad50",
+          "rows": [
+            ["1", "{HEAP_HASVARWIDTH,HEAP_XMAX_INVALID}"],
+            ["2", "{HEAP_HASVARWIDTH,HEAP_XMAX_INVALID}"],
+            ["3", "{HEAP_HASVARWIDTH,HEAP_XMAX_INVALID}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "afbc30401c5fb951": {
+      "db": "lab",
+      "sql": "SELECT typname, typlen, typalign\nFROM pg_type\nWHERE typname IN ('bool', 'int2', 'int4', 'int8', 'float8', 'timestamptz', 'uuid', 'text', 'numeric')\nORDER BY typlen, typname;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["typname", "name", 19],
+            ["typlen", "int2", 21],
+            ["typalign", "char", 18]
+          ],
+          "rowCount": 9,
+          "digest": "1435982e8e081b8f",
+          "rows": [
+            ["numeric", "-1", "i"],
+            ["text", "-1", "i"],
+            ["bool", "1", "c"],
+            ["int2", "2", "s"],
+            ["int4", "4", "i"],
+            ["float8", "8", "d"],
+            ["int8", "8", "d"],
+            ["timestamptz", "8", "d"],
+            ["uuid", "16", "c"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "191376d7e3e02725": {
+      "db": "lab",
+      "sql": "CREATE TABLE loose (a bool, b int8, c bool, d int8);\nCREATE TABLE tight (b int8, d int8, a bool, c bool);\nINSERT INTO loose VALUES (true, 1, false, 2), (true, NULL, false, 2);\nINSERT INTO tight VALUES (1, 2, true, false);\nSELECT 'loose' AS t, lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('loose', 0))\nUNION ALL\nSELECT 'tight', lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('tight', 0))\nORDER BY t, lp;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "9bac3d1aed28504a"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["t", "text", 25],
+            ["lp", "int2", 21],
+            ["lp_len", "int2", 21],
+            ["t_hoff", "int2", 21],
+            ["t_bits", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "d12861265ee9e2ff",
+          "rows": [
+            ["loose", "1", "56", "24", null],
+            ["loose", "2", "40", "24", "10110000"],
+            ["tight", "1", "42", "24", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "fba39c87ce6c5a3b": {
+      "db": "lab",
+      "sql": "CREATE TABLE loose (a bool, b int8, c bool, d int8);\nCREATE TABLE tight (b int8, d int8, a bool, c bool);\nINSERT INTO loose SELECT true, g, false, g FROM generate_series(1, 10000) AS g;\nINSERT INTO tight SELECT g, g, true, false FROM generate_series(1, 10000) AS g;\nSELECT pg_relation_size('loose') AS loose_bytes, pg_relation_size('tight') AS tight_bytes,\n       round(100.0 * pg_relation_size('loose') / pg_relation_size('tight') - 100, 1) AS pct_bigger;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 10000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "cc8b7e673c34d9e7"
+        },
+        {
+          "tag": "INSERT 0 10000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 10000,
+          "digest": "6b9e77a60a600fa4"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["loose_bytes", "int8", 20],
+            ["tight_bytes", "int8", 20],
+            ["pct_bigger", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "b065338ab5ca7835",
+          "rows": [
+            ["606208", "524288", "15.6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aa9c831a08a7615a": {
+      "db": "lab",
+      "sql": "CREATE TABLE eight (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int);\nCREATE TABLE nine (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int);\nINSERT INTO eight VALUES (1, 2, 3, 4, 5, 6, 7, 8), (1, 2, 3, 4, 5, 6, 7, NULL);\nINSERT INTO nine VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9), (1, 2, 3, 4, 5, 6, 7, 8, NULL);\nSELECT 'eight' AS t, lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('eight', 0))\nUNION ALL\nSELECT 'nine', lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('nine', 0))\nORDER BY t, lp;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "9bac3d1aed28504a"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "01f7a9f15b1055bd"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["t", "text", 25],
+            ["lp", "int2", 21],
+            ["lp_len", "int2", 21],
+            ["t_hoff", "int2", 21],
+            ["t_bits", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "ee7735e0c9b96848",
+          "rows": [
+            ["eight", "1", "56", "24", null],
+            ["eight", "2", "52", "24", "11111110"],
+            ["nine", "1", "60", "24", null],
+            ["nine", "2", "64", "32", "1111111100000000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4bb6f009a6df543c": {
+      "db": "lab",
+      "sql": "SELECT owner, octet_length(owner) AS chars, pg_column_size(owner) AS stored,\n       balance, pg_column_size(balance) AS numeric_stored\nFROM accounts ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25],
+            ["chars", "int4", 23],
+            ["stored", "int4", 23],
+            ["balance", "numeric", 1700],
+            ["numeric_stored", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "abdb385d918d7fd1",
+          "rows": [
+            ["alice", "5", "6", "100.00", "5"],
+            ["bob", "3", "4", "100.00", "5"],
+            ["carol", "5", "6", "50.00", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

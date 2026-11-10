@@ -1,0 +1,294 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "4335c2e4dd30c55d": {
+      "db": "empty",
+      "sql": "CREATE TABLE hotels (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL UNIQUE);\nCREATE TABLE rooms (\n  id       int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  hotel_id int NOT NULL REFERENCES hotels,\n  room_no  text NOT NULL,\n  beds     int NOT NULL CHECK (beds BETWEEN 1 AND 6),\n  UNIQUE (hotel_id, room_no)\n);\nCREATE TABLE guests (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, email text NOT NULL, name text NOT NULL);\nCREATE UNIQUE INDEX guests_email ON guests (lower(email));\nINSERT INTO hotels (name) VALUES ('harbour view'), ('the old mill');\nINSERT INTO rooms (hotel_id, room_no, beds) VALUES (1, '101', 2), (1, '102', 2), (2, '1', 4);\nINSERT INTO guests (email, name) VALUES ('ada@example.com', 'Ada Lovelace'), ('grace@example.com', 'Grace Hopper');\nINSERT INTO guests (email, name) VALUES ('Ada@Example.com', 'Ada again');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "c5771c164138c8bd"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "df879e4945d133d0"
+        },
+        {
+          "tag": "INSERT 0 3",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "e50816625cce3678"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "999fddf4a850ebb6"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"guests_email\"",
+            "detail": "Key (lower(email))=(ada@example.com) already exists.",
+            "schema": "public",
+            "table": "guests",
+            "constraint": "guests_email"
+          },
+          "digest": "ffb78bc5eaf44606"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"guests_email\"",
+        "detail": "Key (lower(email))=(ada@example.com) already exists.",
+        "schema": "public",
+        "table": "guests",
+        "constraint": "guests_email",
+        "statement": 7
+      },
+      "txn": "I"
+    },
+    "7d6cab1e254d6512": {
+      "db": "empty",
+      "sql": "CREATE TABLE bookings (\n  id       int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  hotel_id int NOT NULL REFERENCES hotels,\n  room_id  int NOT NULL REFERENCES rooms,\n  guest_id int NOT NULL REFERENCES guests,\n  stay     daterange NOT NULL CHECK (NOT isempty(stay)),\n  status   text NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed', 'cancelled')),\n  EXCLUDE USING gist (room_id WITH =, stay WITH &&) WHERE (status = 'confirmed')\n);\nINSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 1, '[2026-12-20,2026-12-27)');\nINSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 2, '[2026-12-24,2026-12-29)');",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23P01",
+            "message": "conflicting key value violates exclusion constraint \"bookings_room_id_stay_excl\"",
+            "detail": "Key (room_id, stay)=(1, [2026-12-24,2026-12-29)) conflicts with existing key (room_id, stay)=(1, [2026-12-20,2026-12-27)).",
+            "schema": "public",
+            "table": "bookings",
+            "constraint": "bookings_room_id_stay_excl"
+          },
+          "digest": "2ac1f842bef25ef6"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23P01",
+        "message": "conflicting key value violates exclusion constraint \"bookings_room_id_stay_excl\"",
+        "detail": "Key (room_id, stay)=(1, [2026-12-24,2026-12-29)) conflicts with existing key (room_id, stay)=(1, [2026-12-20,2026-12-27)).",
+        "schema": "public",
+        "table": "bookings",
+        "constraint": "bookings_room_id_stay_excl",
+        "statement": 2
+      },
+      "txn": "I"
+    },
+    "1eaf5d366f37d9ce": {
+      "db": "empty",
+      "sql": "CREATE TABLE room_rates (\n  room_id int NOT NULL REFERENCES rooms,\n  valid   daterange NOT NULL,\n  price   numeric(8,2) NOT NULL CHECK (price > 0),\n  PRIMARY KEY (room_id, valid WITHOUT OVERLAPS)\n);\nINSERT INTO room_rates VALUES (1, '[2026-01-01,2026-12-01)', 120.00), (1, '[2026-12-01,2027-01-01)', 180.00);\nSELECT price FROM room_rates WHERE room_id = 1 AND valid @> date '2026-12-24';",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 2,
+          "digest": "456643ddbdad5e2f"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["price", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "38a887d00d18e9aa",
+          "rows": [
+            ["180.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c1dc44ed617168cb": {
+      "db": "empty",
+      "sql": "CREATE INDEX bookings_guest ON bookings (guest_id, lower(stay));\nSELECT tablename, indexname, indexdef\nFROM pg_indexes\nWHERE tablename IN ('bookings', 'room_rates', 'rooms', 'guests')\nORDER BY tablename, indexname;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SELECT 8",
+          "command": "SELECT",
+          "columns": [
+            ["tablename", "name", 19],
+            ["indexname", "name", 19],
+            ["indexdef", "text", 25]
+          ],
+          "rowCount": 8,
+          "digest": "34d3f7e361e0b8a0",
+          "rows": [
+            ["bookings", "bookings_guest", "CREATE INDEX bookings_guest ON public.bookings USING btree (guest_id, lower(stay))"],
+            ["bookings", "bookings_pkey", "CREATE UNIQUE INDEX bookings_pkey ON public.bookings USING btree (id)"],
+            ["bookings", "bookings_room_id_stay_excl", "CREATE INDEX bookings_room_id_stay_excl ON public.bookings USING gist (room_id, stay) WHERE (status = 'confirmed'::text)"],
+            ["guests", "guests_email", "CREATE UNIQUE INDEX guests_email ON public.guests USING btree (lower(email))"],
+            ["guests", "guests_pkey", "CREATE UNIQUE INDEX guests_pkey ON public.guests USING btree (id)"],
+            ["room_rates", "room_rates_pkey", "CREATE UNIQUE INDEX room_rates_pkey ON public.room_rates USING gist (room_id, valid)"],
+            ["rooms", "rooms_hotel_id_room_no_key", "CREATE UNIQUE INDEX rooms_hotel_id_room_no_key ON public.rooms USING btree (hotel_id, room_no)"],
+            ["rooms", "rooms_pkey", "CREATE UNIQUE INDEX rooms_pkey ON public.rooms USING btree (id)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7079aa2d5aff8ef0": {
+      "db": "empty",
+      "sql": "ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;\nCREATE POLICY tenant ON bookings\n  USING (hotel_id = nullif(current_setting('app.hotel_id', true), '')::int);\nCREATE ROLE booking_app_demo;\nGRANT SELECT, INSERT ON bookings TO booking_app_demo;\nSET ROLE booking_app_demo;\nSELECT set_config('app.hotel_id', '2', false) IS NOT NULL AS hotel_set;\nSELECT id, hotel_id, room_id, stay FROM bookings ORDER BY id;\nRESET ROLE;\nDROP OWNED BY booking_app_demo;\nDROP ROLE booking_app_demo;",
+      "statements": [
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "629b316cd6a106b5"
+        },
+        {
+          "tag": "CREATE POLICY",
+          "command": "CREATE POLICY",
+          "columns": null,
+          "rowCount": null,
+          "digest": "59cd884d7e8fdce6"
+        },
+        {
+          "tag": "CREATE ROLE",
+          "command": "CREATE ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1148337a58e0be7f"
+        },
+        {
+          "tag": "GRANT",
+          "command": "GRANT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "38b4a64c6202c904"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8792d2a263bf6345"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["hotel_set", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "5319d2faaa0f0eff",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["hotel_id", "int4", 23],
+            ["room_id", "int4", 23],
+            ["stay", "daterange", 3912]
+          ],
+          "rowCount": 0,
+          "digest": "56621be7982111b1",
+          "rows": []
+        },
+        {
+          "tag": "RESET",
+          "command": "RESET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "2c0fbb001395c65d"
+        },
+        {
+          "tag": "DROP OWNED",
+          "command": "DROP OWNED",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8f846268693d3407"
+        },
+        {
+          "tag": "DROP ROLE",
+          "command": "DROP ROLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "75f7a6dc1546a458"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

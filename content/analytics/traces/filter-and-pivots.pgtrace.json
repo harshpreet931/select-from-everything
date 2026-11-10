@@ -1,0 +1,235 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/filter-and-pivots.scenario.sql",
+ "title": "FILTER and pivots on the shop's orders: the last four months by status",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT date_trunc('month', ordered_at)::date AS month, status, count(*) AS n\nFROM orders\nWHERE ordered_at >= '2026-03-01'\nGROUP BY 1, 2\nORDER BY 1, 2",
+   "note": "long: one row per month and status.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 15,
+    "columns": [{"name":"month","type":"date"},{"name":"status","type":"text"},{"name":"n","type":"int8"}],
+    "data": [
+     ["2026-03-01","cancelled","18"],
+     ["2026-03-01","delivered","834"],
+     ["2026-03-01","refunded","7"],
+     ["2026-04-01","cancelled","23"],
+     ["2026-04-01","delivered","798"],
+     ["2026-04-01","refunded","9"],
+     ["2026-05-01","cancelled","27"],
+     ["2026-05-01","delivered","826"],
+     ["2026-05-01","refunded","6"],
+     ["2026-06-01","cancelled","18"],
+     ["2026-06-01","delivered","466"],
+     ["2026-06-01","paid","62"],
+     ["2026-06-01","placed","51"],
+     ["2026-06-01","refunded","7"],
+     ["2026-06-01","shipped","120"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT date_trunc('month', ordered_at)::date AS month,\n       count(*) FILTER (WHERE status = 'delivered') AS delivered,\n       count(*) FILTER (WHERE status IN ('placed', 'paid', 'shipped')) AS in_flight,\n       count(*) FILTER (WHERE status = 'cancelled') AS cancelled,\n       count(*) FILTER (WHERE status = 'refunded') AS refunded\nFROM orders\nWHERE ordered_at >= '2026-03-01'\nGROUP BY 1\nORDER BY 1",
+   "note": "wide: one row per month, one column per FILTER.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"month","type":"date"},
+     {"name":"delivered","type":"int8"},
+     {"name":"in_flight","type":"int8"},
+     {"name":"cancelled","type":"int8"},
+     {"name":"refunded","type":"int8"}
+    ],
+    "data": [
+     ["2026-03-01","834","0","18","7"],
+     ["2026-04-01","798","0","23","9"],
+     ["2026-05-01","826","0","27","6"],
+     ["2026-06-01","466","233","18","7"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id, status,\n       true AS \"count(*)\",\n       status = 'delivered' AS delivered,\n       status IN ('placed', 'paid', 'shipped') AS in_flight,\n       status = 'cancelled' AS cancelled\nFROM orders\nWHERE customer_id = 42\nORDER BY id",
+   "note": "Ada Lovelace's seven orders, and for each FILTER, whether its condition is true for that row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"status","type":"text"},
+     {"name":"count(*)","type":"bool"},
+     {"name":"delivered","type":"bool"},
+     {"name":"in_flight","type":"bool"},
+     {"name":"cancelled","type":"bool"}
+    ],
+    "data": [
+     ["880","cancelled","t","f","f","t"],
+     ["1455","refunded","t","f","f","f"],
+     ["6580","delivered","t","t","f","f"],
+     ["7787","delivered","t","t","f","f"],
+     ["8219","delivered","t","t","f","f"],
+     ["9615","delivered","t","t","f","f"],
+     ["9946","placed","t","f","t","f"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT count(*) AS \"count(*)\",\n       count(*) FILTER (WHERE status = 'delivered') AS delivered,\n       count(*) FILTER (WHERE status IN ('placed', 'paid', 'shipped')) AS in_flight,\n       count(*) FILTER (WHERE status = 'cancelled') AS cancelled\nFROM orders\nWHERE customer_id = 42",
+   "note": "the aggregates over Ada's orders: each one counted only the rows its FILTER let through.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"count(*)","type":"int8"},
+     {"name":"delivered","type":"int8"},
+     {"name":"in_flight","type":"int8"},
+     {"name":"cancelled","type":"int8"}
+    ],
+    "data": [["7","4","1","1"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT date_trunc('month', ordered_at)::date AS month,\n       count(*) FILTER (WHERE status = 'cancelled') AS cancelled\nFROM orders\nWHERE ordered_at >= '2026-03-01'\nGROUP BY 1\nORDER BY 1",
+   "note": "FILTER: the condition sits right next to the aggregate. 18 cancelled orders in march.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"month","type":"date"},{"name":"cancelled","type":"int8"}],
+    "data": [["2026-03-01","18"],["2026-04-01","23"],["2026-05-01","27"],["2026-06-01","18"]]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT date_trunc('month', ordered_at)::date AS month,\n       sum(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled\nFROM orders\nWHERE ordered_at >= '2026-03-01'\nGROUP BY 1\nORDER BY 1",
+   "note": "sum(CASE ... THEN 1 ELSE 0 END): the spelling from before FILTER existed. same numbers.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"month","type":"date"},{"name":"cancelled","type":"int8"}],
+    "data": [["2026-03-01","18"],["2026-04-01","23"],["2026-05-01","27"],["2026-06-01","18"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT date_trunc('month', ordered_at)::date AS month,\n       count(CASE WHEN status = 'cancelled' THEN 1 END) AS cancelled\nFROM orders\nWHERE ordered_at >= '2026-03-01'\nGROUP BY 1\nORDER BY 1",
+   "note": "count(CASE ... THEN 1 END): no ELSE, so the other rows give NULL, and count skips NULLs. same numbers again.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"month","type":"date"},{"name":"cancelled","type":"int8"}],
+    "data": [["2026-03-01","18"],["2026-04-01","23"],["2026-05-01","27"],["2026-06-01","18"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT date_trunc('month', ordered_at)::date AS month,\n       count(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled\nFROM orders\nWHERE ordered_at >= '2026-03-01'\nGROUP BY 1\nORDER BY 1",
+   "note": "count(CASE ... THEN 1 ELSE 0 END): wrong. 0 isn't NULL, so count counts it, and every order in the month is 'cancelled'.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"month","type":"date"},{"name":"cancelled","type":"int8"}],
+    "data": [["2026-03-01","859"],["2026-04-01","830"],["2026-05-01","859"],["2026-06-01","724"]]
+   }
+  }
+ ],
+ "db": "shop"
+}

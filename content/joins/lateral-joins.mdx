@@ -1,0 +1,139 @@
+import { ForEachRow } from "@/components/figures/joins/ForEachRow";
+import { RunPick } from "@/components/figures/joins/RunPick";
+import { planOf, prov, resultOf, runsOf } from "@/components/figures/joins/captured";
+import trace from "./traces/lateral.pgtrace.json";
+
+{/* every figure here reads traces/lateral.scenario.sql, captured on PGlite: each inner table is
+    the subquery really run with that customer's id, and the plan is EXPLAIN ANALYZE of the join. */}
+
+export const outer = resultOf(trace, 0);
+export const each = [1, 2, 3].map((i) => resultOf(trace, i));
+export const crossLateral = resultOf(trace, 4);
+export const kinds = runsOf(trace, ["CROSS JOIN LATERAL", "LEFT JOIN LATERAL ... ON true"], 4);
+export const plan = planOf(trace, 6);
+export const source = prov(trace);
+
+<InShort>
+**LATERAL** lets a subquery in FROM use columns from the tables to its left. so it runs once per left row, and it can return as many rows as it likes: "the latest three orders of *each* customer" becomes one join.
+
+`CROSS JOIN LATERAL` drops a left row whose subquery found nothing. `LEFT JOIN LATERAL (...) ON true` keeps it, padded.
+</InShort>
+
+## the picture
+
+you know how a scalar subquery can see the outer row but may only return one value, and a subquery in FROM can return lots of rows but can't see anything outside itself? the one you want for "three latest orders per customer" is the cross of the two: sees the outer row, returns a whole table. that's LATERAL.
+
+think of a personal shopper with a list of customers. for each name on the list, they go to the archive, pull that customer's three newest receipts, and staple them behind the name. a customer with no receipts gets nothing stapled, and whether their name stays on the list depends on which kind of join you asked for.
+
+<Figure wide caption={<>step through the customers. for each one, the subquery runs with that customer's <C k="hot">id</C> filled in. Ming Li has never ordered, so hers returns nothing, and she's not in the CROSS JOIN LATERAL result at the end.</>}>
+<ForEachRow outer={{ name: "customers", columns: outer.columns, rows: outer.rows }} each={each} final={crossLateral} label="customer" hot={["o.customer_id = 1", "o.customer_id = 7", "o.customer_id = 42"]} trace={source} />
+</Figure>
+
+## writing one
+
+the first thing everybody tries is a plain subquery in FROM that mentions the customer. postgres refuses, and its hint is the whole chapter:
+
+```sql run db=shop expect=error
+SELECT c.name, o.id
+FROM customers AS c
+CROSS JOIN (SELECT o.id FROM orders AS o
+            WHERE o.customer_id = c.id
+            ORDER BY o.ordered_at DESC LIMIT 3) AS o
+WHERE c.id = 42;
+```
+
+a normal FROM item is built on its own, before the join, so it can't refer to `c`: there's no "current customer" yet. write `LATERAL` in front and the rules change. the subquery is evaluated for each row to its left, with that row's columns in scope:
+
+```sql run db=shop
+SELECT c.id, c.name, o.id AS order_id, o.day
+FROM customers AS c
+CROSS JOIN LATERAL (
+  SELECT o.id, o.ordered_at::date AS day
+  FROM orders AS o
+  WHERE o.customer_id = c.id
+  ORDER BY o.ordered_at DESC
+  LIMIT 3
+) AS o
+WHERE c.id IN (1, 7, 42)
+ORDER BY c.id, o.day DESC, o.id DESC;
+```
+
+six rows: three for Maya (out of her 57 orders), three for Ada (out of 7), none for Ming Li. the `ORDER BY ... LIMIT 3` inside is what makes it "latest three", and it's per customer, because the whole subquery runs once per customer.
+
+<Predict options={["Ada's 3 latest orders", "an error", "Ada's latest order"]} answer={1}>
+```sql
+SELECT c.name,
+       (SELECT o.id FROM orders AS o
+        WHERE o.customer_id = c.id
+        ORDER BY o.ordered_at DESC LIMIT 3) AS order_id
+FROM customers AS c
+WHERE c.id = 42;
+```
+<Explain>
+a subquery in the select list is a scalar subquery, and a scalar subquery may return one row at most. this one returns three, so postgres stops: `more than one row returned by a subquery used as an expression`. correlation was never the problem, the shape was. LATERAL is the version that's allowed to return a table.
+</Explain>
+</Predict>
+
+```sql run db=shop expect=error
+SELECT c.name,
+       (SELECT o.id FROM orders AS o
+        WHERE o.customer_id = c.id
+        ORDER BY o.ordered_at DESC LIMIT 3) AS order_id
+FROM customers AS c
+WHERE c.id = 42;
+```
+
+## CROSS or LEFT
+
+the lateral subquery is joined to its row like any other table, so the join type decides what happens when it returns nothing:
+
+<Figure wide caption={<>switch the join. with <code>CROSS JOIN LATERAL</code>, Ming Li disappears. with <code>LEFT JOIN LATERAL ... ON true</code> she comes back once, with NULLs where the order would be.</>}>
+<RunPick
+  options={[{ key: "join", values: ["CROSS JOIN LATERAL", "LEFT JOIN LATERAL ... ON true"] }]}
+  runs={kinds}
+  hot={["CROSS JOIN LATERAL", "LEFT JOIN LATERAL", "ON true"]}
+  trace={source}
+/>
+</Figure>
+
+`ON true` looks odd, but it's honest: the subquery already did all the matching inside its own WHERE, so there's nothing left for ON to test. LEFT JOIN needs an ON, so you give it the one that's always true. (it's `JOIN LATERAL` or `LEFT JOIN LATERAL`, never `RIGHT`: the subquery depends on the left side, so the right side can't be the one that's kept.)
+
+## functions are lateral already
+
+set-returning functions in FROM, like `unnest` or `generate_series` or `jsonb_array_elements`, may refer to earlier tables without the keyword. postgres treats them as lateral automatically. one row per tag, per product:
+
+```sql run db=shop
+SELECT p.id, p.name, t.tag
+FROM products AS p
+CROSS JOIN LATERAL unnest(p.tags) AS t (tag)
+WHERE p.id <= 3
+ORDER BY p.id, t.tag;
+```
+
+product 3, the art of sql, has an empty tag array, so `unnest` returns no rows for it and the CROSS JOIN drops it, the same way it dropped Ming Li. you'll often see this written with a comma, `FROM products AS p, unnest(p.tags) AS t (tag)`, which is the same query: the comma is a CROSS JOIN, and the function is lateral either way.
+
+## what it costs
+
+LATERAL means "once per left row", and the plan says so:
+
+<Figure wide caption={<>the plan for the three customers. the whole subquery (scan, sort, limit) sits on the inner side of a nested loop, with loops=3: once per customer. each run scans all of orders and keeps a couple of rows.</>}>
+<PlanTree plan={plan} show={["actual"]} />
+</Figure>
+
+a nested loop, and under it the subquery's own little plan: a scan of orders filtered to one customer, a top-N sort, a limit, all run three times. with no index on `orders.customer_id`, every run reads all 10,000 orders to find a handful (the dataset has no secondary indexes on purpose). over 2,000 customers that's 20 million rows read. an index on `orders (customer_id, ordered_at)` turns each run into a short walk down one index: that's [multicolumn indexes](/learn/indexes/composite-indexes) and [indexes for ORDER BY and LIMIT](/learn/indexes/indexes-and-order-by). and when you want the top n of *every* group, a window function is the other contender, compared on one plan in [top n per group](/learn/analytics/top-n-per-group).
+
+<Gotcha title="LIMIT without ORDER BY inside the subquery">
+`LIMIT 3` alone means "any three", and inside a LATERAL subquery that's "any three per customer", different on different days. the per-row subquery is still a query, so it gets the same rule as every other: if the order matters, say `ORDER BY`, and make it total (ties broken by a key) if you want the same three every time.
+</Gotcha>
+
+<Interview q="how do you get the top 3 orders for every customer?">
+three standard answers. a LATERAL subquery with `ORDER BY ... LIMIT 3` per customer: reads naturally, and with an index on (customer_id, ordered_at) each customer is a few index reads, so it wins when there are few customers or you only want a handful each. `row_number() OVER (PARTITION BY customer_id ORDER BY ordered_at DESC)` in a subquery, then keep rank ≤ 3: one pass over all orders, good when you want most of them anyway. and in postgres, `DISTINCT ON` for the top 1 only. bonus point: mention `LEFT JOIN LATERAL ... ON true` for customers with no orders, and that a correlated subquery in the select list can't do it, because it may only return one row.
+</Interview>
+
+<Keylines>
+- LATERAL lets a FROM subquery use columns from the tables to its left.
+- it runs once per left row and can return any number of rows.
+- CROSS JOIN LATERAL drops rows with an empty subquery. LEFT JOIN LATERAL ... ON true keeps them.
+- functions in FROM (unnest, generate_series) are lateral without the keyword.
+- the plan is a nested loop: fast with the right index, a full scan per row without one.
+</Keylines>

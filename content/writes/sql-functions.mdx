@@ -1,0 +1,204 @@
+import { pickRun } from "@/components/figures/writes/frames";
+import { planOf, prov } from "@/lib/db/captured";
+import trace from "./traces/sql-functions.pgtrace.json";
+
+{/* every switch here reads traces/sql-functions.scenario.sql, captured on PGlite from shop: the
+    same query around is_cheap() declared five ways (with EXPLAIN ANALYZE of each), call counts
+    for three volatilities, and two kinds of function body under a renamed or dropped column. */}
+
+export const inline = {
+  "LANGUAGE sql": { ...pickRun(trace, [1, 2], { note: trace.steps[3].note }), plan: planOf(trace, 3) },
+  "... VOLATILE": { ...pickRun(trace, [4, 5], { note: trace.steps[6].note }), plan: planOf(trace, 6) },
+  "... SECURITY DEFINER": { ...pickRun(trace, [7, 8], { note: trace.steps[9].note }), plan: planOf(trace, 9) },
+  "... SET search_path": { ...pickRun(trace, [10, 11], { note: trace.steps[12].note }), plan: planOf(trace, 12) },
+  "LANGUAGE plpgsql": { ...pickRun(trace, [13, 14], { note: trace.steps[15].note }), plan: planOf(trace, 15) },
+};
+export const calls = {
+  VOLATILE: { ...pickRun(trace, [17, 18], { note: `${trace.steps[17].note} ${trace.steps[19].note}` }), plan: planOf(trace, 19) },
+  STABLE: { ...pickRun(trace, [21, 22], { note: `${trace.steps[21].note} ${trace.steps[23].note}` }), plan: planOf(trace, 23) },
+  IMMUTABLE: { ...pickRun(trace, [25, 26], { note: `${trace.steps[25].note} ${trace.steps[27].note}` }), plan: planOf(trace, 27) },
+};
+export const bodies = {
+  "string ($$ ... $$) | rename the column": pickRun(trace, [30]),
+  "BEGIN ATOMIC | rename the column": pickRun(trace, [33]),
+  "string ($$ ... $$) | drop the column": pickRun(trace, [36]),
+  "BEGIN ATOMIC | drop the column": pickRun(trace, [39]),
+};
+export const source = prov(trace);
+
+<InShort>
+a **SQL function** gives a query or an expression a name and parameters: `CREATE FUNCTION ... LANGUAGE sql`. a simple one is **inlined**: the planner pastes its body into your query, so it plans as if you'd typed it out, indexes and all.
+
+**volatility** is a promise about the function: **IMMUTABLE** (same input, same output, forever), **STABLE** (same output within one statement), **VOLATILE** (anything goes, the default). it decides how often postgres calls it and where it may use it.
+</InShort>
+
+## the picture
+
+you know how wrapping a bit of logic in a function feels free in most languages? in a database it can cost you an index. a function the planner can't see into is a black box it has to call on every row, and a black box can't be matched against an index.
+
+think of a recipe that says "make the sauce from page 12". a cook who flips to page 12 and reads it can plan the whole meal (start the slow part first, reuse the pan). a cook who's handed a sealed jar labelled "sauce" can only open it when the recipe gets there. inlining is flipping to page 12.
+
+<Figure wide caption={<>one tiny function, <code>is_cheap(p) = p &lt; 5</code>, declared five ways, and the plan for the same query around it. the answer is 858 every time. LANGUAGE sql, even marked VOLATILE, is inlined: the plan says <code>unit_price &lt; 5</code> and uses the index. SECURITY DEFINER, a SET clause or PL/pgSQL make it a black box: a seq scan that calls it on every row.</>}>
+<RunPick
+  options={[{ key: "declared as", values: ["LANGUAGE sql", "... VOLATILE", "... SECURITY DEFINER", "... SET search_path", "LANGUAGE plpgsql"] }]}
+  runs={inline}
+  hot={["VOLATILE", "SECURITY DEFINER", "SET search_path = public", "LANGUAGE plpgsql"]}
+  file="is_cheap.sql"
+  show={["actual"]}
+  trace={source}
+/>
+</Figure>
+
+every block below starts from a fresh copy of the database, so nothing you create sticks.
+
+## writing one
+
+the shortest form is an expression after `RETURN`:
+
+```sql run db=shop session=fn title="functions.sql"
+CREATE FUNCTION price_with_tax(p numeric) RETURNS numeric
+LANGUAGE sql IMMUTABLE
+RETURN round(p * 1.20, 2);
+
+SELECT name, price, price_with_tax(price) FROM products WHERE id <= 3 ORDER BY id;
+```
+
+a function can return rows too. `RETURNS TABLE (...)` names the columns, and the body is a whole query:
+
+```sql run session=fn
+CREATE FUNCTION top_customers(n int)
+RETURNS TABLE (customer_id int, orders bigint)
+LANGUAGE sql STABLE
+BEGIN ATOMIC
+  SELECT customer_id, count(*) FROM orders
+  GROUP BY customer_id
+  ORDER BY count(*) DESC, customer_id
+  LIMIT n;
+END;
+
+SELECT * FROM top_customers(n => 3) ORDER BY orders DESC, customer_id;
+```
+
+a set-returning function goes in FROM like a table, and arguments can be passed by name (`n => 3`) as well as by position. (the outer ORDER BY isn't decoration: the function's rows come back in whatever order its query produced them, and only the outermost ORDER BY is a promise.) `BEGIN ATOMIC ... END` is a body made of statements; the older way is a string, `AS $$ SELECT ... $$`. they behave differently in one important way, further down.
+
+## inlining
+
+the planner inlines a scalar SQL function when its body is a single expression (a `RETURN`, or a `SELECT` with no FROM) and nothing about the function needs to happen at call time. `EXPLAIN (VERBOSE)` shows what it did:
+
+```sql run db=shop
+CREATE FUNCTION is_cheap(p numeric) RETURNS boolean LANGUAGE sql RETURN p < 5;
+CREATE FUNCTION is_cheap_sd(p numeric) RETURNS boolean LANGUAGE sql SECURITY DEFINER RETURN p < 5;
+
+EXPLAIN (VERBOSE, COSTS OFF) SELECT count(*) FROM order_items WHERE is_cheap(unit_price);
+EXPLAIN (VERBOSE, COSTS OFF) SELECT count(*) FROM order_items WHERE is_cheap_sd(unit_price);
+```
+
+the first filter is `(order_items.unit_price < '5'::numeric)`: no function left. the second still says `is_cheap_sd(order_items.unit_price)`. what stops a scalar function from being inlined, from the figure and the manual:
+
+- **SECURITY DEFINER**: the body has to run as the owner, so there has to be a call to switch users around.
+- **a SET clause** (`SET search_path = ...`): same, a setting changes for the duration of the call.
+- **any language but sql**: PL/pgSQL is opaque to the planner.
+- **a body more volatile than the declaration**: declare it IMMUTABLE but call `now()` inside, and postgres won't inline it (inlining would quietly change what it does).
+- **a body that's a real query**, with a FROM: that's not a single expression, so a scalar function like that is called, not pasted in.
+
+note what's *not* on the list: declaring a scalar function VOLATILE. if the body is one harmless expression, it's inlined anyway, as the figure shows. VOLATILE does stop inlining for **set-returning** functions in FROM, which postgres otherwise inlines as a subquery when they're a single SELECT:
+
+```sql run db=shop
+CREATE FUNCTION cheap_items(maxp numeric) RETURNS SETOF order_items
+LANGUAGE sql STABLE AS $$ SELECT * FROM order_items WHERE unit_price < maxp $$;
+CREATE FUNCTION cheap_items_v(maxp numeric) RETURNS SETOF order_items
+LANGUAGE sql VOLATILE AS $$ SELECT * FROM order_items WHERE unit_price < maxp $$;
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM cheap_items(5);
+EXPLAIN (COSTS OFF) SELECT count(*) FROM cheap_items_v(5);
+```
+
+the STABLE one becomes a scan of order_items with the filter in it. the VOLATILE one stays a `Function Scan`: it runs the whole query on its own and hands back every row, and the outer query can't push anything into it. (a volatile function is supposed to run with its own fresh view of the data, which pasting it into the outer query would break.)
+
+## volatility
+
+volatility is a promise you make, and postgres believes it:
+
+| | promises | postgres may | examples |
+| --- | --- | --- | --- |
+| IMMUTABLE | same arguments, same result, forever. reads no tables | call it once while planning and keep the result; use it in an index | `lower`, `length`, `price_with_tax` above |
+| STABLE | same arguments, same result within one statement | call it once per scan instead of once per row; use it as an index scan key | `now`, `to_char`, anything that reads a table |
+| VOLATILE | nothing. may change every call, may write | nothing: call it for every row, every time | `random`, `nextval`, anything with side effects |
+
+```sql run db=shop
+SELECT DISTINCT proname, provolatile FROM pg_proc
+WHERE proname IN ('lower', 'now', 'to_char', 'random', 'nextval')
+ORDER BY provolatile, proname;
+```
+
+(`i`, `s`, `v`. a function you write without saying is `v`.)
+
+<Predict options={["1", "2", "2,000"]} answer={2}>
+```sql
+-- pick_volatile(x) returns x, and is declared VOLATILE
+SELECT name FROM customers WHERE id = pick_volatile(42);
+-- customers has 2,000 rows and a primary key on id.
+-- how many times is pick_volatile called?
+```
+<Explain>
+2,000. a VOLATILE function might return something different on every call, so postgres can't call it once and look 42 up in the index: the answer for each row could be different. it scans the whole table and calls the function on every row. the same function declared STABLE is called twice (once while planning, to estimate, once when the index scan starts), and declared IMMUTABLE, once: the planner folds `pick_immutable(42)` into the constant 42.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>the same function, which returns its argument and counts its own calls, declared three ways. switch and compare the plan and the count. the result is Ada every time.</>}>
+<RunPick
+  options={[{ key: "declared", values: ["VOLATILE", "STABLE", "IMMUTABLE"] }]}
+  runs={calls}
+  hot={["pick_volatile(42)", "pick_stable(42)", "pick_immutable(42)"]}
+  file="calls.sql"
+  show={["est"]}
+  trace={source}
+/>
+</Figure>
+
+(these three functions cheat a little to count themselves: bumping a sequence is a side effect, which no STABLE or IMMUTABLE function should have. it's fine for counting, and the reason the next gotcha exists.)
+
+an index can only be built on IMMUTABLE expressions, because its contents must never go stale. `to_char` on a timestamptz depends on the session's time zone, so it's STABLE, and postgres says no:
+
+```sql run db=shop expect=error
+CREATE INDEX ON customers (to_char(created_at, 'YYYY-MM'));
+```
+
+<Gotcha title="lying about volatility">
+postgres takes IMMUTABLE at its word. mark a function that reads a table IMMUTABLE and the planner may call it once and reuse the answer, or an index may store results that go stale the moment the table changes, and nothing warns you. marking a wrapper around `to_char` IMMUTABLE to sneak it into an index works, and returns wrong rows for anyone in another time zone. declare the weakest promise that's true. if in doubt, STABLE.
+</Gotcha>
+
+## two kinds of body
+
+a body written as a string (`AS $$ ... $$`) is stored as text and parsed again when the function is used. a body written as SQL statements (`RETURN expr` or `BEGIN ATOMIC ... END`, the SQL-standard form, <Since v={14} />) is parsed once, when you create it, and stored as a tree that points at the actual tables and columns. postgres records those as dependencies.
+
+<Figure wide caption={<>a function that counts books, written both ways. then the column it uses is renamed, or dropped. the string body breaks at the next call. the BEGIN ATOMIC body follows the rename, and refuses to let the column be dropped.</>}>
+<RunPick
+  options={[
+    { key: "body", values: ["string ($$ ... $$)", "BEGIN ATOMIC"] },
+    { key: "then", values: ["rename the column", "drop the column"] },
+  ]}
+  runs={bodies}
+  hot={["AS $$", "BEGIN ATOMIC", "RENAME COLUMN category TO kind", "DROP COLUMN category"]}
+  file="n_books.sql"
+  trace={source}
+/>
+</Figure>
+
+so standard bodies catch a whole class of "renamed a column, broke a function nobody remembered" bugs at migration time instead of at 3 a.m. the string form still has its place: it's the only way to write the body in another language ([PL/pgSQL](/learn/writes/plpgsql) is always a string), and it lets a function mention a table that doesn't exist yet.
+
+<Deep title="SECURITY DEFINER and search_path">
+a SECURITY DEFINER function runs with its owner's privileges, which is how you hand out one specific power (insert into the audit log, read one column of the salaries table) without granting the table. the manual's advice is to always give such a function a fixed `SET search_path`, so a caller can't put their own table or operator named like yours earlier in the path and have it run with the owner's rights. both of those, as the first figure shows, also mean the function is never inlined. that's usually fine for what SECURITY DEFINER functions do; just don't wrap a hot WHERE clause in one. ([schemas, roles and row-level security](/learn/design/schemas-roles-and-rls) covers search_path and GRANT.)
+</Deep>
+
+<Interview q="what's the difference between IMMUTABLE, STABLE and VOLATILE?">
+promises about the result. IMMUTABLE: depends only on the arguments, forever (so it can be evaluated at plan time and used in index expressions). STABLE: constant within one statement and may read the database (so it can be evaluated once per scan, and used as an index scan key, but not in an index definition). VOLATILE, the default: may differ every call or have side effects, so it's called for every row and can't drive an index scan. bonus points: `now()` is STABLE because it's frozen for the transaction, while `clock_timestamp()` is VOLATILE; and a LANGUAGE sql function with a one-expression body is usually inlined, which matters more for performance than any of the three labels.
+</Interview>
+
+<Keylines>
+- a SQL function names an expression or a query. RETURN and BEGIN ATOMIC bodies are parsed once and tracked as dependencies.
+- simple LANGUAGE sql functions are inlined: the planner sees the body, indexes and all.
+- SECURITY DEFINER, SET clauses and other languages make a function a black box.
+- volatility is a promise: IMMUTABLE folds at plan time, STABLE runs once per scan, VOLATILE runs for every row.
+- never claim more than is true: a lying IMMUTABLE gives stale plans and stale indexes.
+</Keylines>

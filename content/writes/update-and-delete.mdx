@@ -1,0 +1,195 @@
+import { TableSteps } from "@/components/figures/writes/TableSteps";
+import { framesOf, pickRun } from "@/components/figures/writes/frames";
+import { prov, resultOf } from "@/lib/db/captured";
+import trace from "./traces/update-delete.pgtrace.json";
+
+{/* the figures read traces/update-delete.scenario.sql, captured on PGlite from shop. every change
+    in it is wrapped in BEGIN and ROLLBACK, so each one starts from the same data. */}
+
+export const forgot = framesOf(trace, [
+  { label: "before", state: 0, total: 1 },
+  { label: "WHERE id = 42", stmt: 3, state: 4, total: 1 },
+  { label: "ROLLBACK", stmt: 5, state: 6, total: 1 },
+  { label: "no WHERE", stmt: 8, state: 9, total: 1 },
+  { label: "ROLLBACK", stmt: 10, state: 11, total: 1 },
+], "id");
+export const feed = {
+  "UPDATE ... FROM | one row per sku": resultOf(trace, 13),
+  "UPDATE ... FROM | a duplicate sku": resultOf(trace, 16),
+  "MERGE | one row per sku": resultOf(trace, 19),
+  "MERGE | a duplicate sku": resultOf(trace, 22),
+};
+export const empty = {
+  "nothing yet": pickRun(trace, [24]),
+  DELETE: pickRun(trace, [26, 27]),
+  TRUNCATE: pickRun(trace, [30, 31]),
+};
+export const source = prov(trace);
+
+<InShort>
+**UPDATE** changes columns in the rows its WHERE matches, and **DELETE** removes the rows its WHERE matches. no WHERE matches every row. the command tag (`UPDATE 2000`) tells you how many, so **BEGIN first** and read it before you COMMIT.
+
+`UPDATE ... FROM` and `DELETE ... USING` bring in other tables. **TRUNCATE** empties a table without touching its rows at all.
+</InShort>
+
+## the picture
+
+you know find and replace in a text editor? the search box picks what changes, the replace box says what it becomes, and an empty search box means everything. UPDATE is that, for rows: WHERE is the search box, SET is the replace box.
+
+the difference is that an editor shows you the matches first. UPDATE just does it, and then tells you how many it did.
+
+<Figure wide caption={<>step through. with a WHERE, one customer of 2,000 moves to Paris. without it, all of them do: every row in the window turns <C k="hot">hot</C> and the tag says UPDATE 2000. both run inside BEGIN, so ROLLBACK puts everything back.</>}>
+<TableSteps frames={forgot} table="customers, 7 of them" trace={source} />
+</Figure>
+
+notice Zoë. she already lived in Paris, so her cell doesn't change colour, but she's in the 2,000 anyway. UPDATE counts the rows it wrote, not the rows whose values changed. (and it really does write each of them: in postgres every updated row is [a brand new row version](/learn/mvcc/update-is-insert), even when nothing in it is different.)
+
+nothing on this page sticks, by the way: every block starts from a fresh copy of the shop database. break whatever you like.
+
+## UPDATE
+
+name the table, SET the columns, and WHERE picks the rows. here every book gets 10% dearer:
+
+```sql run db=shop
+UPDATE products SET price = round(price * 1.10, 2) WHERE category = 'books';
+SELECT id, name, price FROM products WHERE category = 'books' ORDER BY id LIMIT 4;
+```
+
+`UPDATE 12`: there are 12 books. the right-hand side of SET can use the row's own columns, and every one of them means the value *before* this update. so assignments don't see each other, and this really does swap two columns:
+
+```sql run db=shop
+UPDATE products SET name = sku, sku = name WHERE id = 3;
+SELECT id, sku, name FROM products WHERE id = 3;
+```
+
+<Predict options={["the 3 with no category", "0 rows", "an error"]} answer={1}>
+```sql
+UPDATE products SET category = 'misc' WHERE category = NULL;
+```
+<Explain>
+`category = NULL` is never true, not even when category is NULL: comparing anything to NULL gives unknown, and WHERE only keeps true. so it matches nothing, and you get `UPDATE 0` with no complaint. you meant `WHERE category IS NULL`. ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) is the whole story.)
+</Explain>
+</Predict>
+
+```sql run db=shop
+UPDATE products SET category = 'misc' WHERE category = NULL;
+UPDATE products SET category = 'misc' WHERE category IS NULL;
+```
+
+## BEGIN first
+
+the habit that saves you is boring: open a transaction, run the change, read the tag, and only then decide.
+
+```sql run db=shop
+BEGIN;
+UPDATE customers SET city = 'Paris';
+ROLLBACK;
+```
+
+`UPDATE 2000`, when you expected `UPDATE 1`. inside BEGIN that's a shrug and a ROLLBACK. in autocommit (every statement its own transaction, which is the default in psql and in most drivers) it's already committed by the time you read it, and the way back is a backup. [BEGIN, COMMIT and ROLLBACK](/learn/transactions/begin-commit-rollback) has the details, including what a transaction left open does to everyone else.
+
+two more habits: write the WHERE first and the SET second (an UPDATE with half a WHERE is still a whole UPDATE), and run the same WHERE as a `SELECT count(*)` before you trust it.
+
+## UPDATE ... FROM
+
+sometimes the new value lives in another table: a price feed, a staging table, a list somebody sent you. `FROM` joins it in, and the WHERE says how the rows pair up. the feed here is a VALUES list, but it could be any table or query.
+
+<Figure wide caption={<>switch the statement and the feed. with a duplicate sku in the feed, UPDATE ... FROM picks one of the two prices without a word. MERGE, given the same feed, stops with an error.</>}>
+<RunPick
+  options={[
+    { key: "statement", values: ["UPDATE ... FROM", "MERGE"] },
+    { key: "feed", values: ["one row per sku", "a duplicate sku"] },
+  ]}
+  runs={feed}
+  hot={["('BOO-0003', 35.00)"]}
+  file="feed.sql"
+  trace={source}
+/>
+</Figure>
+
+with two feed rows for one book, the book still gets updated once, with whichever pairing the join produced first. here that was 35.00. the manual says plainly that which one wins "is not readily predictable": a different plan can pick the other. if the feed can have duplicates, deduplicate it first, or use [MERGE](/learn/writes/merge), which refuses to change a row twice.
+
+<Gotcha title="FROM isn't the target">
+don't repeat the target table in FROM. the target is already in the statement, and a second copy in FROM is a separate table as far as the join is concerned. tie it to nothing and every target row matches:
+
+```sql run db=shop
+UPDATE products SET price = p2.price FROM products AS p2 WHERE p2.id = 3;
+```
+
+`UPDATE 200`. the WHERE filtered the copy, not the target, so all 200 products now cost what the art of sql costs. if you need the table twice, join the copy to the target by its primary key (`WHERE p2.id = products.id ...`), or use a subquery in SET.
+</Gotcha>
+
+## DELETE, and what it takes with it
+
+DELETE is UPDATE without the SET: WHERE picks the rows, and they go. but rows have friends. orders point at customers, and order_items point at orders and products, through [foreign keys](/learn/design/foreign-keys). shop's order_items says `ON DELETE CASCADE` for its order, so deleting the cancelled orders takes their line items along:
+
+```sql run db=shop
+SELECT count(*) AS items FROM order_items;
+DELETE FROM orders WHERE status = 'cancelled';
+SELECT count(*) AS items FROM order_items;
+```
+
+`DELETE 317`, and 714 line items went with them without being named. products are the other way round: order_items points at them with no ON DELETE, which means "refuse".
+
+```sql run db=shop expect=error
+DELETE FROM products WHERE discontinued;
+```
+
+to really remove the 12 discontinued products, their line items have to go first. `DELETE ... USING` is DELETE's version of UPDATE ... FROM: it joins in the table that says which rows to pick.
+
+```sql run db=shop
+DELETE FROM order_items AS oi
+USING products AS p
+WHERE oi.product_id = p.id AND p.discontinued;
+
+DELETE FROM products WHERE discontinued;
+```
+
+1,444 line items, then the 12 products. (`WHERE product_id IN (SELECT id FROM products WHERE discontinued)` does the same, and is standard SQL. USING is a postgres extension; the plan is usually the same join either way.)
+
+## TRUNCATE
+
+DELETE goes row by row: it finds each one, stamps it deleted, and leaves it on its page for [VACUUM](/learn/mvcc/vacuum) to clean up later. TRUNCATE doesn't look at rows at all.
+
+<Figure wide caption={<>switch between doing nothing, DELETE and TRUNCATE on order_items (both rolled back after). after DELETE the file is exactly as big as before. after TRUNCATE it's empty, and it's a different file: the filenode changed.</>}>
+<RunPick
+  options={[{ key: "empty it with", values: ["nothing yet", "DELETE", "TRUNCATE"] }]}
+  runs={empty}
+  hot={["DELETE FROM order_items", "TRUNCATE order_items"]}
+  file="empty.sql"
+  trace={source}
+/>
+</Figure>
+
+TRUNCATE swaps in a new, empty file and drops the old one when the transaction commits. that makes it fast on a big table and leaves no dead rows behind, at a price:
+
+| | DELETE | TRUNCATE |
+| --- | --- | --- |
+| picks rows with a WHERE | yes | no, all or nothing |
+| fires row triggers (`ON DELETE`) | yes | no, only `ON TRUNCATE` ones |
+| leaves dead rows for VACUUM | yes | no |
+| lock it takes | ROW EXCLUSIVE: others keep reading and writing | ACCESS EXCLUSIVE: everyone waits ([table lock modes](/learn/locking/table-lock-modes)) |
+| a table others point at with a foreign key | checks or cascades row by row | refused, unless you TRUNCATE them too (or say CASCADE) |
+| rolls back | yes | yes, in postgres |
+
+```sql run db=shop expect=error
+TRUNCATE orders;
+```
+
+orders is referenced by order_items, so postgres won't empty it alone. `TRUNCATE orders, order_items` works, and `TRUNCATE ... RESTART IDENTITY` resets the id sequences too.
+
+<Deep title="why TRUNCATE can break a snapshot">
+a transaction at REPEATABLE READ that took its snapshot before the TRUNCATE committed, and hadn't touched the table yet, will find it empty afterwards, even though its snapshot says the rows should be there. the old file is gone; there's nothing left to show it. the manual calls TRUNCATE "not MVCC-safe" for exactly this reason. DELETE has no such problem: the deleted rows stay on their pages until nobody can see them anymore. ([snapshots](/learn/mvcc/snapshots) and [the xmin horizon](/learn/mvcc/xmin-horizon) explain "nobody can see them".)
+</Deep>
+
+<Interview q="what's the difference between DELETE FROM t and TRUNCATE t?">
+DELETE is DML: it visits every row, marks it deleted, fires row triggers, takes a lock that lets others keep working, and leaves dead rows that VACUUM reclaims later, so the table doesn't shrink. TRUNCATE is closer to DDL: it replaces the table's files with empty ones, so it's near-instant on any size and frees the space at commit, but it takes an ACCESS EXCLUSIVE lock, skips row triggers, can't take a WHERE, and refuses tables other tables reference. bonus point: in postgres both are transactional, so a TRUNCATE inside BEGIN can be rolled back. (in mysql it [commits implicitly](https://dev.mysql.com/doc/refman/8.4/en/truncate-table.html), like other DDL.)
+</Interview>
+
+<Keylines>
+- WHERE picks the rows. no WHERE picks all of them.
+- the tag (UPDATE 2000) is your check, so BEGIN first and read it before COMMIT.
+- SET expressions all see the row as it was before the update.
+- UPDATE ... FROM silently picks one match when the source has duplicates. MERGE errors instead.
+- TRUNCATE swaps in an empty file: instant, no dead rows, but a heavy lock and no WHERE.
+</Keylines>

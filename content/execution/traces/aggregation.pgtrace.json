@@ -1,0 +1,233 @@
+{
+ "v": 1,
+ "scenario": "content/execution/traces/aggregation.scenario.sql",
+ "title": "GROUP BY on events: hashed, sorted, mixed, spilled, and split into partial aggregates",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"},
+  "events_user_id_idx": {"kind":"index","am":"btree","columns":[{"name":"user_id","type":"int4"}],"on":"events"}
+ },
+ "base": {"xid":794,"lsn":31402728},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT id, kind FROM events WHERE id BETWEEN 20001 AND 20012 ORDER BY id",
+   "note": "twelve events and their kinds, in the order the table holds them.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [{"name":"id","type":"int8"},{"name":"kind","type":"text"}],
+    "data": [
+     ["20001","view"],
+     ["20002","add_to_cart"],
+     ["20003","click"],
+     ["20004","purchase"],
+     ["20005","view"],
+     ["20006","purchase"],
+     ["20007","click"],
+     ["20008","view"],
+     ["20009","view"],
+     ["20010","add_to_cart"],
+     ["20011","click"],
+     ["20012","add_to_cart"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT kind, count(*) FROM events WHERE id BETWEEN 20001 AND 20012 GROUP BY kind ORDER BY kind",
+   "note": "the same twelve, grouped by kind: the answer both strategies have to reach.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"kind","type":"text"},{"name":"count","type":"int8"}],
+    "data": [["add_to_cart","3"],["click","3"],["purchase","2"],["view","4"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT user_id, count(*) FROM events GROUP BY user_id",
+   "note": "events per user. nothing is sorted by user_id, so postgres hashes: one pass, one hash table entry per user.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["HashAggregate (actual rows=500.00 loops=1)"],
+     ["  Group Key: user_id"],
+     ["  Batches: 1  Memory Usage: 53kB"],
+     ["  Buffers: shared hit=2 read=333"],
+     ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["        Buffers: shared hit=2 read=333"],
+     ["Planning:"],
+     ["  Buffers: shared hit=12"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SET enable_hashagg = off;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT user_id, count(*) FROM events GROUP BY user_id",
+   "note": "the same with hash aggregation switched off: sort all 25,000 rows by user_id first, then count each run of equal ids.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["GroupAggregate (actual rows=500.00 loops=1)"],
+     ["  Group Key: user_id"],
+     ["  Buffers: shared hit=338"],
+     ["  ->  Sort (actual rows=25000.00 loops=1)"],
+     ["        Sort Key: user_id"],
+     ["        Sort Method: quicksort  Memory: 513kB"],
+     ["        Buffers: shared hit=338"],
+     ["        ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["              Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "RESET enable_hashagg;\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT kind, user_id, count(*) FROM events GROUP BY ROLLUP (kind, user_id)",
+   "note": "ROLLUP: three groupings at once. two are hashed in one pass; the grand total needs no hashing at all.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["MixedAggregate (actual rows=2441.00 loops=1)"],
+     ["  Hash Key: kind, user_id"],
+     ["  Hash Key: kind"],
+     ["  Group Key: ()"],
+     ["  Batches: 1  Memory Usage: 265kB"],
+     ["  Buffers: shared hit=335"],
+     ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["        Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT user_id, count(*) FROM events GROUP BY user_id ORDER BY user_id",
+   "note": "with ORDER BY user_id on top: group first by hashing, then sort just the 500 groups.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Sort (actual rows=500.00 loops=1)"],
+     ["  Sort Key: user_id"],
+     ["  Sort Method: quicksort  Memory: 32kB"],
+     ["  Buffers: shared hit=335"],
+     ["  ->  HashAggregate (actual rows=500.00 loops=1)"],
+     ["        Group Key: user_id"],
+     ["        Batches: 1  Memory Usage: 53kB"],
+     ["        Buffers: shared hit=335"],
+     ["        ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["              Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT user_id, count(*), sum(amount) FROM events GROUP BY user_id",
+   "note": "the default 4MB: a sum and a count per user, all 500 groups in one hash table.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["HashAggregate (actual rows=500.00 loops=1)"],
+     ["  Group Key: user_id"],
+     ["  Batches: 1  Memory Usage: 189kB"],
+     ["  Buffers: shared hit=335"],
+     ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["        Buffers: shared hit=335"],
+     ["Planning:"],
+     ["  Buffers: shared hit=8 read=1"]
+    ]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SET work_mem = '64kB';\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT user_id, count(*), sum(amount) FROM events GROUP BY user_id",
+   "note": "64kB: the hash table outgrows its budget. groups that don't fit are spilled to disk and finished in later batches.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["HashAggregate (actual rows=500.00 loops=1)"],
+     ["  Group Key: user_id"],
+     ["  Batches: 5  Memory Usage: 144kB  Disk Usage: 240kB"],
+     ["  Buffers: shared hit=335, temp read=22 written=45"],
+     ["  ->  Seq Scan on events (actual rows=25000.00 loops=1)"],
+     ["        Buffers: shared hit=335"]
+    ]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "RESET work_mem;\nCREATE INDEX ON events (user_id);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT user_id, count(*) FROM events GROUP BY user_id",
+   "note": "with an index on user_id, the rows arrive sorted by user_id for free, and grouping just streams: a GroupAggregate with no Sort.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["GroupAggregate (actual rows=500.00 loops=1)"],
+     ["  Group Key: user_id"],
+     ["  Buffers: shared hit=1 read=23"],
+     ["  ->  Index Only Scan using events_user_id_idx on events (actual rows=25000.00 loops=1)"],
+     ["        Heap Fetches: 0"],
+     ["        Index Searches: 1"],
+     ["        Buffers: shared hit=1 read=23"],
+     ["Planning:"],
+     ["  Buffers: shared hit=19 read=1"]
+    ]
+   }
+  }
+ ],
+ "db": "events"
+}

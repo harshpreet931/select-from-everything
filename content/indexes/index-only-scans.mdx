@@ -1,0 +1,157 @@
+import { IndexOnly } from "@/components/figures/indexes/IndexOnly";
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import ios from "./traces/index-only.pgtrace.json";
+import inc from "./traces/include.pgtrace.json";
+
+{/* the stepper reads traces/index-only.scenario.sql (a never-vacuumed copy of orders, its
+    visibility map after every VACUUM and UPDATE, and the plan of one query in between); the
+    INCLUDE switch reads traces/include.scenario.sql. both captured on PGlite, so they match
+    the run buttons below. */}
+
+export const scan = (i) => { const walk = (n) => n["Node Type"].endsWith("Scan") && n["Node Type"] !== "Bitmap Index Scan" ? n : walk(n.Plans[0]); return walk(ios.steps[i].explain.Plan); };
+export const pg = (i) => ios.steps[i].explain.Plan["Shared Hit Blocks"] + ios.steps[i].explain.Plan["Shared Read Blocks"];
+export const fmt = (x) => Number(x).toLocaleString("en-US");
+export const notVisible = (i) => ios.steps[i].vm.o.filter((v) => !v.allVisible).map((v) => v.block);
+
+<InShort>
+if every column a query needs is in the index, postgres can answer from the index alone: an **index-only scan**. the catch is visibility. the index doesn't know which row versions your snapshot can see, so postgres checks the **visibility map**, and for every page not marked all-visible it goes to the heap anyway. EXPLAIN counts those trips as **Heap Fetches**.
+
+a freshly vacuumed table: `Heap Fetches: 0`. a table nobody vacuums: an index-only scan in name only.
+</InShort>
+
+## the picture
+
+you know how the index at the back of a book sometimes answers the question by itself? "is there anything about saffron?" the index says page 212, and you don't need to open page 212 to know the answer is yes.
+
+a query that only asks for indexed columns is that question. the index has the values. what it doesn't have is MVCC: an index entry points at a row version, and only the heap knows whether that version is committed, deleted, or too new for you ([visibility rules](/learn/mvcc/visibility-rules)). so before trusting the entry, postgres asks a much smaller question: is that heap page marked all-visible? if yes, every version on it is visible to everyone and the index entry can be trusted. if no, fetch the heap page and check.
+
+step through a real run: a never-vacuumed copy of `orders` with an index on `customer_id`, and a query that only needs `customer_id`.
+
+<Figure wide caption={<>step through. the squares are the visibility map of <code>o</code>, one per heap page, <C k="meta">filled when all-visible</C>. before VACUUM, the forced index-only scan makes {fmt(scan(3)["Heap Fetches"])} heap fetches, one per row. after VACUUM, 0, and {pg(5)} pages read in all. the UPDATE clears <C k="hot">{notVisible(6).length} bits</C>, and the next scan makes {scan(7)["Heap Fetches"]} heap fetches into exactly those pages.</>}>
+<IndexOnly trace={ios} rel="o" steps={[1, 3, 4, 5, 6, 7, 8, 9]} />
+</Figure>
+
+notice the first step: the planner didn't even try an index-only scan. it knows how many pages are all-visible (`pg_class.relallvisible`, updated by VACUUM), and an index-only scan over a table with none is just an index scan with extra steps. forcing it shows why: {fmt(scan(3)["Heap Fetches"])} heap fetches for {fmt(scan(3)["Actual Rows"])} rows.
+
+## run it
+
+the same sequence, in the browser. a copy of `orders` that nothing has vacuumed yet:
+
+```sql run db=shop ext=pg_visibility session=ios
+CREATE TABLE o (LIKE orders);
+INSERT INTO o SELECT * FROM orders ORDER BY id;
+CREATE INDEX o_customer ON o (customer_id);
+ANALYZE o;
+SELECT count(*) FILTER (WHERE all_visible) AS all_visible, count(*) AS pages
+FROM pg_visibility_map('o');
+```
+
+zero of 83. `ANALYZE` gathers statistics but never touches the visibility map; only VACUUM sets the bits. here's the query:
+
+```sql run session=ios
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT customer_id, count(*) FROM o
+WHERE customer_id <= 100
+GROUP BY customer_id ORDER BY customer_id;
+```
+
+a bitmap scan over all 83 heap pages. now vacuum, and run it again:
+
+```sql run session=ios
+VACUUM o;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT customer_id, count(*) FROM o
+WHERE customer_id <= 100
+GROUP BY customer_id ORDER BY customer_id;
+```
+
+`Index Only Scan`, `Heap Fetches: 0`, a few pages read instead of 86. and no sort either: the index hands the rows over in `customer_id` order, so a GroupAggregate can count them as they go by.
+
+<Predict question="three orders get updated, none of them with customer_id ≤ 100. Heap Fetches next time?" options={["0", "3", "more than 3"]} answer={2}>
+```sql
+UPDATE o SET status = 'refunded' WHERE id IN (5, 4000, 8000);
+```
+<Explain>
+more than 3. the visibility map works per page, not per row. each update clears the bit on the page of the old version and the page of the new one, and every index entry pointing into any of those pages now needs a heap fetch, whoever it belongs to. it doesn't matter that the updated rows aren't in the result.
+</Explain>
+</Predict>
+
+```sql run session=ios
+SELECT id, customer_id FROM o WHERE id IN (5, 4000, 8000) ORDER BY id;
+UPDATE o SET status = 'refunded' WHERE id IN (5, 4000, 8000);
+SELECT blkno FROM pg_visibility_map('o') WHERE NOT all_visible ORDER BY blkno;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT customer_id, count(*) FROM o
+WHERE customer_id <= 100
+GROUP BY customer_id ORDER BY customer_id;
+```
+
+<Figure caption={<>pages read by the same query at four moments of the capture: the bitmap scan postgres picks on a fresh table, the index-only scan it turned down, the index-only scan after VACUUM, and after three updates cleared four bits.</>}>
+<Bars data={[
+  { label: "fresh table: bitmap scan", value: pg(1) },
+  { label: "fresh table: index-only, forced", value: pg(3), tone: "dead" },
+  { label: "after VACUUM: index-only", value: pg(5), tone: "live" },
+  { label: "after 3 updates: index-only", value: pg(7), tone: "hot" },
+]} unit="pages" log />
+<Provenance trace={prov(ios)} />
+</Figure>
+
+none of the three is in the result. four pages lost their bit anyway: the three pages the old versions sit on, and the last page, where the new versions went. {scan(7)["Heap Fetches"]} heap fetches, all into those four pages. the other entries are still answered from the index. on a busy table this is the steady state: Heap Fetches climbs as writes clear bits, and drops back to zero each time VACUUM catches up. that's one more reason [autovacuum](/learn/mvcc/autovacuum) settings matter for read performance, not only for bloat.
+
+<Deep title="where the bits come from">
+the visibility map is a separate fork of the table (`_vm`), two bits per heap page: all-visible and all-frozen. VACUUM sets all-visible when every tuple on the page is visible to every transaction, and any insert, update or delete on the page clears it, as part of the same WAL-logged change. index-only scans read the all-visible bit; VACUUM itself uses both to skip pages. [the free space map and the visibility map](/learn/storage/fsm-and-vm) shows the fork, and [VACUUM](/learn/mvcc/vacuum) the pass that sets it.
+</Deep>
+
+## INCLUDE: carrying a column you don't search on
+
+the query above only needed `customer_id`. ask for `status` too, and the index can't answer any more. you could index `(customer_id, status)`, but if you never search or sort by status, it doesn't need to be part of the key. `INCLUDE` stores it in the leaf entries as payload: not sorted, not searchable, just there to be read.
+
+<Figure wide caption={<>Ada's orders (customer 42), with and without <code>INCLUDE (status)</code>. without it, the index finds 7 entries and the heap has to be read for each status. with it, an index-only scan. a query on status alone can't use the INCLUDE column to search.</>}>
+<PlanPick
+  trace={inc}
+  keyLabel="index"
+  pages
+  plans={[
+    { label: "(customer_id)", step: 0 },
+    { label: "(customer_id) INCLUDE (status)", step: 2 },
+    { label: "INCLUDE, WHERE status = …", step: 3 },
+  ]}
+/>
+</Figure>
+
+```sql run db=shop
+CREATE INDEX orders_customer_inc ON orders (customer_id) INCLUDE (status);
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT customer_id, status FROM orders WHERE customer_id = 42;
+```
+
+`shop` was vacuumed when it loaded, so `orders` is all-visible and `Heap Fetches: 0` right away.
+
+INCLUDE vs another key column:
+
+| | `(customer_id, status)` | `(customer_id) INCLUDE (status)` |
+| --- | --- | --- |
+| index-only scan for both columns | yes | yes |
+| `WHERE customer_id = 42 AND status = 'paid'` narrows the scan | yes | status is checked, not searched |
+| `ORDER BY customer_id, status` without a sort | yes | no |
+| in internal pages | yes | no, leaf entries only |
+| allowed on a `UNIQUE` index without changing what's unique | no | yes |
+
+the last row is the one that made INCLUDE worth adding: `CREATE UNIQUE INDEX ON orders (id) INCLUDE (status)` keeps `id` unique and still covers lookups that want the status. adding status as a key column would make `(id, status)` the unique thing, which isn't the rule you wanted.
+
+<Gotcha title="covering indexes are wider, and wider indexes cost writes">
+every INCLUDE column is copied into every index entry and kept up to date on every write. it also makes the column "indexed" for HOT purposes: updating an INCLUDE column can't be a [HOT update](/learn/mvcc/hot-updates). cover the few columns a hot query needs, not every column the table has ([what indexes cost](/learn/indexes/index-costs)).
+</Gotcha>
+
+<Interview q="what is an index-only scan, and why does it sometimes still read the table?">
+a scan that returns the values straight from the index, when the index holds every column the query needs. it still has to respect MVCC: the index has no visibility information, so for each entry postgres checks the visibility map, and if the heap page isn't marked all-visible it fetches the page and checks the tuple. EXPLAIN ANALYZE reports those as Heap Fetches. VACUUM sets the all-visible bits, any write to a page clears them. bonus points: the planner looks at relallvisible and avoids index-only scans on tables that are mostly not all-visible, and INCLUDE adds payload columns so an index can cover a query without changing its key (or its uniqueness).
+</Interview>
+
+<Keylines>
+- index-only scan: every column the query needs is in the index.
+- the visibility map decides whether the heap is skipped, page by page.
+- Heap Fetches: 0 needs a recent VACUUM. writes clear bits for whole pages.
+- INCLUDE carries columns for covering without making them part of the key.
+</Keylines>

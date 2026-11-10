@@ -1,0 +1,192 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "61859b660e58bf46": {
+      "db": "shop",
+      "sql": "INSERT INTO customers (name, country, created_at)\nVALUES ('Ravi Shah', 'IN', '2026-05-01 09:00+00')\nRETURNING id, name;",
+      "statements": [
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "30d8541738d021b7",
+          "rows": [
+            ["2001", "Ravi Shah"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "821e384c09b72050": {
+      "db": "shop",
+      "sql": "UPDATE products SET price = round(price * 1.10, 2)\nWHERE category = 'books' AND price < 40\nRETURNING sku, old.price AS old_price, new.price AS new_price,\n          new.price - old.price AS change;",
+      "statements": [
+        {
+          "tag": "UPDATE 3",
+          "command": "UPDATE",
+          "columns": [
+            ["sku", "text", 25],
+            ["old_price", "numeric", 1700],
+            ["new_price", "numeric", 1700],
+            ["change", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "aed2e25121a5b5fb",
+          "rows": [
+            ["BOO-0003", "32.00", "35.20", "3.20"],
+            ["BOO-0028", "16.90", "18.59", "1.69"],
+            ["BOO-0120", "16.60", "18.26", "1.66"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5d9bfe38b0b81422": {
+      "db": "shop",
+      "sql": "DELETE FROM products WHERE name = 'left-handed teapot'\nRETURNING price, old.price AS old_price, new.price AS new_price;",
+      "statements": [
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": [
+            ["price", "numeric", 1700],
+            ["old_price", "numeric", 1700],
+            ["new_price", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "88173ddcf339b351",
+          "rows": [
+            ["19.99", "19.99", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8893d72e0fe0485e": {
+      "db": "shop",
+      "sql": "INSERT INTO products (sku, name, category, price)\nVALUES ('BOO-0003', 'the art of sql', 'books', 30.00),\n       ('BOO-0202', 'sql antipatterns', 'books', 38.00)\nON CONFLICT (sku) DO UPDATE SET price = EXCLUDED.price\nRETURNING new.sku, old.price AS old_price, new.price AS new_price,\n          old.sku IS NULL AS inserted;",
+      "statements": [
+        {
+          "tag": "INSERT 0 2",
+          "command": "INSERT",
+          "columns": [
+            ["sku", "text", 25],
+            ["old_price", "numeric", 1700],
+            ["new_price", "numeric", 1700],
+            ["inserted", "bool", 16]
+          ],
+          "rowCount": 2,
+          "digest": "71c19378b732579a",
+          "rows": [
+            ["BOO-0003", "32.00", "30.00", "f"],
+            ["BOO-0202", null, "38.00", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "652aba445289c84d": {
+      "db": "shop",
+      "sql": "CREATE TABLE orders_archive (LIKE orders);\n\nWITH gone AS (\n  DELETE FROM orders WHERE status = 'cancelled'\n  RETURNING *\n)\nINSERT INTO orders_archive SELECT * FROM gone;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 317",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 317,
+          "digest": "7814870ed2361ea0"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8941a5b42de92998": {
+      "db": "shop",
+      "sql": "WITH bump AS (\n  UPDATE products SET price = price + 1 WHERE id = 3 RETURNING price\n)\nSELECT (SELECT price FROM bump) AS returned,\n       (SELECT price FROM products WHERE id = 3) AS selected;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["returned", "numeric", 1700],
+            ["selected", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "345e7f0e704099d0",
+          "rows": [
+            ["33.00", "32.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a49bbe22156238b1": {
+      "db": "shop",
+      "sql": "WITH changed AS (\n  UPDATE products SET price = round(price * 1.10, 2)\n  WHERE category = 'books'\n  RETURNING id, name, old.price AS old_price, new.price AS new_price\n)\nSELECT * FROM changed ORDER BY new_price DESC, id LIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["old_price", "numeric", 1700],
+            ["new_price", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "60e03bcc65e479fb",
+          "rows": [
+            ["177", "cotton cookbook", "196.45", "216.10"],
+            ["122", "spare atlas", "174.68", "192.15"],
+            ["53", "mini notebook", "153.60", "168.96"],
+            ["142", "deluxe cookbook", "128.41", "141.25"],
+            ["97", "deluxe notebook", "114.68", "126.15"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "369b1fafe1751b8f": {
+      "db": "shop",
+      "sql": "UPDATE products AS p\nSET price = round(p.price * 1.10, 2)\nFROM (SELECT id, price FROM products\n      WHERE category = 'books' AND price < 40\n      FOR UPDATE) AS before\nWHERE p.id = before.id\nRETURNING p.sku, before.price AS old_price, p.price AS new_price;",
+      "statements": [
+        {
+          "tag": "UPDATE 3",
+          "command": "UPDATE",
+          "columns": [
+            ["sku", "text", 25],
+            ["old_price", "numeric", 1700],
+            ["new_price", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "7bbc0090dfe2746c",
+          "rows": [
+            ["BOO-0003", "32.00", "35.20"],
+            ["BOO-0028", "16.90", "18.59"],
+            ["BOO-0120", "16.60", "18.26"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,240 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "7bbdb1b4af5b1854": {
+      "db": "empty",
+      "sql": "SELECT pg_typeof('hello')   AS quoted,\n       pg_typeof(1)         AS small_number,\n       pg_typeof(3000000000) AS big_number,\n       pg_typeof(1.5)       AS with_a_dot,\n       pg_typeof(true)      AS bool;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["quoted", "regtype", 2206],
+            ["small_number", "regtype", 2206],
+            ["big_number", "regtype", 2206],
+            ["with_a_dot", "regtype", 2206],
+            ["bool", "regtype", 2206]
+          ],
+          "rowCount": 1,
+          "digest": "4b1873547024a156",
+          "rows": [
+            ["unknown", "integer", "bigint", "numeric", "boolean"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "234d08d6c61afdb9": {
+      "db": "empty",
+      "sql": "SELECT CAST('42' AS integer) AS cast_fn,\n       '42'::integer         AS colons,\n       integer '42'          AS typed_literal;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["cast_fn", "int4", 23],
+            ["colons", "int4", 23],
+            ["typed_literal", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "c011974f94c2607a",
+          "rows": [
+            ["42", "42", "42"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "46719f96a311d1c6": {
+      "db": "empty",
+      "sql": "SELECT '12abc'::integer;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22P02",
+            "message": "invalid input syntax for type integer: \"12abc\"",
+            "position": 8
+          },
+          "digest": "7e30db147d5b72ef"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22P02",
+        "message": "invalid input syntax for type integer: \"12abc\"",
+        "position": 8,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "be6f6cbb0a672fd6": {
+      "db": "empty",
+      "sql": "SELECT castcontext AS context, count(*) AS casts\nFROM pg_cast\nGROUP BY castcontext\nORDER BY castcontext;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["context", "char", 18],
+            ["casts", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "ef8ff964be611c02",
+          "rows": [
+            ["a", "77"],
+            ["e", "41"],
+            ["i", "117"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "79a2c125c46a7156": {
+      "db": "empty",
+      "sql": "SELECT 3.7::int AS numeric_37, 2.5::int AS numeric_25, 2.5::float8::int AS float_25, (-2.5)::float8::int AS float_neg_25;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["numeric_37", "int4", 23],
+            ["numeric_25", "int4", 23],
+            ["float_25", "int4", 23],
+            ["float_neg_25", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "6f66cae09b6c185b",
+          "rows": [
+            ["4", "3", "2", "-2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ab0ee970d6463d76": {
+      "db": "empty",
+      "sql": "SELECT '1' + '1';",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42725",
+            "message": "operator is not unique: unknown + unknown",
+            "hint": "Could not choose a best candidate operator. You might need to add explicit type casts.",
+            "position": 12
+          },
+          "digest": "545b8bbadd981b80"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42725",
+        "message": "operator is not unique: unknown + unknown",
+        "hint": "Could not choose a best candidate operator. You might need to add explicit type casts.",
+        "position": 12,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "066f8b1100d9fca9": {
+      "db": "empty",
+      "sql": "SELECT 1 || 1;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42883",
+            "message": "operator does not exist: integer || integer",
+            "hint": "No operator matches the given name and argument types. You might need to add explicit type casts.",
+            "position": 10
+          },
+          "digest": "132d6c2e06c82568"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42883",
+        "message": "operator does not exist: integer || integer",
+        "hint": "No operator matches the given name and argument types. You might need to add explicit type casts.",
+        "position": 10,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "4bbf2af71263608d": {
+      "db": "empty",
+      "sql": "SELECT 1 || 'x' AS mixed, 1::text || 1 AS cast_one, '1' || 1 AS literal;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["mixed", "text", 25],
+            ["cast_one", "text", 25],
+            ["literal", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "72ac35e30d77e06f",
+          "rows": [
+            ["1x", "11", "11"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3aa7c06eb60d633d": {
+      "db": "empty",
+      "sql": "CREATE TABLE notes (body text);\nINSERT INTO notes (body) VALUES (42);\nSELECT body, pg_typeof(body) FROM notes;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["body", "text", 25],
+            ["pg_typeof", "regtype", 2206]
+          ],
+          "rowCount": 1,
+          "digest": "91a2cff429c2f6ca",
+          "rows": [
+            ["42", "text"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

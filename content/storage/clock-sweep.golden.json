@@ -1,0 +1,199 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "919a3d1824b919d9": {
+      "db": "lab",
+      "sql": "SELECT count(*) FROM accounts;\nSELECT usagecount FROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;\nSELECT count(*) FROM accounts;\nSELECT count(*) FROM accounts;\nSELECT usagecount FROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;\nSELECT count(*) FROM accounts;\nSELECT count(*) FROM accounts;\nSELECT count(*) FROM accounts;\nSELECT count(*) FROM accounts;\nSELECT usagecount FROM pg_buffercache\nWHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c52673244bcc470e",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["usagecount", "int2", 21]
+          ],
+          "rowCount": 1,
+          "digest": "a7b112e036f86464",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "68f0f9f96bcbd704",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "88e18ff359180b61",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["usagecount", "int2", 21]
+          ],
+          "rowCount": 1,
+          "digest": "892c0994b6240339",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "e46da11b2003667f",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "7ef7ced215e1c410",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "cbb6460316ea41bd",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "523877e1122c4356",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["usagecount", "int2", 21]
+          ],
+          "rowCount": 1,
+          "digest": "8ee8c019f4326ced",
+          "rows": [
+            ["5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f1fca53836a00591": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM orders;\nSELECT count(*) FROM orders;\nSELECT name, city FROM customers WHERE id = 42;\nSELECT usage_count, buffers, dirty, pinned\nFROM pg_buffercache_usage_counts()\nORDER BY usage_count;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "29a429f8ea1fc828",
+          "rows": [
+            ["10000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "0e4169dc463cf3e9",
+          "rows": [
+            ["10000"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "8c86a93580a5a34e",
+          "rows": [
+            ["Ada Lovelace", "London"]
+          ]
+        },
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["usage_count", "int4", 23],
+            ["buffers", "int4", 23],
+            ["dirty", "int4", 23],
+            ["pinned", "int4", 23]
+          ],
+          "rowCount": 6,
+          "digest": "b768d043b5a5336b",
+          "rows": [
+            ["0", "15998", "0", "0"],
+            ["1", "129", "9", "0"],
+            ["2", "116", "4", "0"],
+            ["3", "17", "3", "0"],
+            ["4", "13", "5", "0"],
+            ["5", "111", "32", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

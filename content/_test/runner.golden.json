@@ -1,0 +1,495 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "fee05b4ebd522b34": {
+      "db": "empty",
+      "sql": "SELECT version();",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["version", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "df867a600faf136d",
+          "rows": [
+            ["PostgreSQL 18.6 (PGlite 0.5.12) on wasm32-unknown-emscripten, compiled by emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.74 (1092ec30a3fb1d46b1782ff1b4db5094d3d06ae5), 32-bit"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c25838fa70ef7274": {
+      "db": "empty",
+      "sql": "CREATE TABLE t (id int PRIMARY KEY, label text);\nINSERT INTO t VALUES (1, 'one'), (2, 'two'), (3, NULL), (4, '');\nSELECT id, label, label IS NULL AS is_null FROM t ORDER BY id;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 4",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4,
+          "digest": "456641ddbdad5ac9"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["label", "text", 25],
+            ["is_null", "bool", 16]
+          ],
+          "rowCount": 4,
+          "digest": "7ae406786038898d",
+          "rows": [
+            ["1", "one", "f"],
+            ["2", "two", "f"],
+            ["3", null, "t"],
+            ["4", "", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "66f4ccfdda24ad93": {
+      "db": "empty",
+      "sql": "SELECT id,\n       nope\nFROM (VALUES (1)) AS v (id);",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42703",
+            "message": "column \"nope\" does not exist",
+            "position": 19
+          },
+          "digest": "c70103b6c668db80"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42703",
+        "message": "column \"nope\" does not exist",
+        "position": 19,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "30e49ba03d032a05": {
+      "db": "empty",
+      "sql": "CREATE FUNCTION half(x int) RETURNS int LANGUAGE plpgsql AS $$\nBEGIN\n  RETURN x / 0;\nEND $$;\nSELECT half(10);",
+      "statements": [
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "38334b4e88d620d5"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22012",
+            "message": "division by zero",
+            "where": "PL/pgSQL function half(integer) line 3 at RETURN"
+          },
+          "digest": "9867a5a1dc0ca15d"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22012",
+        "message": "division by zero",
+        "where": "PL/pgSQL function half(integer) line 3 at RETURN",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "8690932c21eb7f88": {
+      "db": "empty",
+      "sql": "BEGIN;\nSELECT 1 / 0;\nSELECT 'still here?';\nROLLBACK;\nSELECT 'yes, after the rollback' AS answer;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22012",
+            "message": "division by zero"
+          },
+          "digest": "c85aeac07b5b73cd"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "25P02",
+            "message": "current transaction is aborted, commands ignored until end of transaction block"
+          },
+          "digest": "cb986a103a8927cb"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8948f71c140383d6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["answer", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "e3df8dce500a973a",
+          "rows": [
+            ["yes, after the rollback"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22012",
+        "message": "division by zero",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "23638605f321062f": {
+      "db": "empty",
+      "sql": "DROP TABLE IF EXISTS not_there;\nDO $$ BEGIN RAISE NOTICE 'hello from plpgsql, % rows', 42; END $$;",
+      "statements": [
+        {
+          "tag": "DROP TABLE",
+          "command": "DROP TABLE",
+          "columns": null,
+          "rowCount": null,
+          "notices": [
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "table \"not_there\" does not exist, skipping"
+            }
+          ],
+          "digest": "10e5940b38985486"
+        },
+        {
+          "tag": "DO",
+          "command": "DO",
+          "columns": null,
+          "rowCount": null,
+          "notices": [
+            {
+              "severity": "NOTICE",
+              "sqlstate": "00000",
+              "message": "hello from plpgsql, 42 rows",
+              "where": "PL/pgSQL function inline_code_block line 1 at RAISE"
+            }
+          ],
+          "digest": "78c66a59e0fbb6d1"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4d59f89b5b1464e4": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT name FROM customers WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "1d814d14ecd3ee8f",
+          "rows": [
+            ["Index Scan using customers_pkey on customers  (cost=0.28..8.29 rows=1 width=12)"],
+            ["  Index Cond: (id = 42)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ae1f4cc5d2663892": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)\nSELECT status, count(*) FROM orders GROUP BY status;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "0c83e86b9e86c7f1",
+          "rows": [
+            ["HashAggregate (actual rows=6.00 loops=1)"],
+            ["  Group Key: status"],
+            ["  Batches: 1  Memory Usage: 32kB"],
+            ["  Buffers: shared read=83"],
+            ["  ->  Seq Scan on orders (actual rows=10000.00 loops=1)"],
+            ["        Buffers: shared read=83"],
+            ["Planning:"],
+            ["  Buffers: shared hit=45 read=6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2eddb32294786b32": {
+      "db": "lab",
+      "sql": "VACUUM bloat;\nSELECT count(*) AS live_tuples FROM bloat;\nSELECT lp, lp_flags, t_xmin <> 0 AS has_xmin FROM heap_page_items(get_raw_page('bloat', 0)) ORDER BY lp LIMIT 5;",
+      "statements": [
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b40b2a8273442d58"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["live_tuples", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "83e265b58e1f4640",
+          "rows": [
+            ["1000"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["lp_flags", "int2", 21],
+            ["has_xmin", "bool", 16]
+          ],
+          "rowCount": 5,
+          "digest": "47e2ce8fba38001f",
+          "rows": [
+            ["1", "2", null],
+            ["2", "0", null],
+            ["3", "1", "t"],
+            ["4", "0", null],
+            ["5", "1", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "53dacb1f1bdafcde": {
+      "db": "shop",
+      "sql": "CREATE TABLE cart (customer_id int REFERENCES customers, product_id int REFERENCES products, qty int);\nINSERT INTO cart VALUES (42, 1, 2);",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "05928a581a766e0c": {
+      "db": "shop",
+      "sql": "SELECT c.name, p.name AS product, cart.qty\nFROM cart\nJOIN customers c ON c.id = cart.customer_id\nJOIN products p ON p.id = cart.product_id\nORDER BY p.id;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["product", "text", 25],
+            ["qty", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "4e55540610d5e3ec",
+          "rows": [
+            ["Ada Lovelace", "chef's knife", "2"],
+            ["Ada Lovelace", "left-handed teapot", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "614a15503735bb5f": {
+      "db": "school",
+      "sql": "COPY (SELECT code, title FROM courses WHERE dept = 'CS' ORDER BY code) TO STDOUT WITH (FORMAT csv, HEADER);",
+      "statements": [
+        {
+          "tag": "COPY 5",
+          "command": "COPY",
+          "columns": null,
+          "rowCount": 5,
+          "copyOut": "code,title\nCS101,Intro to Programming\nCS201,Data Structures\nCS301,Databases\nCS350,Operating Systems\nCS401,Database Internals\n",
+          "digest": "7b81a6441ef3ad37"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f91882b4e18df9fb": {
+      "db": "empty",
+      "sql": "SELECT g AS n FROM generate_series(1, 1000000) AS g;",
+      "statements": [
+        {
+          "tag": "SELECT 1000000",
+          "command": "SELECT",
+          "columns": [
+            ["n", "int4", 23]
+          ],
+          "rowCount": 1000000,
+          "truncated": {
+            "kept": 1000,
+            "total": 1000000
+          },
+          "digest": "ca3ccd174ca1bdde",
+          "rows": [
+            ["1"],
+            ["2"],
+            ["3"],
+            ["4"],
+            ["5"],
+            ["6"],
+            ["7"],
+            ["8"],
+            ["9"],
+            ["10"],
+            ["11"],
+            ["12"],
+            ["13"],
+            ["14"],
+            ["15"],
+            ["16"],
+            ["17"],
+            ["18"],
+            ["19"],
+            ["20"],
+            ["21"],
+            ["22"],
+            ["23"],
+            ["24"],
+            ["25"],
+            ["26"],
+            ["27"],
+            ["28"],
+            ["29"],
+            ["30"],
+            ["31"],
+            ["32"],
+            ["33"],
+            ["34"],
+            ["35"],
+            ["36"],
+            ["37"],
+            ["38"],
+            ["39"],
+            ["40"],
+            ["41"],
+            ["42"],
+            ["43"],
+            ["44"],
+            ["45"],
+            ["46"],
+            ["47"],
+            ["48"],
+            ["49"],
+            ["50"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3b11bd7dd42926cd": {
+      "db": "empty",
+      "sql": "SELECT now() > '2026-01-01' AS after_new_year, random() < 2 AS less_than_two;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["after_new_year", "bool", 16],
+            ["less_than_two", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "19bf46c71b876a9e",
+          "rows": [
+            ["t", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "15dddd88c6e1ac16": {
+      "db": "empty",
+      "sql": "SHOW io_method;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["io_method", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5b1ef80b8161be12",
+          "rows": [
+            ["worker"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    }
+  }
+}

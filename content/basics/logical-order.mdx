@@ -1,0 +1,283 @@
+import { TrayLine } from "@/components/figures/basics/TrayLine";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import trace from "./traces/logical-order.pgtrace.json";
+
+{/* every table and plan on this page comes from traces/logical-order.scenario.sql, captured on
+    PGlite (`pnpm pgtrace <file> --engine=pglite --twice`), so it matches the run buttons exactly.
+    the stepper reads the capture on the server and sends the browser only the stages (with their
+    notes) and its provenance line, so the capture isn't shipped twice. */}
+
+export const captured = trace.steps[0].stages;
+
+<InShort>
+a SELECT is written in one order and **runs in another**: FROM, WHERE, GROUP BY, HAVING, SELECT, ORDER BY, LIMIT. every clause takes a **table** and hands a **table** to the next one.
+
+that's the whole chapter. the rest is pictures.
+</InShort>
+
+## the picture
+
+you know how you can ORDER BY an alias but can't use it in WHERE? kinda cursed. it stops being cursed the moment you see that the clauses don't run in the order you typed them.
+
+think of a kitchen line. every station gets a tray (a table) and passes a tray on. the first one fetches the ingredients (FROM). the next bins the bad ones (WHERE). then everything gets sorted into bowls (GROUP BY), bowls with too little in them get tossed (HAVING), each bowl becomes a plate and the dish gets its name (SELECT), the plates get lined up (ORDER BY), and the first three go out (LIMIT).
+
+<Figure wide caption={<>one query, seven stations, and the shape of the tray each one passes on. taller means more rows (on a square-root scale, so 200 and 3 fit), wider means more columns. dashed is what a station threw out.</>}>
+<TrayLine
+  stages={captured}
+  table={{ columns: trace.rels.products.columns.length }}
+  group="category"
+  jobs={{
+    FROM: "fetch the ingredients",
+    WHERE: "bin the bad ones",
+    "GROUP BY": "sort into bowls",
+    HAVING: "toss the small bowls",
+    SELECT: "plate up, name the dishes",
+    "ORDER BY": "line the plates up",
+    LIMIT: "serve three",
+  }}
+  notes={{ SELECT: "aliases born", "ORDER BY": "by avg_price" }}
+  trace={trace}
+/>
+</Figure>
+
+notice that nothing ever goes back to an earlier station. a tray only ever moves on, and each station works on the tray it was handed. that one rule explains every alias error you'll ever get: a clause can only see what the stations before it produced.
+
+## walk through it
+
+here's the query from the figure: the three priciest categories, counting only products still on sale, and only categories with at least 10 of them.
+
+```sql run db=shop title="query.sql"
+SELECT category, count(*) AS n, round(avg(price), 2) AS avg_price
+FROM products
+WHERE NOT discontinued
+GROUP BY category
+HAVING count(*) >= 10
+ORDER BY avg_price DESC
+LIMIT 3;
+```
+
+now take it apart. press step (or click the figure and use <kbd>←</kbd> <kbd>→</kbd>). every table under the query is a real intermediate result, captured from the same postgres that runs on this page.
+
+<Figure wide caption={<>rows a clause throws out stay for one step, struck through, then they're gone. GROUP BY buckets alternate shades, with the NULL bucket on top. the table shows 5 of products' 9 columns: id, the 3 the query reads, and name.</>}>
+<ClauseStepper trace={trace} maxRows={14} />
+</Figure>
+
+see? `n` and `avg_price` don't exist until the SELECT station. WHERE ran three stations earlier, HAVING one station earlier. that's why HAVING has to say `count(*)` again instead of `n`: from where HAVING stands, nobody has handed out the name `n` yet.
+
+and look at what HAVING threw out. the 3 products with no category landed in one bucket together, which is odd if you remember that `NULL = NULL` isn't true. GROUP BY doesn't ask `=`, it asks "are these the same?", and for grouping, two NULLs are. more on that split personality in [NULL and three-valued logic](/learn/basics/null-and-three-valued-logic).
+
+<Predict options={["rows with gross over 100", "an error", "every product"]} answer={1}>
+```sql
+SELECT name, price * 1.2 AS gross
+FROM products
+WHERE gross > 100;
+```
+<Explain>
+WHERE is station two. `gross` is born at station five. when WHERE goes looking for a column called `gross`, the only table it has is products, and products has no such column: `ERROR: column "gross" does not exist`.
+</Explain>
+</Predict>
+
+here it is failing for real:
+
+```sql run db=shop expect=error
+SELECT name, price * 1.2 AS gross
+FROM products
+WHERE gross > 100;
+```
+
+two ways out. say the expression again, or give it its name one level down, in a subquery, so it's an ordinary column by the time the outer WHERE runs. same answer either way:
+
+```sql run db=shop
+SELECT count(*) FROM products WHERE price * 1.2 > 100;
+SELECT count(*) FROM (SELECT price * 1.2 AS gross FROM products) AS p WHERE gross > 100;
+```
+
+<Predict options={["one row per category", "an error", "one row per product"]} answer={1}>
+```sql
+SELECT category, name
+FROM products
+GROUP BY category;
+```
+<Explain>
+after GROUP BY, a row is a bucket. the kitchen bucket holds 19 products with 19 names, and SELECT has one `name` cell to fill per bucket. postgres won't pick one for you. ask for something that has one value per bucket: the grouping column itself, or an aggregate like `count(*)` or `min(name)`.
+</Explain>
+</Predict>
+
+the real error names the column and the rule:
+
+```sql run db=shop expect=error
+SELECT category, name
+FROM products
+GROUP BY category;
+```
+
+one value per bucket, and it runs:
+
+```sql run db=shop
+SELECT category, count(*) AS n, min(name) AS first_name
+FROM products
+GROUP BY category
+ORDER BY category;
+```
+
+## the full order
+
+the products query uses seven clauses. a SELECT can have a few more, and they all have a place on the line:
+
+| # | clause | what it does | you'll feel it when |
+| --- | --- | --- | --- |
+| 1 | `WITH` | computes the named subqueries | you name a subquery once and use it twice ([CTEs](/learn/joins/ctes)) |
+| 2 | `FROM`, `JOIN` | builds one working table from every table named | a join multiplies rows before anyone else gets a say ([fan-out](/learn/joins/fan-out)) |
+| 3 | `WHERE` | keeps the rows where the condition is true | you reach for an alias or an aggregate: neither exists yet |
+| 4 | `GROUP BY` | turns rows into buckets, one per distinct key | a selected column is neither grouped nor aggregated |
+| 5 | `HAVING` | keeps the buckets where the condition is true | you filter on `count(*)`: WHERE can't, HAVING can |
+| 6 | window functions | compute across the surviving rows without merging them | you put `row_number()` in WHERE |
+| 7 | `SELECT` | computes the output columns and names them | aliases are born here |
+| 8 | `DISTINCT` | drops duplicate output rows | it compares whole output rows, computed columns included |
+| 9 | `UNION`, `INTERSECT`, `EXCEPT` | combines two results | a final ORDER BY sorts the combined result, not one half |
+| 10 | `ORDER BY` | sorts | the only clause that sees aliases (bare ones, see below) |
+| 11 | `OFFSET`, `LIMIT`, `FETCH FIRST` | cuts the result down | LIMIT without ORDER BY gives you some rows, not the first ones |
+
+<Docs href="https://www.postgresql.org/docs/18/sql-select.html" title="SELECT">the manual's SELECT page opens with this same order as a numbered list, from WITH down to the row locks of FOR UPDATE. it also says plainly that an output column's name works in ORDER BY and GROUP BY, and never in WHERE or HAVING.</Docs>
+
+<Quiz question={<>where can <code>row_number() OVER (ORDER BY price DESC)</code> not go?</>} options={["the SELECT list", "ORDER BY", "WHERE"]} answer={2}>
+<Explain>
+window functions run after WHERE, GROUP BY and HAVING, over whatever rows survived them. so they're allowed where the result is being shaped (the SELECT list and ORDER BY) and refused anywhere earlier. to filter on one, compute it in a subquery and filter outside. [window functions](/learn/analytics/window-functions) has the rest.
+</Explain>
+</Quiz>
+
+WHERE is too early, and postgres says so by name:
+
+```sql run db=shop expect=error
+SELECT name, price
+FROM products
+WHERE row_number() OVER (ORDER BY price DESC) <= 3;
+```
+
+the fix is the same move as before: compute it one level down, filter one level up.
+
+```sql run db=shop
+SELECT name, price
+FROM (
+  SELECT name, price, row_number() OVER (ORDER BY price DESC, id) AS rank
+  FROM products
+) AS ranked
+WHERE rank <= 3
+ORDER BY rank;
+```
+
+<Gotcha title="ORDER BY sees aliases, but only bare ones">
+ORDER BY runs after SELECT, so it can use `avg_price`. but only the name on its own. put the alias inside an expression, even just a minus sign, and postgres looks the name up as an input column, in the table FROM built, where it doesn't exist.
+
+```sql run db=shop expect=error
+SELECT category, round(avg(price), 2) AS avg_price
+FROM products
+GROUP BY category
+ORDER BY -avg_price
+LIMIT 3;
+```
+
+```sql run db=shop
+SELECT category, round(avg(price), 2) AS avg_price
+FROM products
+GROUP BY category
+ORDER BY avg_price DESC
+LIMIT 3;
+```
+
+the manual spells it out: a name inside an ORDER BY expression is always an input column. use the bare alias, its position (`ORDER BY 2 DESC`), or write the expression out.
+</Gotcha>
+
+## the plan doesn't care
+
+everything so far is the *logical* order: what the answer has to be. it says nothing about how postgres gets there. here's what it actually ran for the products query:
+
+<Figure wide caption={<>the plan for the products query. rows flow up from the scan. toggle estimates against actual rows: the aggregate guessed 3 groups would survive HAVING, and 10 did.</>}>
+<PlanTree plan={trace.steps[1].explain} show={["actual", "est"]} provenance={<Provenance trace={trace} />} />
+</Figure>
+
+read it bottom-up and it looks like the kitchen line. but count: four nodes for seven clauses. WHERE isn't a station of its own, it's a filter inside the scan (12 rows removed). HAVING is a filter inside the aggregate (1 group removed). SELECT's expressions are computed by the aggregate on its way out. and ORDER BY with LIMIT became one top-N heapsort, which only ever holds the best 3 rows instead of sorting all 10.
+
+and the resemblance is luck. ask for the first three products by id, and the logical order says: take all 200, sort them, keep 3. the plan does nothing of the sort:
+
+```sql run db=shop
+EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, name, price FROM products ORDER BY id LIMIT 3;
+```
+
+no Sort node. the primary key's index already hands rows over in id order. and the scan produced 3 rows, not 200 (`actual rows=3.00`): LIMIT got its three and stopped asking for more.
+
+a HAVING that doesn't need the groups gets moved too. postgres pushes it down into the scan, so those rows never reach the aggregate:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT category, count(*) AS n
+FROM products
+GROUP BY category
+HAVING category IS NOT NULL
+ORDER BY category;
+```
+
+you wrote it in HAVING. it runs as the scan's Filter. ([HAVING](/learn/basics/having-clause) has more on the HAVING that should have been a WHERE.)
+
+that's the deal. the logical order fixes the answer, and the planner can take any route it likes as long as the answer matches. [reading EXPLAIN](/learn/execution/reading-explain) and [the iterator model](/learn/execution/iterator-model) are about the route.
+
+<Deep title="GROUP BY an alias: the standard says no, postgres says yes">
+the SQL-92 standard lets GROUP BY use only input columns (the table FROM built) and ORDER BY only output columns (SELECT's names and positions). postgres extends both, so GROUP BY can take an alias or a position too, even though SELECT nominally runs after it:
+
+```sql run db=shop
+SELECT left(category, 1) AS initial, count(*) AS n
+FROM products
+GROUP BY initial
+ORDER BY initial;
+```
+
+when a name could mean either, postgres falls back to the standard's reading, and the two clauses disagree on purpose: GROUP BY picks the input column, ORDER BY the output column. here `category` is the table's column in GROUP BY, so bath and books stay separate buckets that both print as `b`, and the alias in ORDER BY:
+
+```sql run db=shop
+SELECT left(category, 1) AS category, count(*) AS n
+FROM products
+GROUP BY category
+ORDER BY category, n;
+```
+
+11 buckets, not 8. and the two `b` rows come out 12 before 27: ORDER BY sorted on the letter, then on `n`. sorted on the real column, bath's 27 would have come first.
+
+HAVING gets none of this. in postgres it never sees aliases:
+
+```sql run db=shop expect=error
+SELECT category, count(*) AS n
+FROM products
+GROUP BY category
+HAVING n >= 10;
+```
+
+mysql is looser. [its manual](https://dev.mysql.com/doc/refman/8.4/en/select.html) lets HAVING refer to select-list aliases, as an extension to the standard, so a query that runs there can fail here.
+</Deep>
+
+<Deep title="why SELECT comes first anyway">
+SQL started out as SEQUEL (Chamberlin and Boyce at IBM, 1974), meant to read like an english sentence: select this, from there, where that holds. you say what you want before where it comes from, so SELECT went first. the price is this whole chapter: the reading order and the running order disagree, and your editor can't suggest column names until you've typed FROM.
+
+newer syntaxes put FROM first. duckdb [accepts](https://duckdb.org/docs/stable/sql/query_syntax/from) `FROM products SELECT name`, and [PRQL](https://prql-lang.org) writes every query as a pipeline that starts with `from`. same order as the kitchen line, written down the way it runs.
+</Deep>
+
+<Interview q="why can't I use a column alias in WHERE?">
+because WHERE runs before SELECT. the logical order is FROM, WHERE, GROUP BY, HAVING, SELECT, ORDER BY, LIMIT, and an alias is a name SELECT hands out, so only ORDER BY, which runs after it, can use one. repeat the expression, or name it in a subquery. bonus point: in postgres HAVING can't see aliases either, for the same reason. and you don't always have to list every selected column in GROUP BY: group by a primary key and postgres knows every other column of that table has one value per group (a [functional dependency](/learn/design/functional-dependencies)).
+
+```sql run db=shop
+SELECT p.id, p.name, count(*) AS times_ordered
+FROM products AS p
+JOIN order_items AS oi ON oi.product_id = p.id
+GROUP BY p.id
+ORDER BY times_ordered DESC, p.id
+LIMIT 3;
+```
+</Interview>
+
+<Keylines>
+- a query is written SELECT-first and runs FROM-first.
+- every clause takes a table and hands a table to the next.
+- WHERE filters rows before grouping. HAVING filters groups after.
+- aliases are born in SELECT, so only ORDER BY can see them, and only bare.
+- the planner can take any route, as long as the answer matches this order.
+</Keylines>

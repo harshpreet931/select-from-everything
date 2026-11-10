@@ -1,0 +1,82 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "9be42d78bfc00e97": {
+      "db": "shop",
+      "sql": "SELECT date_trunc('month', ordered_at)::date AS month,\n       count(*) FILTER (WHERE status = 'delivered') AS delivered,\n       count(*) FILTER (WHERE status IN ('placed', 'paid', 'shipped')) AS in_flight,\n       count(*) FILTER (WHERE status = 'cancelled') AS cancelled,\n       count(*) FILTER (WHERE status = 'refunded') AS refunded\nFROM orders\nWHERE ordered_at >= '2026-03-01'\nGROUP BY 1\nORDER BY 1;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["delivered", "int8", 20],
+            ["in_flight", "int8", 20],
+            ["cancelled", "int8", 20],
+            ["refunded", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "2f8502ae4c1325cc",
+          "rows": [
+            ["2026-03-01", "834", "0", "18", "7"],
+            ["2026-04-01", "798", "0", "23", "9"],
+            ["2026-05-01", "826", "0", "27", "6"],
+            ["2026-06-01", "466", "233", "18", "7"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a4b4c14e53adffce": {
+      "db": "shop",
+      "sql": "SELECT date_trunc('month', ordered_at)::date AS month,\n       count(*) FILTER (WHERE status = 'paid') AS paid_filter,\n       sum(CASE WHEN status = 'paid' THEN 1 END) AS paid_sum_case\nFROM orders\nWHERE ordered_at >= '2026-04-01'\nGROUP BY 1\nORDER BY 1;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["paid_filter", "int8", 20],
+            ["paid_sum_case", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "0a859862c30da769",
+          "rows": [
+            ["2026-04-01", "0", null],
+            ["2026-05-01", "0", null],
+            ["2026-06-01", "62", "62"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6077405677a865f2": {
+      "db": "shop",
+      "sql": "WITH wide AS (\n  SELECT date_trunc('month', ordered_at)::date AS month,\n         count(*) FILTER (WHERE status = 'delivered') AS delivered,\n         count(*) FILTER (WHERE status = 'cancelled') AS cancelled\n  FROM orders\n  WHERE ordered_at >= '2026-05-01'\n  GROUP BY 1\n)\nSELECT w.month, v.status, v.n\nFROM wide AS w\nCROSS JOIN LATERAL (VALUES ('delivered', w.delivered), ('cancelled', w.cancelled)) AS v (status, n)\nORDER BY w.month, v.status;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["month", "date", 1082],
+            ["status", "text", 25],
+            ["n", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "5a4a1fc58757a300",
+          "rows": [
+            ["2026-05-01", "cancelled", "27"],
+            ["2026-05-01", "delivered", "826"],
+            ["2026-06-01", "cancelled", "18"],
+            ["2026-06-01", "delivered", "466"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

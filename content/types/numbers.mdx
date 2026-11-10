@@ -1,0 +1,167 @@
+import { FloatBits } from "@/components/figures/types/FloatBits";
+import { prov, resultOf, runsOf } from "@/lib/db/captured";
+import trace from "./traces/numbers.pgtrace.json";
+
+{/* the bits, the exact decimals, the byte counts and the three sums all come from
+    traces/numbers.scenario.sql, captured on PGlite. the exact value of each double is computed
+    by postgres itself, in numeric, from the same bits float8send printed. */}
+
+export const bits = resultOf(trace, 0).rows.map(([label, shown, hex, b, exponent, exactly]) => ({ label, shown, hex, bits: b, exponent, exactly }));
+export const widths = resultOf(trace, 2).rows.map(([label, bytes]) => ({ label, value: Number(bytes), tone: label.startsWith("numeric") ? "hot" : undefined }));
+export const sums = runsOf(trace, ["real (float4)", "double precision (float8)", "numeric"], 3);
+export const source = prov(trace);
+
+<InShort>
+three families. **integers** (smallint, integer, bigint) are exact and fixed-size, and fail loudly when they overflow. **numeric** is exact decimal arithmetic at any size, at some cost in speed and space. **floats** (real, double precision) are binary approximations: fast, and unable to hold 0.1.
+
+money goes in numeric. and `5 / 2` is 2.
+</InShort>
+
+## the picture
+
+you know how `0.1 + 0.2` is `0.30000000000000004` in javascript? postgres's `double precision` does exactly the same thing, because it's the same IEEE 754 double. the surprise is that `SELECT 0.1 + 0.2` in postgres says `0.3`. a number with a dot in SQL is a `numeric`, an exact decimal, unless you ask for a float.
+
+think of a float as a ruler marked in binary fractions: halves, quarters, eighths, all the way down to 2⁻⁵². a tenth falls between two marks, so it gets stored at the nearest one. the number you get back is very close to 0.1 and not 0.1.
+
+<Figure wide caption={<>pick a value. these are the 64 bits postgres stores for it, and the exact decimal value those bits hold. the digits in <C k="hot">hot</C> are where the stored value stops being the number you typed. 0.1 + 0.2 lands on the very next double above 0.3's, so only <C k="dead">the last bits</C> differ.</>}>
+<FloatBits
+  rows={bits}
+  vs={{ "0.1 + 0.2": "0.3" }}
+  notes={{
+    "0.1": "a tenth is 0.000110011001100... in binary, repeating forever. the mantissa keeps 52 bits of it, and the last ones round up (1001 becomes 1010), so the stored value is a hair above 0.1.",
+    "0.2": "the same repeating pattern, one power of two higher: the exponent is one bigger, the mantissa is identical. a hair above 0.2.",
+    "0.3": "0.3 rounds down instead, to a hair below 0.3. postgres prints 0.3, because 0.3 is the shortest decimal that reads back as exactly these bits.",
+    "0.1 + 0.2": "two numbers a hair high, added and rounded to the nearest double: one step above the double for 0.3. so it prints as 0.30000000000000004, and = 0.3 is false.",
+  }}
+  trace={source}
+/>
+</Figure>
+
+the bits come from `float8send`, which hands back a double's 8 bytes, and the long decimal is postgres turning those same bits into a `numeric`, where nothing rounds. nothing in the figure is computed by the page.
+
+## integers
+
+three sizes. pick by the biggest value the column will ever hold, not by today's:
+
+```sql run
+SELECT 32767::smallint AS smallint_max, 2147483647::integer AS integer_max, 9223372036854775807::bigint AS bigint_max;
+```
+
+one more than the top doesn't wrap around to a negative number like it does in C or java. in a bigger type it's just a number. in the same type, postgres stops:
+
+```sql run expect=error
+SELECT 2147483647::bigint + 1 AS as_bigint;
+SELECT 2147483647 + 1 AS as_integer;
+```
+
+this is the error a busy table's `integer` id column hits one day, around the 2.1 billionth row. new id columns should be `bigint`: 4 more bytes per row, and a problem you'll never have ([identity columns](/learn/types/identity-and-uuids)).
+
+### integer division
+
+<Predict options={["2.5", "2", "3"]} answer={1}>
+```sql
+SELECT 5 / 2;
+```
+<Explain>
+two integers in, an integer out. the division truncates toward zero, it doesn't round, so 2.5 becomes 2, and -2.5 becomes -2. make either side numeric to keep the fraction: `5 / 2.0`, or `5::numeric / 2`.
+</Explain>
+</Predict>
+
+```sql run
+SELECT 5 / 2 AS int_div, -5 / 2 AS negative, 5 % 2 AS remainder, 5 / 2.0 AS numeric_div, 5::numeric / 2 AS cast_first;
+```
+
+this is the bug in every "percentage" column that's always 0: `count(*) FILTER (WHERE paid) / count(*)` divides two bigints. multiply by `100.0` first, or cast one side.
+
+## numeric
+
+`numeric` stores decimal digits, so decimal arithmetic is exact:
+
+```sql run
+SELECT 0.1 + 0.2 AS sum, 0.1 + 0.2 = 0.3 AS equal, pg_typeof(0.1 + 0.2) AS type;
+```
+
+with `numeric(p, s)` you fix the scale: `s` digits after the point, `p` digits in all. extra decimals are rounded off when you store, and a value too big for `p` is an error, not a silent cut:
+
+```sql run expect=error
+SELECT 123.456::numeric(5,2) AS rounded;
+SELECT 1234.5::numeric(5,2) AS too_big;
+```
+
+the price is size and speed. integers and floats are fixed-width, numeric grows with its digits:
+
+<Figure caption={<>bytes per value, measured with <code>pg_column_size</code> on values stored in a table. <C k="hot">numeric</C> takes room per digit; 0.1's exact double, written out in full, costs 31 bytes.</>}>
+<Bars data={widths} unit="bytes" />
+</Figure>
+
+and numeric math runs in software, a few digits at a time, where integer and float math are single CPU instructions. for sums of money over a few million rows that's fine. for physics, use floats.
+
+## floats
+
+`real` (float4, about 6 significant digits) and `double precision` (float8, about 15) are the IEEE types. they're fast and they're approximations, and the error adds up:
+
+<Figure caption={<>ten 0.1s summed in each type. float4 and float8 both miss 1, in different directions; numeric hits it.</>}>
+<RunPick options={[{ key: "type", values: ["real (float4)", "double precision (float8)", "numeric"] }]} runs={sums} file="sum.sql" trace={source} />
+</Figure>
+
+what you *see* depends on a setting, `extra_float_digits`. since postgres 12 the default, 1, prints the shortest decimal that reads back as the same bits, which is why 0.1 prints as 0.1 and the sum shows its tail. set it to 0 and postgres rounds to 15 significant digits for display, and the problem disappears from view, but not from the value:
+
+```sql run
+SET extra_float_digits = 0;
+SELECT 0.1::float8 + 0.2::float8 AS shown, 0.1::float8 + 0.2::float8 = 0.3 AS equal;
+```
+
+`0.3`, and still not equal. never compare floats with `=`. floats are for measurements (a temperature, a distance, a model's score), where the last bits never meant anything anyway.
+
+<Gotcha title="a literal with a dot is numeric, a column is whatever it was declared">
+`SELECT 0.1 + 0.2` is exact because both literals are numeric. the moment one side is a `float8` column, the numeric side is cast to float8 (that cast is implicit, see [types and casts](/learn/types/types-and-casts)), and you're back to binary fractions. `avg()` of an integer column returns numeric; `avg()` of a float8 column returns float8.
+</Gotcha>
+
+## money goes in numeric
+
+postgres has a `money` type. it stores a 64-bit integer count of cents, which is fine. the trouble is the rest:
+
+```sql run
+SELECT 1234.5::money AS shown, '10.00'::money / 3 AS a_third, ('10.00'::money / 3) * 3 AS three_thirds;
+```
+
+the currency symbol and the number of decimals come from the server's `lc_monetary` setting, not from the value. this browser's database says `C`, which means dollars. here are the same 1234.5, under two other settings on a real server:
+
+```sql native
+SET lc_monetary = 'de_DE.UTF-8';
+SELECT 1234.5::money AS germany;
+SET lc_monetary = 'en_GB.UTF-8';
+SELECT 1234.5::money AS uk;
+```
+
+same stored number, two currencies. restore a dump on a server with a different setting and every price changes currency without changing value. money also can't hold a fraction of a cent (a unit price of 0.0042 is gone) and knows nothing about which currency a row is in. use `numeric(12,2)` (or more scale if you price in fractions), and put the currency in its own column when there's more than one.
+
+## NaN and Infinity
+
+floats have always had `NaN`, `Infinity` and `-Infinity`. numeric has had NaN for a long time, and infinities since postgres 14 <Since v={14} />. postgres sorts them on purpose, so ORDER BY and indexes still work:
+
+```sql run
+SELECT x
+FROM (VALUES ('NaN'::numeric), ('Infinity'), (5), ('-Infinity'), (NULL)) AS v (x)
+ORDER BY x;
+```
+
+NaN sorts above every number, even Infinity, and `'NaN' = 'NaN'` is true here, unlike in IEEE arithmetic, where NaN equals nothing. postgres bends that rule so that NaN can be grouped, sorted and indexed like any other value.
+
+```sql run
+SELECT 'NaN'::numeric = 'NaN'::numeric AS nan_equals_nan,
+       'Infinity'::numeric + 1 AS inf_plus_one,
+       'Infinity'::numeric - 'Infinity'::numeric AS inf_minus_inf;
+```
+
+<Interview q="why is 0.1 + 0.2 not equal to 0.3?">
+in a float, because 0.1, 0.2 and 0.3 have no exact binary representation. each is stored as the nearest double: 0.1 and 0.2 a little high, 0.3 a little low, and the sum of the first two rounds to the double just above 0.3's. in postgres, `SELECT 0.1 + 0.2 = 0.3` is actually true, because unadorned decimal literals are numeric, which is exact decimal arithmetic. bonus point: that's why money belongs in numeric, never in a float, and why `extra_float_digits = 0` only hides the error in the output.
+</Interview>
+
+<Keylines>
+- integers are exact and fixed-size, and overflow is an error. new id columns should be bigint.
+- integer / integer truncates: 5 / 2 is 2.
+- numeric is exact decimal arithmetic, at the cost of space and speed.
+- floats can't hold 0.1. never compare them with =, never store money in them.
+- money goes in numeric, with the currency in its own column.
+</Keylines>

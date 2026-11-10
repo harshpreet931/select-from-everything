@@ -1,0 +1,126 @@
+import { ReplicaRouting } from "@/components/figures/scale/ReplicaRouting";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import lag from "./data/replica-lag.json";
+
+{/* the lanes and the lag numbers are a recorded run, data/replica-lag.json: two throwaway postgres
+    18.6 clusters started for it on this mac (a primary and a pg_basebackup standby streaming over a
+    unix socket), driven by a node-postgres script. one run used recovery_min_apply_delay = 500ms
+    so the stale read is reliable; the plain run measured how long the new value took to show. the
+    routing figure is a model. */}
+
+export const slow = lag.runs[1];
+export const fast = lag.runs[0];
+export const cell = (r) => (r.rows.length ? Object.entries(r.rows[0]).map(([k, v]) => `${k} = ${v}`).join(", ") : "");
+export const NOTES = [
+  "the primary commits the new name.",
+  "the app asks the primary for the write's LSN, and keeps it.",
+  "a read on the standby a moment later: still the old name.",
+  "the standby has received the WAL up to the write, but replayed only up to just before it.",
+  "the app keeps asking until the standby's replay position passes the write's LSN.",
+  "now the same read returns the new name.",
+];
+export const lanes = slow.story.slice(0, 6).map((s, i) => ({
+  label: String(Math.round(s.t_ms - slow.story[0].t_ms)),
+  note: NOTES[i],
+  ops: s.on === "primary" ? [{ sql: s.sql, out: cell(s) || undefined }, null] : [null, { sql: s.sql, out: cell(s) || undefined, tone: s.rows[0]?.name === "ada" || s.rows[0]?.caught_up === false ? "dead" : s.rows[0]?.name ? "live" : undefined }],
+}));
+export const allRuns = [fast.stats, ...lag.more_no_delay_runs];
+
+<InShort>
+a **read replica** is a standby that replays the primary's WAL and answers read-only queries. it's always a little behind (**replication lag**), so a read sent there right after a write can miss that write. **read-your-writes** means a user always sees their own changes: route their reads to the primary for a while, or remember the LSN of their last write and wait until the replica has replayed that far.
+</InShort>
+
+## the picture
+
+you know how you save your profile, the page reloads, and your old name is still there, and then it fixes itself a second later? that's a read replica answering before it heard about your write.
+
+think of a newsroom (the primary) and a printed copy pinned on a wall down the hall (the standby). anyone can read the wall, which takes load off the newsroom. but the wall is updated by a runner, so for a moment after every story changes, the wall shows the old one.
+
+here it is between two real postgres 18.6 servers. the standby was started with `recovery_min_apply_delay = 500ms`, so the moment is long enough to catch every time:
+
+<Figure wide caption={<>one write on the primary, then reads on the standby. the standby has <em>received</em> the write but not yet <em>replayed</em> it, so it answers <C k="dead">ada</C>. after its replay LSN passes the write's LSN, it answers <C k="live">ada lovelace</C>. labels are milliseconds since the write.</>}>
+<SessionLanes sessions={["primary", "standby"]} steps={lanes} side="none" provenance={<Provenance recorded={lag.recorded} />} />
+</Figure>
+
+the standby isn't broken. it's doing exactly what [streaming replication](/learn/wal/streaming-replication) does: WAL arrives, gets written, then gets replayed into pages, and a query on the standby sees whatever has been replayed. the LSNs say precisely how far behind it is.
+
+## how much lag
+
+without the artificial delay, on one machine with nothing else running, the standby replays in well under a millisecond. but a read sent right after the commit still usually loses the race:
+
+<Figure caption={<>three recorded runs of 300 writes each, every write followed immediately by reads on the standby until it showed the new value. the first read was stale almost every time, even though the new value arrived a fraction of a millisecond later.</>}>
+<Bars unit=" ms" data={allRuns.flatMap((r, i) => [
+  { label: `run ${i + 1}: median wait`, value: r.p50_ms, tone: "live" },
+  { label: `run ${i + 1}: slowest`, value: r.max_ms, tone: "dead" },
+])} />
+<Provenance recorded={lag.recorded} />
+</Figure>
+
+stale first reads: {allRuns.map((r) => `${r.stale_first_reads} of ${r.writes ?? 300}`).join(", ")}. that's the important number. lag isn't a fixed delay you can wait out once; it's a race on every write, and on a loaded server across a network, with a long query on the standby holding replay back, it stretches to seconds. on the primary, `pg_stat_replication` shows it per standby as `write_lag`, `flush_lag` and `replay_lag`; in the delayed run it said write_lag {slow.story[6].rows[0].write_lag}, flush_lag {slow.story[6].rows[0].flush_lag} and replay_lag {slow.story[6].rows[0].replay_lag}: the WAL arrived at once, and the 500 ms delay sat exactly where it was configured, in replay.
+
+<Predict question="the app commits on the primary, gets COMMIT back, and immediately reads the same row from an async standby. what does it see?" options={["always the new value", "maybe the old value", "an error"]} answer={1}>
+```text
+primary:  UPDATE profiles SET name = 'ada lovelace' WHERE id = 42;  -- COMMIT returns
+standby:  SELECT name FROM profiles WHERE id = 42;                  -- right after
+```
+<Explain>
+maybe the old value. with asynchronous replication, COMMIT returns once the primary has flushed its own WAL; the standby hasn't necessarily received it, let alone replayed it. even `synchronous_commit = on` with a synchronous standby only waits for the standby to flush, not replay. only `remote_apply` makes COMMIT wait until the standby has replayed it, at the price of every commit waiting for the slowest synchronous standby.
+</Explain>
+</Predict>
+
+## routing reads
+
+a replica only takes load off the primary if reads go to it. something has to decide which reads: a driver setting, the ORM's database router, or a proxy in front. the policy is the interesting part:
+
+<Figure wide caption={<>one user saving and reloading. pick a routing policy and drag the lag. <C k="dead">stale</C> reads are the ones that miss the user's own last save.</>}>
+<ReplicaRouting />
+</Figure>
+
+- **everything to the replica.** fine for reads that can be a little old (dashboards, search, other people's posts). wrong for "show me what I just did".
+- **stick to the primary after a write.** route a user's reads to the primary for a few seconds after they write. simple, and only as right as your guess about lag.
+- **wait for the LSN.** after a write, the app reads `pg_current_wal_lsn()` (or `pg_current_wal_insert_lsn()`) on the primary and keeps it with the user's session. before reading from a replica, it checks the replica's `pg_last_wal_replay_lsn()` and waits, or falls back to the primary, until that has passed the saved LSN. exact, and the cost is a short wait right after a write.
+
+both functions run anywhere, and the replay one has a quirk worth knowing. it reports where the last WAL replay ended, standby or not. a primary that was shut down cleanly has never replayed anything and says NULL. the browser's postgres did replay: it starts from a snapshot of a data directory and runs crash recovery on it, so it reports where that ended (a native primary does the same after a crash and restart; checked on a throwaway 18.6):
+
+```sql run
+SELECT pg_is_in_recovery() AS is_standby, pg_last_wal_replay_lsn() AS replayed;
+```
+
+so check `pg_is_in_recovery()` first, and only trust the replay position on a server that says true.
+
+and LSNs compare and subtract like numbers, which is all the wait loop needs:
+
+```sql run
+SELECT '0/302FCB0'::pg_lsn >= '0/302FC88'::pg_lsn AS caught_up,
+       pg_wal_lsn_diff('0/302FCB0', '0/302FC88') AS bytes_behind;
+```
+
+those two LSNs are the recorded ones: the write at `0/302FCB0`, and the standby's replay position when it answered "ada".
+
+postgres 19 <Since v={19} preview /> adds a command for the waiting part. run on a standby, it blocks until replay reaches the LSN (or a timeout passes) and returns a status:
+
+```text
+WAIT FOR LSN '0/302FCB0' WITH (TIMEOUT '1s', NO_THROW);
+```
+
+it has to be a top-level statement, outside a transaction that holds a snapshot or locks, because a waiting session that holds them could block the very replay it's waiting for ([the 19 docs](https://www.postgresql.org/docs/19/sql-wait.html)).
+
+<Gotcha title="a replica is also a source of conflicts">
+a long query on a hot standby needs old row versions that the primary may already have vacuumed away. replay then either waits (and lag grows) or cancels the query with a recovery conflict, depending on `max_standby_streaming_delay`. `hot_standby_feedback = on` makes the primary keep those versions, which moves the bloat to the primary instead. [streaming replication](/learn/wal/streaming-replication) has the details; for whole-row change streams to other systems, see [logical replication](/learn/wal/logical-replication).
+</Gotcha>
+
+## what replicas don't do
+
+replicas scale reads, not writes: every write still goes through the one primary, and every replica replays every write. they don't make a single slow query faster. and a failover promotes a replica that may be missing the last commits unless replication was synchronous. when the write volume itself outgrows one machine, the next step is [sharding](/learn/scale/sharding).
+
+<Interview q="how do you guarantee read-your-writes with read replicas?">
+after a user writes, either send that user's reads to the primary for a while, or record the commit's LSN (`pg_current_wal_lsn()` on the primary) in their session and only read from a replica whose `pg_last_wal_replay_lsn()` has passed it, waiting or falling back to the primary otherwise. the LSN approach is exact; the time window is a guess about lag. bonus point: `synchronous_commit = remote_apply` makes every commit wait for the synchronous standbys to replay, which gives read-your-writes on those standbys for everyone, at a cost on every commit.
+</Interview>
+
+<Keylines>
+- a replica replays the primary's WAL, so it's always a little behind.
+- a read right after a commit can lose that race, even on one machine.
+- route reads that can be old to replicas; route "my own data" carefully.
+- read-your-writes: stick to the primary after a write, or wait for the write's LSN.
+- replicas scale reads, never writes.
+</Keylines>

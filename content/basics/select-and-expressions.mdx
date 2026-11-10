@@ -1,0 +1,154 @@
+import { RowMap } from "@/components/figures/basics/RowMap";
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { prov, resultOf, runsOf } from "@/components/figures/basics/captured";
+import trace from "./traces/select-and-expressions.pgtrace.json";
+
+{/* every figure reads traces/select-and-expressions.scenario.sql (PGlite, the shop): four products
+    before and after the select list, five divisions with their types, and the products written
+    out as text, whole and as three columns. */}
+
+export const input = resultOf(trace, 0);
+export const output = resultOf(trace, 1);
+export const types = runsOf(trace, ["7 / 2", "7 / 2.0", "7::numeric / 2", "7::float8 / 2", "1 / 3 * 3"], 2);
+export const widths = resultOf(trace, 7).rows.map(([label, bytes]) => ({ label, value: Number(bytes) }));
+export const source = prov(trace);
+
+<InShort>
+SELECT is a **map**: for every row FROM hands over, it computes each item in the select list and hands on one output row. an item can be a column, a literal, or any **expression** built from them, and `AS` gives it a name.
+
+`SELECT *` means "every column, as the table has them **right now**", and that's where it stops being harmless.
+</InShort>
+
+## the picture
+
+you know how SELECT feels like "pick some columns"? it does more than that. every item in the list is an expression, evaluated once for every row, and a plain column name is just the simplest expression there is.
+
+think of a form you fill in once per customer: each line on the form says how to fill one box ("price plus VAT", "category in capitals"), and every row of the table gets its own copy. one row in, one filled-in form out. SELECT never looks at two rows at once (that's what [aggregates](/learn/basics/aggregates) are for).
+
+<Figure wide caption={<>pick a product and an item in the select list. the input cells it reads light up, and so does the one cell of the output row it fills. the wooden train has no category, so <code>upper(category)</code> is NULL for it. the literal reads nothing at all.</>}>
+<RowMap
+  input={input}
+  output={output}
+  items={[
+    { sql: "name", reads: ["name"], note: "a bare column is an expression too: it just copies the value." },
+    { sql: "price * 1.2 AS gross", reads: ["price"], note: "numeric times numeric is numeric, so nothing is rounded: 1.2 adds a decimal place." },
+    { sql: "upper(category) AS shelf", reads: ["category"], note: "a function call. most functions return NULL when they're given NULL." },
+    { sql: "price > 50 AS pricey", reads: ["price"], note: "a comparison is an expression whose value is a boolean, so it can be a column." },
+    { sql: "'EUR' AS currency", reads: [], note: "a literal is the same for every row." },
+  ]}
+  trace={source}
+/>
+</Figure>
+
+the same query, all four rows:
+
+```sql run db=shop
+SELECT name, price * 1.2 AS gross, upper(category) AS shelf, price > 50 AS pricey, 'EUR' AS currency
+FROM products
+WHERE id IN (1, 5, 7, 200)
+ORDER BY id;
+```
+
+four rows in, four rows out, always. SELECT can change the columns completely, but on its own it never changes how many rows there are.
+
+## names
+
+every output column has a name. `AS` picks it. leave AS out and postgres makes one up: a bare column keeps its name, a function call is named after the function, and anything else gets the name `?column?`:
+
+```sql run db=shop
+SELECT name, 'name', upper(name), length(name) * 2
+FROM customers
+WHERE id = 42;
+```
+
+note the second column: `'name'` in single quotes is a string, the same in every row, not the name column ([first query](/learn/start/first-query) has the quoting rules).
+
+the `AS` keyword itself is optional, `price * 1.2 gross` works, but write it: a forgotten comma between two columns turns the second one into an alias of the first, silently. and an alias folds to lowercase like any other name, unless you double-quote it:
+
+```sql run db=shop
+SELECT name AS "Customer Name", city AS Town
+FROM customers
+WHERE id = 42;
+```
+
+`Customer Name` keeps its capitals and its space. `Town` became `town`. a name is born in SELECT and only ORDER BY gets to use it: [the logical order](/learn/basics/logical-order) explains why WHERE can't.
+
+## expressions have types
+
+every expression has a type, and the type decides what an operator does. this catches everyone once:
+
+<Predict options={["3.5", "3", "4"]} answer={1}>
+```sql
+SELECT 7 / 2;
+```
+<Explain>
+7 and 2 are both integers, so `/` is integer division: the result is an integer, and the remainder (the .5) is thrown away, not rounded. you get 3. make either side a numeric (`7 / 2.0` or `7::numeric / 2`) and you get 3.5.
+</Explain>
+</Predict>
+
+<Figure caption={<>switch the expression. same numbers, different types, different answers. <code>pg_typeof</code> shows the type postgres picked for each one.</>}>
+<RunSwitch options={[{ key: "SELECT", values: ["7 / 2", "7 / 2.0", "7::numeric / 2", "7::float8 / 2", "1 / 3 * 3"] }]} runs={types} trace={source} />
+</Figure>
+
+the rule of thumb: an operation on two integers stays an integer, and anything with a numeric in it becomes numeric. `::` casts a value to another type. the whole system of types and when postgres converts between them is in [types and casts](/learn/types/types-and-casts).
+
+## the functions you'll use every day
+
+postgres ships hundreds of functions. a handful cover most days:
+
+```sql run db=shop
+SELECT upper(name)                         AS shouted,
+       length(name)                        AS letters,
+       left(email, strpos(email, '@') - 1) AS mailbox,
+       round(49.995, 2)                    AS rounded,
+       extract(year FROM created_at)       AS joined,
+       name || ' from ' || city            AS label
+FROM customers
+WHERE id = 42;
+```
+
+`||` glues text together. careful with it: one NULL in the chain and the whole result is NULL ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic)). `concat()` skips NULLs instead, and `coalesce()` puts something in their place ([CASE, COALESCE and NULLIF](/learn/basics/case-expressions)).
+
+<Docs href="https://www.postgresql.org/docs/18/functions.html" title="functions and operators">the manual's chapter 9 lists every built-in function by type: math, strings, dates, json, arrays and the rest. it's the page you'll have open the most.</Docs>
+
+## when SELECT * stops being harmless
+
+`*` means every column, in the table's order. it's great at a psql prompt, where you want to look around. in code that lives for years, it has three ways to hurt.
+
+**it sends everything.** products has a 6 KB description on one row and 3 KB of hex on another. ask for `*` and they all come along, whether you show them or not:
+
+<Figure caption={<>every product written out as text: all nine columns, against the three a listing page needs. most of the difference is descriptions nobody on that page reads.</>}>
+<Bars data={widths} unit="bytes" />
+</Figure>
+
+six times the bytes, over the network, through the driver, into memory, for a page that shows a name and a price. it also stops postgres from answering from an index alone ([index-only scans](/learn/indexes/index-only-scans)), because no index holds every column.
+
+**it changes when the table does.** add a column, and every `SELECT *` returns one more. code that reads columns by position gets the wrong one, and a `SELECT *` view does something stranger. it's expanded once, when the view is created, and never again:
+
+```sql run db=shop session=star
+CREATE VIEW free_stuff AS SELECT * FROM products WHERE price = 0;
+ALTER TABLE products ADD COLUMN rating int;
+SELECT pg_get_viewdef('free_stuff');
+```
+
+the view's stored definition lists the nine columns by name. the new `rating` isn't one of them, and won't be until someone recreates the view:
+
+```sql run session=star
+SELECT * FROM free_stuff;
+```
+
+**it hides what the code needs.** a query that names its columns tells the next reader exactly what it depends on. `*` tells them nothing, and makes "can we drop this column?" a question nobody can answer by reading the code.
+
+so: `*` at the prompt, names in the program.
+
+<Interview q="why is SELECT * discouraged in application code?">
+three reasons. it fetches every column, including large ones you don't use, which costs network, memory and the chance of an index-only scan. its result changes shape whenever the table does, which breaks code that reads columns by position, while views created with * keep the old column list forever. and it hides which columns the code actually depends on. bonus point: in a quick look at a table, or in `EXISTS (SELECT * ...)`, where no columns are fetched at all, it's perfectly fine.
+</Interview>
+
+<Keylines>
+- SELECT computes its list once per row: one row in, one row out.
+- an item is any expression: a column, a literal, a function call, a comparison.
+- AS names a column. unnamed expressions get ?column?. unquoted names fold to lowercase.
+- the type of an expression decides the operator: 7 / 2 is 3.
+- * is every column, now. fine at the prompt, a liability in code and in views.
+</Keylines>

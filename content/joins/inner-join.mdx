@@ -1,0 +1,191 @@
+import { ResultSteps } from "@/components/figures/joins/ResultSteps";
+import { RunPick } from "@/components/figures/joins/RunPick";
+import { prov, resultOf, runsOf } from "@/components/figures/joins/captured";
+import chain from "./traces/inner-chain.pgtrace.json";
+import spelling from "./traces/inner-spelling.pgtrace.json";
+
+{/* the stepper reads traces/inner-chain.scenario.sql (shop) and the switch reads
+    traces/inner-spelling.scenario.sql (school), both captured on PGlite. */}
+
+export const ada = [0, 1, 2, 3].map((i) => resultOf(chain, i));
+export const chainSrc = prov(chain);
+export const spellings = runsOf(spelling, ["ON the instructor", "ON the dept", "USING (dept)", "NATURAL"], 0);
+export const spellingSrc = prov(spelling);
+
+<InShort>
+`INNER JOIN` keeps the pairs of rows where **ON** is true, and nothing else: a row with no partner just isn't in the result. name the columns with `ON`, use **USING** when both sides call the column the same thing, and stay away from **NATURAL**.
+
+joins chain: each one takes the table built so far and joins one more to it.
+</InShort>
+
+## the picture
+
+you know how an order in the shop doesn't say who placed it? it says `customer_id = 42`. the name, the email and the city live in `customers`, written down once. that's on purpose (the [schema design](/learn/design/normal-forms) part is about why), and it means almost every useful question needs the tables put back together.
+
+think of a box of receipts that only carry a customer number, and an address book. a join is sitting down with both and writing the name onto every receipt. when the number on the receipt is a foreign key and the address book's is the primary key, every receipt finds exactly one entry, so in that common case a join really does behave like a lookup. in [the picture of a join](/learn/joins/joins-in-one-picture), that's a grid with exactly one tick in every row.
+
+<Figure wide caption={<>step through it. Ada is one row, then one row per order (her name repeats), then one row per order line, then the product names. shaded bands are the rows that share an <code>order_id</code>.</>}>
+<ResultSteps
+  steps={[
+    { label: "customers", run: ada[0] },
+    { label: "+ orders", run: ada[1], hot: ["JOIN orders AS o ON o.customer_id = c.id"] },
+    { label: "+ order_items", run: ada[2], group: "order_id", maxRows: 10, hot: ["JOIN order_items AS oi ON oi.order_id = o.id"] },
+    { label: "+ products", run: ada[3], group: "order_id", maxRows: 10, hot: ["JOIN products AS p ON p.id = oi.product_id"] },
+  ]}
+  trace={chainSrc}
+/>
+</Figure>
+
+notice the row counts: 1, 7, 18, 18. joining a one-to-many table multiplies the rows, joining a many-to-one table doesn't (every line has exactly one product). keep that in mind, it's the whole of the [fan-out](/learn/joins/fan-out) chapter.
+
+## writing one
+
+the smallest useful join: Ada's orders, with her name next to each.
+
+```sql run db=shop
+SELECT o.id, o.status, c.name
+FROM orders AS o
+JOIN customers AS c ON c.id = o.customer_id
+WHERE o.customer_id = 42
+ORDER BY o.id;
+```
+
+the parts:
+
+- `JOIN` means `INNER JOIN`. the `INNER` is optional, and most people leave it off.
+- `AS o` and `AS c` are table aliases: short names for the rest of the query. once a table has an alias, its real name is gone for that query, so it's `o.id`, not `orders.id`.
+- `ON c.id = o.customer_id` is the test every pair of rows takes. the order of the two sides doesn't matter.
+
+prefix every column with its table, even the ones that only exist on one side. both tables have an `id`, and postgres won't guess which one you meant:
+
+```sql run db=shop expect=error
+SELECT id, status
+FROM orders JOIN customers ON customers.id = orders.customer_id
+WHERE customer_id = 42;
+```
+
+## who disappears
+
+an inner join keeps pairs. a row that's in no pair is gone, without a warning. the shop has 2,000 customers, and only some of them have ever ordered:
+
+```sql run db=shop
+SELECT count(*) AS customers FROM customers;
+SELECT count(DISTINCT c.id) AS customers_in_the_join
+FROM customers AS c JOIN orders AS o ON o.customer_id = c.id;
+```
+
+2,000 customers, 1,962 of them in the join. the other 38 (Ming Li, customer 7, is the first) have no orders, so nothing pairs with them. when "every customer, with their orders if they have any" is the question, you want a [LEFT JOIN](/learn/joins/outer-joins).
+
+## ON, USING and NATURAL
+
+there are three ways to say what to match on. they differ in what you have to type, and in what you get back.
+
+<Figure wide caption={<>switch the spelling. watch the columns: with <code>ON</code>, <code>dept</code> appears twice. <code>USING</code> and <code>NATURAL</code> merge it into one column, first. and the last three runs answer a different question from the first.</>}>
+<RunPick
+  options={[{ key: "spelling", values: ["ON the instructor", "ON the dept", "USING (dept)", "NATURAL"] }]}
+  runs={spellings}
+  hot={["ON i.id = c.instructor_id", "ON i.dept = c.dept", "USING (dept)", "NATURAL JOIN"]}
+  tone="live"
+  trace={spellingSrc}
+/>
+</Figure>
+
+- **ON** takes any condition. it's the one you'll write most, and the only one that works when the columns are named differently, like `customer_id` on one side and `id` on the other (which is most foreign keys).
+- **USING (col)** is shorthand for `ON a.col = b.col` when both tables have a column with the same name. the output gets that column once instead of twice. handy when a schema names keys the same everywhere (`customer_id` in `customers` too).
+- **NATURAL JOIN** is `USING` with every column name the two tables have in common, worked out for you. that's the problem.
+
+<Predict options={["10,000", "2,000", "an error"]} answer={1}>
+```sql
+SELECT count(*) FROM customers NATURAL JOIN orders;
+```
+<Explain>
+the only column name `customers` and `orders` share is `id`. so NATURAL JOIN pairs customer 1 with order 1, customer 2 with order 2, and so on up to customer 2,000. 2,000 rows that mean nothing: order 42 wasn't placed by Ada. no error, no warning.
+</Explain>
+</Predict>
+
+for real:
+
+```sql run db=shop
+SELECT count(*) FROM customers NATURAL JOIN orders;
+```
+
+in the school it goes the other way. `students` and `instructors` share two column names, `id` and `name`, so NATURAL JOIN wants a student and an instructor with the same id *and* the same name:
+
+```sql run db=school
+SELECT count(*) FROM students NATURAL JOIN instructors;
+```
+
+<Gotcha title="NATURAL JOIN changes when the schema does">
+NATURAL JOIN decides its columns when the query runs, from whatever the tables look like that day. add an `updated_at` to both tables, or a `name`, and every NATURAL JOIN between them quietly gains a condition and starts returning fewer rows. ON spells the condition out, so a new column can't change it. the SQL standard has had NATURAL since SQL-92, and that's the best thing anyone says about it.
+</Gotcha>
+
+## three tables in a row
+
+a join takes two tables and gives back one. so joins chain: the second JOIN joins a third table to the result of the first, and so on. this is the path from a customer to the names of what they bought, foreign key by foreign key:
+
+<Figure caption={<>hover a stage. each join takes the table built so far and adds one more. the counts are the whole shop, from the block below.</>}>
+<Flow
+  stages={[
+    { label: "customers", sub: "2,000 rows", note: "one row per customer." },
+    { label: "⋈ orders", sub: "10,000 rows", note: "ON o.customer_id = c.id. one-to-many: one row per order. the 38 customers who never ordered drop out." },
+    { label: "⋈ order_items", sub: "24,942 rows", note: "ON oi.order_id = o.id. one-to-many again: one row per line. orders with no lines drop out." },
+    { label: "⋈ products", sub: "24,942 rows", note: "ON p.id = oi.product_id. many-to-one: every line has exactly one product, so the count stays." },
+  ]}
+/>
+</Figure>
+
+```sql run db=shop
+SELECT count(*) FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id;
+
+SELECT count(*) FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+JOIN order_items AS oi ON oi.order_id = o.id;
+
+SELECT count(*) FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+JOIN order_items AS oi ON oi.order_id = o.id
+JOIN products AS p ON p.id = oi.product_id;
+```
+
+and the point of all that joining, the question you'd actually ask: what has Ada bought the most of?
+
+```sql run db=shop
+SELECT p.name, sum(oi.qty) AS units
+FROM orders AS o
+JOIN order_items AS oi ON oi.order_id = o.id
+JOIN products AS p ON p.id = oi.product_id
+WHERE o.customer_id = 42
+GROUP BY p.name
+ORDER BY units DESC, p.name
+LIMIT 5;
+```
+
+(no `customers` in that one: the customer id is already on the order, so there's nothing to look up.)
+
+for inner joins, the order you write the tables in doesn't change the answer. `a JOIN b JOIN c` and `c JOIN b JOIN a` return the same rows, in some order. so postgres is free to run them in whatever order is cheapest, and picking that order is [a search problem of its own](/learn/optimizer/join-ordering). (outer joins are pickier. the next chapter has why.)
+
+<Deep title="the comma join, from before JOIN existed">
+before SQL-92 added `JOIN ... ON`, a join was a list of tables in FROM with the condition in WHERE:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT o.id, c.name
+FROM orders AS o, customers AS c
+WHERE c.id = o.customer_id;
+```
+
+same Hash Join as the JOIN version. the comma is a CROSS JOIN, and the WHERE filters the product, which is the definition of a join written out longhand. it still works and always will. the risk is that forgetting one condition in a long WHERE silently turns a join into a cross product, while `JOIN` without an `ON` is a syntax error. write `JOIN ... ON`.
+</Deep>
+
+<Interview q="for an inner join, is there a difference between a condition in ON and the same condition in WHERE?">
+not in the result. an inner join keeps the pairs where ON is true, then WHERE keeps the rows where it's true, so moving a condition between them keeps the same rows, and the planner treats them the same way. it's a matter of style: join conditions in ON, filters in WHERE. bonus point: say that this stops being true for outer joins, where a condition in WHERE runs after the NULL padding and can throw the padded rows away. that's the first gotcha in [LEFT, RIGHT and FULL joins](/learn/joins/outer-joins).
+</Interview>
+
+<Keylines>
+- INNER JOIN keeps the pairs where ON is true. rows with no partner vanish.
+- alias your tables and prefix your columns. ambiguous names are an error.
+- ON says anything, USING is ON for same-named columns, NATURAL guesses.
+- joins chain left to right, and one-to-many joins multiply rows.
+- for inner joins, table order and ON vs WHERE don't change the answer.
+</Keylines>

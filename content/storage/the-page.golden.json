@@ -1,0 +1,361 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5f13accb0d4f2e68": {
+      "db": "lab",
+      "sql": "SELECT lsn, checksum, flags, lower, upper, special, pagesize, version, prune_xid\nFROM page_header(get_raw_page('accounts', 0));",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lsn", "pg_lsn", 3220],
+            ["checksum", "int2", 21],
+            ["flags", "int2", 21],
+            ["lower", "int4", 23],
+            ["upper", "int4", 23],
+            ["special", "int4", 23],
+            ["pagesize", "int4", 23],
+            ["version", "int2", 21],
+            ["prune_xid", "xid", 28]
+          ],
+          "rowCount": 1,
+          "digest": "49dc718d3e3ae062",
+          "rows": [
+            ["0/17C7530", "11440", "0", "36", "8072", "8192", "8192", "4", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9e232a91d6bd092a": {
+      "db": "lab",
+      "sql": "SELECT encode(substr(get_raw_page('accounts', 0), 1, 24), 'hex') AS header,\n       encode(substr(get_raw_page('accounts', 0), 25, 12), 'hex') AS line_pointers;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["header", "text", 25],
+            ["line_pointers", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "e40f9ba254642ead",
+          "rows": [
+            ["0000000030757c01b02c00002400881f0020042000000000", "d89f4e00b09f4a00889f4e00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3502f85134af899c": {
+      "db": "lab",
+      "sql": "SELECT lp, lp_off, lp_flags, lp_len, t_ctid\nFROM heap_page_items(get_raw_page('accounts', 0))\nORDER BY lp;\nSELECT ctid, id, owner FROM accounts ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["lp_off", "int2", 21],
+            ["lp_flags", "int2", 21],
+            ["lp_len", "int2", 21],
+            ["t_ctid", "tid", 27]
+          ],
+          "rowCount": 3,
+          "digest": "fc8174b9f0ee2a50",
+          "rows": [
+            ["1", "8152", "1", "39", "(0,1)"],
+            ["2", "8112", "1", "37", "(0,2)"],
+            ["3", "8072", "1", "39", "(0,3)"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27],
+            ["id", "int4", 23],
+            ["owner", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "46014f9ede29d960",
+          "rows": [
+            ["(0,1)", "1", "alice"],
+            ["(0,2)", "2", "bob"],
+            ["(0,3)", "3", "carol"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3921aa9452992a11": {
+      "db": "lab",
+      "sql": "EXPLAIN (COSTS OFF) SELECT owner FROM accounts WHERE ctid = '(0,2)';\nSELECT owner FROM accounts WHERE ctid = '(0,2)';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "13a33f5fa4d2e43b",
+          "rows": [
+            ["Tid Scan on accounts"],
+            ["  TID Cond: (ctid = '(0,2)'::tid)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "cc4cf52a175c9111",
+          "rows": [
+            ["bob"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "135182e47b201e74": {
+      "db": "lab",
+      "sql": "CREATE TABLE slots (id int, note text);\nINSERT INTO slots VALUES (1, 'hi');\nINSERT INTO slots VALUES (2, repeat('-', 200));\nINSERT INTO slots VALUES (3, 'medium ' || repeat('=', 60));\nINSERT INTO slots VALUES (4, 'yo');\nDELETE FROM slots WHERE id = 2;\nVACUUM slots;\nSELECT lp, lp_off, lp_flags, lp_len FROM heap_page_items(get_raw_page('slots', 0)) ORDER BY lp;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "DELETE 1",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "ff5e17974d923504"
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "e4ebfe74ca94654a"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["lp_off", "int2", 21],
+            ["lp_flags", "int2", 21],
+            ["lp_len", "int2", 21]
+          ],
+          "rowCount": 4,
+          "digest": "d743b5353675dd15",
+          "rows": [
+            ["1", "8160", "1", "31"],
+            ["2", "0", "0", "0"],
+            ["3", "8064", "1", "96"],
+            ["4", "8032", "1", "31"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "602434b20f859b45": {
+      "db": "lab",
+      "sql": "INSERT INTO slots VALUES (5, 'new');\nSELECT ctid, id FROM slots ORDER BY id;",
+      "statements": [
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "eaea7cec8f5af4bd"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27],
+            ["id", "int4", 23]
+          ],
+          "rowCount": 4,
+          "digest": "cc9130b87e09943d",
+          "rows": [
+            ["(0,1)", "1"],
+            ["(0,3)", "3"],
+            ["(0,4)", "4"],
+            ["(0,2)", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "da812e32c3e30660": {
+      "db": "lab",
+      "sql": "SELECT (ctid::text::point)[0]::int AS page, count(*) AS rows\nFROM notes GROUP BY 1 ORDER BY 1;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["page", "int4", 23],
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "621c72b5aec0b348",
+          "rows": [
+            ["0", "97"],
+            ["1", "97"],
+            ["2", "97"],
+            ["3", "97"],
+            ["4", "12"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5a75c34b8a22a52b": {
+      "db": "lab",
+      "sql": "CREATE TABLE nothing ();\nINSERT INTO nothing SELECT FROM generate_series(1, 600);\nSELECT (ctid::text::point)[0]::int AS page, count(*) AS rows\nFROM nothing GROUP BY 1 ORDER BY 1;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 600",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 600,
+          "digest": "5e81970ec3d7e6db"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["page", "int4", 23],
+            ["rows", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "241414a06818f0e9",
+          "rows": [
+            ["0", "291"],
+            ["1", "291"],
+            ["2", "18"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "faece84353b8502b": {
+      "db": "lab",
+      "sql": "SELECT 'accounts' AS rel, lower, upper, special FROM page_header(get_raw_page('accounts', 0))\nUNION ALL\nSELECT 'accounts_pkey', lower, upper, special FROM page_header(get_raw_page('accounts_pkey', 1))\nORDER BY rel;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["rel", "text", 25],
+            ["lower", "int4", 23],
+            ["upper", "int4", 23],
+            ["special", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "3a76f2ee4b13547f",
+          "rows": [
+            ["accounts", "36", "8072", "8192"],
+            ["accounts_pkey", "36", "8128", "8176"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "16b46b3f8fb541c9": {
+      "db": "lab",
+      "sql": "SELECT ctid FROM accounts WHERE id = 3;\nUPDATE accounts SET balance = balance + 1 WHERE id = 3;\nSELECT ctid FROM accounts WHERE id = 3;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27]
+          ],
+          "rowCount": 1,
+          "digest": "1ee13c3787d44aae",
+          "rows": [
+            ["(0,3)"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27]
+          ],
+          "rowCount": 1,
+          "digest": "a9f3b1fba5f767e7",
+          "rows": [
+            ["(0,4)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

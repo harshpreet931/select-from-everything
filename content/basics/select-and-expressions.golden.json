@@ -1,0 +1,164 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "76a71232309188e6": {
+      "db": "shop",
+      "sql": "SELECT name, price * 1.2 AS gross, upper(category) AS shelf, price > 50 AS pricey, 'EUR' AS currency\nFROM products\nWHERE id IN (1, 5, 7, 200)\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["gross", "numeric", 1700],
+            ["shelf", "text", 25],
+            ["pricey", "bool", 16],
+            ["currency", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "36886eaa96007f82",
+          "rows": [
+            ["chef's knife", "58.800", "KITCHEN", "f", "EUR"],
+            ["studio headphones", "155.988", "AUDIO", "t", "EUR"],
+            ["wooden train", "28.800", null, "f", "EUR"],
+            ["left-handed teapot", "23.988", "KITCHEN", "f", "EUR"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5c8c220f88f705da": {
+      "db": "shop",
+      "sql": "SELECT name, 'name', upper(name), length(name) * 2\nFROM customers\nWHERE id = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["?column?", "text", 25],
+            ["upper", "text", 25],
+            ["?column?", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "c2183344ce898f47",
+          "rows": [
+            ["Ada Lovelace", "name", "ADA LOVELACE", "24"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b25fbc9f5ca2baa7": {
+      "db": "shop",
+      "sql": "SELECT name AS \"Customer Name\", city AS Town\nFROM customers\nWHERE id = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["Customer Name", "text", 25],
+            ["town", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "6fb86e1911824ca7",
+          "rows": [
+            ["Ada Lovelace", "London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b130e05b9115aa0f": {
+      "db": "shop",
+      "sql": "SELECT upper(name)                         AS shouted,\n       length(name)                        AS letters,\n       left(email, strpos(email, '@') - 1) AS mailbox,\n       round(49.995, 2)                    AS rounded,\n       extract(year FROM created_at)       AS joined,\n       name || ' from ' || city            AS label\nFROM customers\nWHERE id = 42;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["shouted", "text", 25],
+            ["letters", "int4", 23],
+            ["mailbox", "text", 25],
+            ["rounded", "numeric", 1700],
+            ["joined", "numeric", 1700],
+            ["label", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "6c97cd8d2053188e",
+          "rows": [
+            ["ADA LOVELACE", "12", "ada", "50.00", "2024", "Ada Lovelace from London"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "475fc3534afcf545": {
+      "db": "shop",
+      "sql": "CREATE VIEW free_stuff AS SELECT * FROM products WHERE price = 0;\nALTER TABLE products ADD COLUMN rating int;\nSELECT pg_get_viewdef('free_stuff');",
+      "statements": [
+        {
+          "tag": "CREATE VIEW",
+          "command": "CREATE VIEW",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9b07abe7a60de54c"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "09faaedc5586cc0c"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_get_viewdef", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "6fee24fddb1eb3a4",
+          "rows": [
+            [" SELECT id,\n    sku,\n    name,\n    category,\n    price,\n    tags,\n    attrs,\n    description,\n    discontinued\n   FROM products\n  WHERE (price = (0)::numeric);"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8fdadbb8e6e1b9c3": {
+      "db": "shop",
+      "sql": "SELECT * FROM free_stuff;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["sku", "text", 25],
+            ["name", "text", 25],
+            ["category", "text", 25],
+            ["price", "numeric", 1700],
+            ["tags", "text[]", 1009],
+            ["attrs", "jsonb", 3802],
+            ["description", "text", 25],
+            ["discontinued", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "dcfef1964e00ad7b",
+          "rows": [
+            ["4", "OFF-0004", "paper clips, free sample", "office", "0.00", "{free}", "{\"color\": \"silver\", \"weight_g\": 40}", null, "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

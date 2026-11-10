@@ -1,0 +1,283 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "bcf92111c74e4f49": {
+      "db": "shop",
+      "sql": "SELECT email FROM customers WHERE email LIKE 'zoe_martin%' ORDER BY email;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["email", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "5977dcbab0dba8ac",
+          "rows": [
+            ["zoe.martin@example.com"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4131731afdce31d0": {
+      "db": "empty",
+      "sql": "SELECT '100%' LIKE '100\\%'            AS backslash,\n       '100x' LIKE '100\\%'            AS not_a_wildcard,\n       '100%' LIKE '100!%' ESCAPE '!' AS own_escape;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["backslash", "bool", 16],
+            ["not_a_wildcard", "bool", 16],
+            ["own_escape", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "79d19d39181857f1",
+          "rows": [
+            ["t", "f", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d264180941c24040": {
+      "db": "shop",
+      "sql": "SELECT name FROM customers WHERE name ILIKE 'ada%' ORDER BY name;\nSELECT name FROM customers WHERE lower(name) LIKE 'ada%' ORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "7005fd1e1427f8d0",
+          "rows": [
+            ["Ada Lovelace"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "280fec274da0dc6d",
+          "rows": [
+            ["Ada Lovelace"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "af0f7e6ca781f54f": {
+      "db": "empty",
+      "sql": "SELECT datcollate, datctype FROM pg_database WHERE datname = current_database();",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["datcollate", "text", 25],
+            ["datctype", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "b48851a3ea752d6c",
+          "rows": [
+            ["C", "C.UTF-8"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "28072ff9f8019ea4": {
+      "db": "empty",
+      "sql": "CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);\nSELECT name\nFROM (VALUES ('Zoë Martin'), ('ZOË MARTIN'), ('Zoe Martin')) AS t (name)\nWHERE name LIKE 'zoë%' COLLATE ci\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "CREATE COLLATION",
+          "command": "CREATE COLLATION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "95af69dbce95e990"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "c80a40c91d42ad59",
+          "rows": [
+            ["ZOË MARTIN"],
+            ["Zoë Martin"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "77647657edab22d1": {
+      "db": "empty",
+      "sql": "SELECT 'Sam Lee' LIKE 'Lee' AS like_lee,\n       'Sam Lee' ~ 'Lee'    AS regex_lee,\n       'Sam Lee' ~ '^Lee$'  AS anchored;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["like_lee", "bool", 16],
+            ["regex_lee", "bool", 16],
+            ["anchored", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "619d64eb1edfa281",
+          "rows": [
+            ["f", "t", "f"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "296c37023f7602ee": {
+      "db": "shop",
+      "sql": "SELECT sku, name FROM products WHERE sku ~ '^MSC-' ORDER BY sku;\nSELECT count(*) AS odd_skus FROM products WHERE sku !~ '^[A-Z]{3}-[0-9]{4}$';",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["sku", "text", 25],
+            ["name", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "edf20f44d948bab4",
+          "rows": [
+            ["MSC-0100", "large lantern"],
+            ["MSC-0150", "smart stapler"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["odd_skus", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "ead0c025a037f323",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ce84d2cad559bdd1": {
+      "db": "empty",
+      "sql": "SELECT substring('ada@example.com' from '@(.*)$') AS domain,\n       regexp_replace('Sean O''Neil', '[^A-Za-z]', '', 'g') AS letters_only;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["domain", "text", 25],
+            ["letters_only", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "f8bd09fd7b334e7e",
+          "rows": [
+            ["example.com", "SeanONeil"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "30be2af6b401d8c4": {
+      "db": "shop",
+      "sql": "CREATE INDEX ON customers (name);\nEXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE 'Ada%';\nEXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE '%Lovelace';\nEXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name ILIKE 'ada%';",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2e3f05ef08204706",
+          "rows": [
+            ["Index Scan using customers_name_idx on customers"],
+            ["  Index Cond: ((name >= 'Ada'::text) AND (name < 'Adb'::text))"],
+            ["  Filter: (name ~~ 'Ada%'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "1044894e3bd3200e",
+          "rows": [
+            ["Seq Scan on customers"],
+            ["  Filter: (name ~~ '%Lovelace'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "db352a98c8a4aa08",
+          "rows": [
+            ["Seq Scan on customers"],
+            ["  Filter: (name ~~* 'ada%'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3546e1c8ed10eef2": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM products WHERE name SIMILAR TO '%(kite|yo-yo)';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "bbe6f3967b2f9675",
+          "rows": [
+            ["Seq Scan on products"],
+            ["  Filter: (name ~ '^(?:.*(?:kite|yo-yo))$'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

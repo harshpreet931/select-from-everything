@@ -1,0 +1,10 @@
+{
+  "name": "org",
+  "title": "org",
+  "blurb": "a company of 300: a reporting tree six levels deep, eight departments and a week of on-call shifts.",
+  "files": ["schema.sql", "data.sql"],
+  "analyze": true,
+  "extensions": [],
+  "setups": [],
+  "maxRowsPerTable": 30000
+}

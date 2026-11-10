@@ -1,0 +1,184 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5d8baeb639a025e5": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_open ON orders (ordered_at)\nWHERE status IN ('placed', 'paid');\n\nEXPLAIN (COSTS OFF)\nSELECT id, customer_id, ordered_at FROM orders\nWHERE status IN ('placed', 'paid')\nORDER BY ordered_at\nLIMIT 10;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ace62dfe27193ab7",
+          "rows": [
+            ["Limit"],
+            ["  ->  Index Scan using orders_open on orders"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "212ac1847e025625": {
+      "db": "shop",
+      "sql": "CREATE UNIQUE INDEX one_placed_order ON orders (customer_id) WHERE status = 'placed';\nINSERT INTO orders (customer_id, status, ordered_at)\nSELECT customer_id, 'placed', '2026-07-01' FROM orders WHERE status = 'placed' ORDER BY id LIMIT 1;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "duplicate key value violates unique constraint \"one_placed_order\"",
+            "detail": "Key (customer_id)=(266) already exists.",
+            "schema": "public",
+            "table": "orders",
+            "constraint": "one_placed_order"
+          },
+          "digest": "6d2ce1a008965c4c"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "duplicate key value violates unique constraint \"one_placed_order\"",
+        "detail": "Key (customer_id)=(266) already exists.",
+        "schema": "public",
+        "table": "orders",
+        "constraint": "one_placed_order",
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "46487085be793891": {
+      "db": "shop",
+      "sql": "CREATE INDEX customers_lower_email ON customers (lower(email));\nANALYZE customers;\nSELECT id, name, email FROM customers\nWHERE lower(email) = 'zoe.martin@example.com'\nORDER BY id;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["email", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "cb0c3bd363fa4971",
+          "rows": [
+            ["4", "Zoë Martin", "Zoe.Martin@Example.com"],
+            ["5", "Zoe Martin", "zoe.martin@example.com"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8ff58d947abfbd10": {
+      "db": "shop",
+      "sql": "CREATE INDEX ON customers (date(created_at));",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42P17",
+            "message": "functions in index expression must be marked IMMUTABLE"
+          },
+          "digest": "45e11169fe931d1f"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42P17",
+        "message": "functions in index expression must be marked IMMUTABLE",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "a06e95a8c18e05a4": {
+      "db": "shop",
+      "sql": "CREATE INDEX customers_signup_day ON customers (((created_at AT TIME ZONE 'UTC')::date));",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "fe1200b5b8669711": {
+      "db": "shop",
+      "sql": "CREATE UNIQUE INDEX customers_email_ci ON customers (lower(email));",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23505",
+            "message": "could not create unique index \"customers_email_ci\"",
+            "detail": "Key (lower(email))=(zoe.martin@example.com) is duplicated.",
+            "schema": "public",
+            "table": "customers",
+            "constraint": "customers_email_ci"
+          },
+          "digest": "4eb97ad85183ce05"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23505",
+        "message": "could not create unique index \"customers_email_ci\"",
+        "detail": "Key (lower(email))=(zoe.martin@example.com) is duplicated.",
+        "schema": "public",
+        "table": "customers",
+        "constraint": "customers_email_ci",
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

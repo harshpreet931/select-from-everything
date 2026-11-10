@@ -1,0 +1,125 @@
+import { TornPage } from "@/components/figures/wal/TornPage";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import ckpt from "./traces/checkpoint-fpi.pgtrace.json";
+import sizes from "./traces/fpi-sizes.pgtrace.json";
+import off from "./traces/fpi-off.pgtrace.json";
+
+{/* the WalStrip reads traces/checkpoint-fpi and the bars read traces/fpi-sizes and fpi-off, all
+    on a real postgres 18.6 server (the browser engine has no lz4 or zstd, and can't reload
+    full_page_writes). */}
+
+export const n = (t, i, c) => Number(t.steps[i].result.data[0][c]);
+export const firstRec = ckpt.steps[1].wal.records[0];
+export const secondRec = ckpt.steps[2].wal.records[0];
+export const thirdRec = ckpt.steps[4].wal.records[0];
+
+<InShort>
+a postgres page is 8 KB, and a disk or filesystem may write it in smaller pieces. crash halfway and the file holds a **torn page**: half new, half old. a WAL record that says "change slot 7" can't fix that. so the first time a page changes after a **checkpoint**, its WAL record carries a **full-page image**, and redo restores the whole page from it. that's why WAL volume spikes right after every checkpoint.
+</InShort>
+
+## the picture
+
+you know how a WAL record is tiny, a few dozen bytes for a changed row? that only works if the page it applies to is intact. "insert this tuple in slot 7" means nothing on a page whose header was written but whose tuples weren't.
+
+think of correcting a book with a list of errata (the WAL): "page 112, line 7: replace 'teh' with 'the'". that works on a clean page 112. it doesn't work if the printer jammed halfway through page 112 and the bottom half is from a different edition. so the first erratum for any page after each reprint (checkpoint) comes with a photocopy of the whole page (the full-page image). if the page turns out mangled, paste in the photocopy, then apply the errata.
+
+<Figure wide caption={<>step through, then switch full_page_writes off and step again. the crash comes between the two halves of one page write. with the image in the WAL, redo doesn't care what the file holds; without it, the change lands on a page that isn't there anymore.</>}>
+<TornPage />
+</Figure>
+
+postgres writes pages in 8 KB blocks. the operating system's own page is usually 4 KB, and a disk writes 512-byte or 4 KB sectors atomically at best. a crash or power cut in the middle of one `write()` can leave any mix. postgres can't detect every torn page by itself ([checksums](/learn/wal/checksums) catch most of them, after the fact), so it makes sure it never needs the page that was on disk.
+
+## the first change after a checkpoint
+
+redo starts from the last checkpoint's redo pointer ([crash recovery](/learn/wal/crash-recovery)). so the page that matters is the one as it was at that checkpoint, and the record that has to carry the image is the first one to touch the page after it. later records for the same page don't: redo will have restored the page from the image by the time it gets to them.
+
+<Figure wide caption={<>step through: a checkpoint, two updates to the same page, another checkpoint, a third update. records with <C k="ref">+FPI</C> carry the page. the <C k="meta">redo</C> pointer is what decides who pays.</>}>
+<WalStrip trace={ckpt} />
+</Figure>
+
+on a real server: the first update after the checkpoint wrote a {firstRec.len}-byte record, {firstRec.fpiLen} of them the page image. the second update to the same page wrote {secondRec.len} bytes. after the next checkpoint, the third update paid again: {thirdRec.len} bytes. the rule postgres applies when it builds each record: if the page's LSN is not newer than the current redo pointer, this is the first change since the checkpoint began, so include the page.
+
+the image isn't always 8 KB: postgres leaves out the hole between pd_lower and pd_upper (the page's free space), so a page that's 60% full logs about 60% of a page. you can measure it in the browser too. (the first SELECT sets lab's hint bits before the checkpoint, so the image below belongs to the UPDATE and not to a hint-bit record: more on that at the end.)
+
+```sql run db=lab session=fpw
+SELECT count(*) FROM accounts;
+CHECKPOINT;
+SELECT set_config('my.a', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+SELECT record_type, record_length, block_fpi_length AS fpi_length
+FROM pg_get_wal_block_info(current_setting('my.a')::pg_lsn, pg_current_wal_insert_lsn())
+WHERE relfilenode = pg_relation_filenode('accounts') ORDER BY start_lsn;
+```
+
+```sql run session=fpw
+SELECT set_config('my.a', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;
+UPDATE accounts SET balance = balance + 1 WHERE id = 2;
+SELECT record_type, record_length, block_fpi_length AS fpi_length
+FROM pg_get_wal_block_info(current_setting('my.a')::pg_lsn, pg_current_wal_insert_lsn())
+WHERE relfilenode = pg_relation_filenode('accounts') ORDER BY start_lsn;
+```
+
+lab's accounts page holds three short rows, so its image is small. a full page logs close to 8 KB per first touch.
+
+<Predict question="right after a CHECKPOINT, you UPDATE one row on each of 1,000 different pages. roughly how much WAL?" options={["about 70 KB", "about 8 MB", "about 80 MB"]} answer={1}>
+```sql
+CHECKPOINT;
+UPDATE big SET flag = true WHERE id % 50 = 0;   -- one row per page, 1,000 pages
+```
+<Explain>
+around 8 MB, if the pages are full: every one of those updates is the first change to its page since the checkpoint, so each record carries close to 8 KB of page image. the same update a minute later, with no checkpoint in between, would write about a hundred times less. checkpoints don't just cost the I/O of writing pages: every one of them makes the next touch of every page expensive in WAL.
+</Explain>
+</Predict>
+
+## with and without
+
+the same one-row UPDATE, right after a checkpoint, on a real server, with every option postgres 18.6 offers:
+
+<Figure caption={<>WAL bytes of the heap record for one small UPDATE. "first change" is right after a CHECKPOINT; the page is about 60% full.</>}>
+<Bars
+  unit=" B"
+  data={[
+    { label: "first change", value: n(sizes, 0, 1), tone: "hot" },
+    { label: "first, pglz", value: n(sizes, 2, 1) },
+    { label: "first, lz4", value: n(sizes, 3, 1) },
+    { label: "first, zstd", value: n(sizes, 4, 1) },
+    { label: "same page again", value: n(sizes, 1, 1), tone: "live" },
+    { label: "first, fpw off", value: n(off, 0, 1), tone: "dead" },
+  ]}
+/>
+<Provenance trace={prov(sizes)} />
+</Figure>
+
+{n(sizes, 0, 1)} bytes with the image, {n(sizes, 1, 1)} without. `full_page_writes = off` makes the first change as cheap as any other ({n(off, 0, 1)} bytes) and leaves you exposed to exactly the torn page above. `wal_compression` compresses only the page images: pglz (since 9.5), lz4 and zstd (since 15). here zstd shrank the record to {n(sizes, 4, 1)} bytes, lz4 to {n(sizes, 3, 1)}, pglz to {n(sizes, 2, 1)}. the cost is CPU on every image written and read. the browser's postgres is built without lz4 and zstd, so there only pglz works:
+
+```sql run session=fpw
+SET wal_compression = pglz;
+CHECKPOINT;
+SELECT set_config('my.a', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;
+UPDATE accounts SET balance = balance + 1 WHERE id = 3;
+SELECT record_type, record_length, block_fpi_length AS fpi_length
+FROM pg_get_wal_block_info(current_setting('my.a')::pg_lsn, pg_current_wal_insert_lsn())
+WHERE relfilenode = pg_relation_filenode('accounts') ORDER BY start_lsn;
+```
+
+## images for hint bits
+
+a page can change without any row changing: setting [hint bits](/learn/mvcc/commit-log-and-hint-bits) on a read. normally that's not logged at all, because losing a hint bit is harmless. but with **data checksums** on (the default since postgres 18) or `wal_log_hints`, a torn hint-bit write would leave a page whose checksum doesn't match, so the first hint-bit change after a checkpoint logs the page as an `XLOG FPI_FOR_HINT` record. that's the read that writes WAL in [commit log and hint bits](/learn/mvcc/commit-log-and-hint-bits), and the catalog records at the top of [WAL records](/learn/wal/wal-records). later hint-bit changes to the same page, before the next checkpoint, log nothing.
+
+<Gotcha title="frequent checkpoints make more WAL, not less">
+shortening `checkpoint_timeout` or shrinking `max_wal_size` sounds like it would keep the WAL small. it does the opposite under steady writes: every checkpoint resets the "first change" flag on every page, so the next touch of each hot page logs it whole again. more WAL means the next `max_wal_size`-triggered checkpoint comes sooner. if most of your WAL is images (`fpi_size` in pg_get_wal_stats, `wal_fpi` in pg_stat_wal), spacing checkpoints out is usually the fix. turning full_page_writes off is only safe on storage that guarantees atomic 8 KB writes, and few setups can promise that.
+</Gotcha>
+
+<Interview q="what is a full-page write in postgres, and why does WAL volume jump after a checkpoint?">
+postgres pages are 8 KB but the OS and disk may write them in smaller units, so a crash mid-write can leave a torn page. WAL records describe changes relative to a page, so they can't repair one. to make recovery independent of what's on disk, the first modification of each page after a checkpoint's redo point includes a full image of the page in the WAL record; redo restores the page from the image and applies later records on top. so right after a checkpoint, every first touch of a page writes up to 8 KB of extra WAL, minus the free-space hole. mitigations: fewer checkpoints (larger max_wal_size, longer checkpoint_timeout), wal_compression (pglz, lz4, zstd), and HOT updates to touch fewer pages. bonus point: with checksums or wal_log_hints, even hint-bit changes trigger an image, as FPI_FOR_HINT.
+</Interview>
+
+<Keylines>
+- an 8 KB page can be written half-way. a WAL record can't fix a torn page.
+- so the first change to a page after a checkpoint logs the whole page, minus its free-space hole.
+- redo restores the page from the image and doesn't read the file's copy at all.
+- every checkpoint makes the next touch of every page expensive. WAL spikes after checkpoints.
+- wal_compression shrinks the images: pglz, lz4, zstd. full_page_writes = off risks torn pages.
+- with checksums on, a hint-bit change after a checkpoint logs an FPI_FOR_HINT.
+</Keylines>

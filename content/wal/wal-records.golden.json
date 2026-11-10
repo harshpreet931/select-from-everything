@@ -1,0 +1,257 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "5011122c5d70888d": {
+      "db": "lab",
+      "sql": "CREATE FUNCTION wal_since(start pg_lsn)\nRETURNS TABLE (lsn pg_lsn, rmgr text, record_type text, len int4, fpi int4, rel name)\nLANGUAGE sql AS $$\n  SELECT r.start_lsn, r.resource_manager, r.record_type, r.record_length, r.fpi_length, c.relname\n  FROM pg_get_wal_records_info(start, pg_current_wal_insert_lsn()) AS r\n  LEFT JOIN pg_get_wal_block_info(start, pg_current_wal_insert_lsn()) AS b ON b.start_lsn = r.start_lsn\n  LEFT JOIN pg_class AS c ON c.relfilenode = b.relfilenode\n$$;\nSELECT set_config('my.start', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked,\n       set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS also;\nINSERT INTO accounts VALUES (4, 'dave', 10.00);\nSELECT * FROM wal_since(current_setting('my.lsn')::pg_lsn) ORDER BY lsn;",
+      "statements": [
+        {
+          "tag": "CREATE FUNCTION",
+          "command": "CREATE FUNCTION",
+          "columns": null,
+          "rowCount": null,
+          "digest": "38334b4e88d620d5"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "bool", 16],
+            ["also", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "0c5f8ef693631321",
+          "rows": [
+            ["t", "t"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["lsn", "pg_lsn", 3220],
+            ["rmgr", "text", 25],
+            ["record_type", "text", 25],
+            ["len", "int4", 23],
+            ["fpi", "int4", 23],
+            ["rel", "name", 19]
+          ],
+          "rowCount": 5,
+          "digest": "9ef1e17b419e847d",
+          "rows": [
+            ["0/17F7580", "XLOG", "FPI_FOR_HINT", "3597", "3548", "pg_constraint"],
+            ["0/17F83A8", "XLOG", "FPI_FOR_HINT", "4273", "4224", null],
+            ["0/17F9460", "Heap", "INSERT", "254", "200", "accounts"],
+            ["0/17F9560", "Btree", "INSERT_LEAF", "173", "120", "accounts_pkey"],
+            ["0/17F9610", "Transaction", "COMMIT", "34", "0", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4d346a832e6c7924": {
+      "db": "lab",
+      "sql": "SELECT set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;\nINSERT INTO accounts VALUES (5, 'erin', 20.00);\nSELECT * FROM wal_since(current_setting('my.lsn')::pg_lsn) ORDER BY lsn;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "64f07e88492405cf",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lsn", "pg_lsn", 3220],
+            ["rmgr", "text", 25],
+            ["record_type", "text", 25],
+            ["len", "int4", 23],
+            ["fpi", "int4", 23],
+            ["rel", "name", 19]
+          ],
+          "rowCount": 3,
+          "digest": "7647823f767eba57",
+          "rows": [
+            ["0/17F9638", "Heap", "INSERT", "69", "0", "accounts"],
+            ["0/17F9680", "Btree", "INSERT_LEAF", "64", "0", "accounts_pkey"],
+            ["0/17F96C0", "Transaction", "COMMIT", "34", "0", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c67083d1c433e5d1": {
+      "db": "lab",
+      "sql": "SELECT set_config('my.lsn', pg_current_wal_insert_lsn()::text, false) IS NOT NULL AS marked;\nUPDATE accounts SET balance = balance + 10 WHERE id = 1;\nUPDATE accounts SET id = 20 WHERE id = 2;\nSELECT * FROM wal_since(current_setting('my.lsn')::pg_lsn) ORDER BY lsn;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["marked", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "64f07e88492405cf",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0b180bc9b96cf94b"
+        },
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["lsn", "pg_lsn", 3220],
+            ["rmgr", "text", 25],
+            ["record_type", "text", 25],
+            ["len", "int4", 23],
+            ["fpi", "int4", 23],
+            ["rel", "name", 19]
+          ],
+          "rowCount": 7,
+          "digest": "03f75512cd3a0467",
+          "rows": [
+            ["0/17F96E8", "XLOG", "FPI_FOR_HINT", "8165", "8116", null],
+            ["0/17FB6E8", "Heap2", "PRUNE_ON_ACCESS", "52", "0", null],
+            ["0/17FB720", "Heap", "HOT_UPDATE", "70", "0", "accounts"],
+            ["0/17FB768", "Transaction", "COMMIT", "34", "0", null],
+            ["0/17FB790", "Heap", "UPDATE", "69", "0", "accounts"],
+            ["0/17FB7D8", "Btree", "INSERT_LEAF", "64", "0", "accounts_pkey"],
+            ["0/17FB818", "Transaction", "COMMIT", "34", "0", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "92a42f5b370c4911": {
+      "db": "lab",
+      "sql": "SELECT rm_id, rm_name FROM pg_get_wal_resource_managers() ORDER BY rm_id;",
+      "statements": [
+        {
+          "tag": "SELECT 22",
+          "command": "SELECT",
+          "columns": [
+            ["rm_id", "int4", 23],
+            ["rm_name", "text", 25]
+          ],
+          "rowCount": 22,
+          "digest": "c957386503328d53",
+          "rows": [
+            ["0", "XLOG"],
+            ["1", "Transaction"],
+            ["2", "Storage"],
+            ["3", "CLOG"],
+            ["4", "Database"],
+            ["5", "Tablespace"],
+            ["6", "MultiXact"],
+            ["7", "RelMap"],
+            ["8", "Standby"],
+            ["9", "Heap2"],
+            ["10", "Heap"],
+            ["11", "Btree"],
+            ["12", "Hash"],
+            ["13", "Gin"],
+            ["14", "Gist"],
+            ["15", "Sequence"],
+            ["16", "SPGist"],
+            ["17", "BRIN"],
+            ["18", "CommitTs"],
+            ["19", "ReplicationOrigin"],
+            ["20", "Generic"],
+            ["21", "LogicalMessage"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0ebc5871f6b88c61": {
+      "db": "lab",
+      "sql": "SELECT \"resource_manager/record_type\" AS rmgr, count, record_size, fpi_size\nFROM pg_get_wal_stats(current_setting('my.start')::pg_lsn, pg_current_wal_insert_lsn())\nWHERE count > 0\nORDER BY rmgr;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["rmgr", "text", 25],
+            ["count", "int8", 20],
+            ["record_size", "int8", 20],
+            ["fpi_size", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "befa53886a178c65",
+          "rows": [
+            ["Btree", "3", "181", "120"],
+            ["Heap", "4", "262", "200"],
+            ["Heap2", "1", "52", "0"],
+            ["Transaction", "4", "136", "0"],
+            ["XLOG", "3", "147", "15888"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1727bbeb8fe85c3c": {
+      "db": "lab",
+      "sql": "SELECT pg_current_wal_insert_lsn() AS here,\n       pg_wal_lsn_diff(pg_current_wal_insert_lsn(), '0/0') AS bytes_since_initdb,\n       file_name, file_offset\nFROM pg_walfile_name_offset(pg_current_wal_insert_lsn());",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["here", "pg_lsn", 3220],
+            ["bytes_since_initdb", "numeric", 1700],
+            ["file_name", "text", 25],
+            ["file_offset", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "80566ab2c347c86f",
+          "rows": [
+            ["0/17E9D28", "25074984", "000000010000000000000001", "8297768"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

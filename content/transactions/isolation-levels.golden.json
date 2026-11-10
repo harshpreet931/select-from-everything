@@ -1,0 +1,129 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "8c3afb8c212b91d0": {
+      "db": "empty",
+      "sql": "SHOW default_transaction_isolation;\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSHOW transaction_isolation;\nCOMMIT;\nSET default_transaction_isolation = 'serializable';\nBEGIN;\nSHOW transaction_isolation;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["default_transaction_isolation", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d9c4f9e503b7f9d7",
+          "rows": [
+            ["read committed"]
+          ]
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5693d3fc01d98245"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["transaction_isolation", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "25325db6135b18e6",
+          "rows": [
+            ["repeatable read"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7f3480ce95d80d83"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "8792d2a263bf6345"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "279f37a4060a02d9"
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["transaction_isolation", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "699154d5c28d4aea",
+          "rows": [
+            ["serializable"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "4fe6eeeaf4d89e17"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b17e33b3d6c5694e": {
+      "db": "empty",
+      "sql": "BEGIN;\nSELECT 1;\nSET TRANSACTION ISOLATION LEVEL SERIALIZABLE;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "d198ae3a187f1d7c",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "25001",
+            "message": "SET TRANSACTION ISOLATION LEVEL must be called before any query"
+          },
+          "digest": "8f5cab0ed5e37253"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "25001",
+        "message": "SET TRANSACTION ISOLATION LEVEL must be called before any query",
+        "statement": 2
+      },
+      "txn": "E"
+    }
+  }
+}

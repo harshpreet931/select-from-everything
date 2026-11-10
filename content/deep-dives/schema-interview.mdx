@@ -1,0 +1,169 @@
+import { prov, runsOf } from "@/lib/db/captured";
+import booking from "./traces/booking.pgtrace.json";
+
+{/* both RunPicks read traces/booking, captured on PGlite with btree_gist (the same engine as the
+    run blocks): the schema below, then five writes the constraints judge, then four reads and
+    writes as a tenant under row-level security. */}
+
+export const TRIES = ["overlapping stay", "back to back", "over a cancelled one", "an empty stay", "a second rate"];
+export const tries = runsOf(booking, TRIES, 0);
+export const AS = ["hotel 1", "hotel 2", "no hotel set", "hotel 2 writes for hotel 1"];
+export const as = runsOf(booking, AS, 5);
+
+<InShort>
+the schema round isn't about drawing boxes. it's about turning each requirement into something the database **enforces**: keys for identity, foreign keys for references, an **exclusion constraint** so two bookings can't overlap, a **temporal key** so a room can't have two prices for one night, indexes chosen for the queries you'll actually run, and **row-level security** so one hotel never sees another's guests.
+
+here's a booking system, thought out loud, and every constraint run for real.
+</InShort>
+
+## the picture
+
+you know how a schema question starts with "design a booking system" and an empty whiteboard, and it's tempting to start drawing tables? the interviewer wants to hear the questions first. which rules must never be broken, even by a buggy app? those go in the schema. everything else can live in code.
+
+think of the schema as the house rules written on the wall, not in the staff handbook. a new employee (a new service, a script someone runs at 2 am) will skip the handbook. they can't skip the wall.
+
+the requirements, as an interviewer would give them, and what each one becomes:
+
+<Figure caption={<>from the brief to the schema. each requirement turns into one thing postgres enforces; the rest of the chapter builds them.</>}>
+<Tree>{`
+several hotels share one database (tenants) #meta // hotel_id on every tenant row + row-level security
+    a hotel has rooms, numbered per hotel // rooms: surrogate key, UNIQUE (hotel_id, room_no)
+    guests are people, found by email // guests: UNIQUE index on lower(email)
+a room can't be double-booked #hot // EXCLUDE USING gist (room_id WITH =, stay WITH &&)
+    cancelled bookings free the room // ... WHERE (status = 'confirmed')
+    check-out day = next check-in day is fine // daterange, [) bounds
+a room has one price per night #hot // PRIMARY KEY (room_id, valid WITHOUT OVERLAPS)
+"show my upcoming stays" must be fast #ref // index on bookings (guest_id, lower(stay))
+`}</Tree>
+</Figure>
+
+## entities and keys
+
+four tables do it: hotels, rooms, guests, bookings, plus room_rates for prices ([from requirements to tables](/learn/design/er-modeling)). every table gets a surrogate `int` identity key, because natural keys here change (a guest's email, a room renumbered in a refit), and the natural keys get UNIQUE constraints anyway, so they can't be duplicated ([primary keys, natural and surrogate](/learn/design/keys)). room numbers are unique *per hotel*, so that's a composite UNIQUE. emails are unique regardless of case, so the unique index is on `lower(email)`.
+
+```sql run session=hotel ext=btree_gist errors=continue expect=error
+CREATE TABLE hotels (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL UNIQUE);
+CREATE TABLE rooms (
+  id       int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  hotel_id int NOT NULL REFERENCES hotels,
+  room_no  text NOT NULL,
+  beds     int NOT NULL CHECK (beds BETWEEN 1 AND 6),
+  UNIQUE (hotel_id, room_no)
+);
+CREATE TABLE guests (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, email text NOT NULL, name text NOT NULL);
+CREATE UNIQUE INDEX guests_email ON guests (lower(email));
+INSERT INTO hotels (name) VALUES ('harbour view'), ('the old mill');
+INSERT INTO rooms (hotel_id, room_no, beds) VALUES (1, '101', 2), (1, '102', 2), (2, '1', 4);
+INSERT INTO guests (email, name) VALUES ('ada@example.com', 'Ada Lovelace'), ('grace@example.com', 'Grace Hopper');
+INSERT INTO guests (email, name) VALUES ('Ada@Example.com', 'Ada again');
+```
+
+the last insert is the point: the same email in different case is refused ([NOT NULL, CHECK and UNIQUE](/learn/design/constraints), [partial and expression indexes](/learn/indexes/partial-and-expression)).
+
+## no double bookings
+
+the requirement every interviewer is waiting for: two confirmed bookings of one room can't overlap. a UNIQUE constraint can't say "overlap", and a check in the application has a race: two requests both look, both see the room free, both insert ([write skew](/learn/transactions/write-skew)). you could fix the race with SERIALIZABLE and retries ([postgres vs InnoDB](/learn/deep-dives/postgres-vs-innodb) watches exactly that race), or with a lock on the room row. the schema answer is better: an **exclusion constraint**, which the database checks against every other row, under concurrency, through an index ([time ranges and temporal keys](/learn/design/temporal-keys), [range types](/learn/types/ranges)).
+
+```sql run session=hotel errors=continue expect=error
+CREATE TABLE bookings (
+  id       int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  hotel_id int NOT NULL REFERENCES hotels,
+  room_id  int NOT NULL REFERENCES rooms,
+  guest_id int NOT NULL REFERENCES guests,
+  stay     daterange NOT NULL CHECK (NOT isempty(stay)),
+  status   text NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed', 'cancelled')),
+  EXCLUDE USING gist (room_id WITH =, stay WITH &&) WHERE (status = 'confirmed')
+);
+INSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 1, '[2026-12-20,2026-12-27)');
+INSERT INTO bookings (hotel_id, room_id, guest_id, stay) VALUES (1, 1, 2, '[2026-12-24,2026-12-29)');
+```
+
+read the constraint out loud: "no two rows where room_id is `=` and stay is `&&` (overlaps), counting only confirmed rows". `room_id WITH =` inside a GiST index is why `btree_gist` is needed. the half-open `[)` range means a guest checking out on the 27th doesn't block one checking in on the 27th. and the `WHERE` makes it a partial constraint, so cancelling a booking frees the room without deleting history ([history, audit and soft delete](/learn/design/history-and-soft-delete)).
+
+<Figure wide caption={<>five writes against the schema above, captured. pick one: the <C k="dead">refusals</C> name the constraint and, for an overlap, the row it collides with.</>}>
+<RunPick options={[{ key: "try", values: TRIES }]} runs={tries} file="bookings.sql" hot={["[2026-12-24,2026-12-29)", "[2026-12-27,2026-12-30)", "[2026-12-31,2026-12-31)"]} trace={prov(booking)} />
+</Figure>
+
+<Predict question="room 101: confirmed '[2026-12-20,2026-12-27)'. insert '[2026-12-27,2026-12-30)' for the same room?" options={["refused: they share the 27th", "accepted", "refused: ranges must not touch"]} answer={1}>
+```sql
+INSERT INTO bookings (hotel_id, room_id, guest_id, stay)
+VALUES (1, 1, 2, '[2026-12-27,2026-12-30)');
+```
+<Explain>
+accepted. `[2026-12-20,2026-12-27)` includes the 20th and excludes the 27th: it's the nights of the 20th to the 26th. the new stay starts on the night of the 27th. half-open ranges are why back-to-back bookings just work, and why `[]` would be the wrong default for hotel nights.
+</Explain>
+</Predict>
+
+## a temporal key for prices
+
+prices change over time, and a room must have exactly one price for any night. that's a key that's unique *per moment*: postgres 18's `WITHOUT OVERLAPS` <Since v={18} />.
+
+```sql run session=hotel
+CREATE TABLE room_rates (
+  room_id int NOT NULL REFERENCES rooms,
+  valid   daterange NOT NULL,
+  price   numeric(8,2) NOT NULL CHECK (price > 0),
+  PRIMARY KEY (room_id, valid WITHOUT OVERLAPS)
+);
+INSERT INTO room_rates VALUES (1, '[2026-01-01,2026-12-01)', 120.00), (1, '[2026-12-01,2027-01-01)', 180.00);
+SELECT price FROM room_rates WHERE room_id = 1 AND valid @> date '2026-12-24';
+```
+
+why a temporal primary key here, but an EXCLUDE for bookings? WITHOUT OVERLAPS is a real primary key (it can be referenced, and it refuses empty ranges), but it can't have a WHERE. bookings needed "only confirmed ones count", so they got the more general tool. both are a GiST index underneath.
+
+## indexes for the queries
+
+don't index by guessing. list the queries the product will run, and check each has an index that answers it:
+
+```sql run session=hotel
+CREATE INDEX bookings_guest ON bookings (guest_id, lower(stay));
+SELECT tablename, indexname, indexdef
+FROM pg_indexes
+WHERE tablename IN ('bookings', 'room_rates', 'rooms', 'guests')
+ORDER BY tablename, indexname;
+```
+
+"is room 101 free on these dates?" is the exclusion constraint's own GiST index on (room_id, stay), as long as the query says `status = 'confirmed'` too, because that index is partial. "rooms of a hotel" is the UNIQUE (hotel_id, room_no) index, hotel_id first. "a guest's upcoming stays, soonest first" is `bookings_guest`: equality on guest_id, then ordered by check-in date, which also makes it the index the guest_id foreign key needs, so deleting a guest doesn't scan bookings ([a query tuning casebook](/learn/deep-dives/tuning-casebook), case 9). `bookings.room_id` is the leading column of the GiST index, but that index skips cancelled rows, so it can't serve the room foreign key's check; rooms are almost never deleted, so that's a choice you can say out loud and skip. ([multicolumn indexes](/learn/indexes/composite-indexes), [what indexes cost](/learn/indexes/index-costs).)
+
+## tenants: row-level security
+
+several hotels in one database means every query must filter by hotel, and one forgotten WHERE leaks another hotel's guests. row-level security puts the filter in the table ([schemas, roles and row-level security](/learn/design/schemas-roles-and-rls)):
+
+```sql run session=hotel
+ALTER TABLE bookings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON bookings
+  USING (hotel_id = nullif(current_setting('app.hotel_id', true), '')::int);
+CREATE ROLE booking_app_demo;
+GRANT SELECT, INSERT ON bookings TO booking_app_demo;
+SET ROLE booking_app_demo;
+SELECT set_config('app.hotel_id', '2', false) IS NOT NULL AS hotel_set;
+SELECT id, hotel_id, room_id, stay FROM bookings ORDER BY id;
+RESET ROLE;
+DROP OWNED BY booking_app_demo;
+DROP ROLE booking_app_demo;
+```
+
+hotel 2 sees nothing: its one booking isn't in this session's data, and hotel 1's rows are filtered out. the app connects as a role that doesn't own the table (owners bypass RLS unless you `FORCE` it), and sets `app.hotel_id` per request, inside the transaction in a pooled setup (`set_config(…, true)`, see [connections and pooling](/learn/scale/connections-and-pooling)). the captured version, with a booking for each hotel:
+
+<Figure wide caption={<>the same query as four different callers, captured. with no hotel set, the policy compares against NULL and returns <C k="live">no rows</C>, not all of them. a write for another hotel is <C k="dead">refused</C>: a USING policy also checks new rows.</>}>
+<RunPick options={[{ key: "as", values: AS }]} runs={as} file="tenant.sql" hot={["set_config('app.hotel_id', '1', false)", "set_config('app.hotel_id', '2', false)", "set_config('app.hotel_id', '', false)"]} trace={prov(booking)} />
+</Figure>
+
+the `nullif(…, '')` isn't decoration. once a custom setting has been set in a session, "unset" reads back as an empty string, and `''::int` is an error, so the policy would fail every query instead of returning nothing.
+
+<Gotcha title="the constraint belongs in the database, not the service">
+"we check availability in the booking service" is the answer that fails this round. two instances of the service, two requests, one room: both check, both insert. a unique or exclusion constraint is checked by the database under concurrency, through an index, for every writer, including the migration script nobody reviewed. keep the application check for a friendly error message, and let the constraint be the guarantee ([how a unique index says no](/learn/index-internals/unique-checks)).
+</Gotcha>
+
+<Interview q="design the schema for a hotel booking system. how do you prevent double bookings?">
+start from the rules that must never break, and put each in the schema. tables: hotels, rooms (unique room number per hotel), guests (unique lower(email)), bookings, and room rates. surrogate identity keys, natural keys as UNIQUE constraints. the stay is a daterange with [) bounds, so back-to-back stays don't collide. double bookings are prevented by an exclusion constraint, `EXCLUDE USING gist (room_id WITH =, stay WITH &&) WHERE (status = 'confirmed')`, which needs btree_gist and is enforced under concurrency, unlike a check in the app. prices get a temporal primary key, `(room_id, valid WITHOUT OVERLAPS)` in postgres 18. index for the real queries (guest's upcoming stays, rooms per hotel) and cover foreign keys. for several hotels in one database, hotel_id on every row plus a row-level security policy keyed on a per-request setting. bonus point: say why not SERIALIZABLE alone: it works, but every booking path then needs a retry loop, and the constraint is one line.
+</Interview>
+
+<Keylines>
+- turn each must-never-break rule into a constraint: keys, foreign keys, CHECK, UNIQUE, EXCLUDE.
+- no overlaps: EXCLUDE USING gist (room_id WITH =, stay WITH &&), partial with WHERE.
+- one value per moment: PRIMARY KEY (…, valid WITHOUT OVERLAPS), postgres 18.
+- [) ranges make back-to-back stays legal.
+- pick indexes from the query list, and cover foreign keys.
+- tenants: hotel_id everywhere plus an RLS policy, and an app role that doesn't own the tables.
+</Keylines>

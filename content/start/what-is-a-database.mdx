@@ -1,0 +1,170 @@
+import { FourProblems } from "@/components/figures/start/FourProblems";
+
+<InShort>
+a **database** is your data plus a program that guards it, the **DBMS** (database management system). you could keep your customers in a file and write that program yourself.
+
+you'd get four things wrong: **crashes**, **two people writing at once**, **questions nobody planned for**, and **rules** that keep junk out. everything else in this book is how postgres gets those four right.
+</InShort>
+
+## the picture
+
+you know how every project starts with "we'll just save it to a file for now"? and how "for now" quietly becomes three years?
+
+think of a shop's paper ledger versus a bank. the ledger is a notebook (a file): anyone can scribble in it, a spilled coffee can ruin a page, and to answer "who owes us money?" you flip through every page by hand. the bank has a clerk at the window (the DBMS) who takes requests in one fixed language (SQL), writes every transaction in a journal before touching the books (the write-ahead log), makes the second customer wait while the first one's withdrawal finishes (locks), and refuses a cheque with no signature (constraints).
+
+<Figure wide caption={<>pick a problem and step through it. the left side is a model of a file your own code writes. the right side is what postgres does, and every <C k="dead">error</C> on it is real postgres 18.6 output, which you can run further down.</>}>
+<FourProblems />
+</Figure>
+
+none of the four is exotic. they're what happens on a normal tuesday once more than one person uses the thing.
+
+## a file you could write yourself
+
+here's the shop's customers, as a file. it's not a strawman: a CSV is a perfectly good way to *store* rows.
+
+```text title="customers.csv" nolines
+id,name,email,city,country
+1,Maya Chen,maya.chen@example.com,San Francisco,US
+2,Grace Okafor,,Lagos,NG
+...
+42,Ada Lovelace,ada@example.com,London,GB
+```
+
+to find Ada you'd open it, split every line on commas, and stop at the one whose first field is `42`. it works. then Grace's missing email turns out to be indistinguishable from an empty one, someone named "Okafor, Grace" breaks your split, and the file is 2 GB.
+
+the same lookup, asked of postgres (this runs in your browser, on the real shop data, press **run**):
+
+```sql run db=shop
+SELECT id, name, email, city
+FROM customers
+WHERE id = 42;
+```
+
+you didn't say how to find row 42. you said which one you wanted. postgres went and got it, through an index on `id` it built for you when the table got its primary key. that difference (what, not how) is the subject of [your first query](/learn/start/first-query).
+
+## the four things you'd get wrong
+
+### crashes
+
+your program writes Ada's new city over the old one, and the power goes out halfway through. now the file holds half a line. was the rest of the file overwritten? is there a next line at all? you can't tell.
+
+postgres never overwrites in a way it can't undo. before a change counts, it appends a description of the change to a log, the **write-ahead log** (WAL), and forces that log to disk. `COMMIT` returns only after that. after a crash, postgres replays the log, so every committed change comes back whole and every uncommitted one disappears whole. that's [the write-ahead rule](/learn/wal/write-ahead-rule), and [crash recovery](/learn/wal/crash-recovery) shows it happening on a real server.
+
+### two people at once
+
+two requests read alice's balance (100.00), each adds to it, each writes back. the second write lands on top of the first, and one deposit is gone without an error anywhere. the figure's "two writers" walks through it.
+
+postgres makes the second writer wait for the first, then lets it see the new value. it does that without making readers wait at all, by keeping old versions of rows around ([an UPDATE is an INSERT](/learn/mvcc/update-is-insert)). the browser engine here has a single session, so two transactions can't race on this page. the book shows those races from [recordings of a real server](/learn/transactions/lost-updates).
+
+### questions nobody planned for
+
+every new question about a file is a new program. "which London customers order the most?" means reading customers, then reading orders once per London customer, then counting. the query says it in seven lines:
+
+```sql run db=shop
+SELECT c.id, c.name, count(*) AS orders
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+WHERE c.city = 'London'
+GROUP BY c.id, c.name
+ORDER BY orders DESC, c.id
+LIMIT 3;
+```
+
+you don't pick the algorithm. postgres's planner does, from statistics it keeps about every table, and it picks again when the data changes. that's half of this book: [how a query runs](/learn/execution/query-lifecycle) and [how the planner chooses](/learn/optimizer/cost-model).
+
+### rules
+
+a file accepts anything you append to it. a table only accepts rows that fit its declaration: `name` is `NOT NULL`, `country` is two characters, `email` is `UNIQUE`. try all three:
+
+<Predict options={["all three go in", "only the first fails", "all three fail"]} answer={2}>
+```sql
+INSERT INTO customers (name, email, city, country, created_at)
+VALUES (NULL, 'ada@example.com', 'London', 'GB', '2026-10-28 09:00+00');
+INSERT INTO customers (name, email, city, country, created_at)
+VALUES ('Bob', 'bob@example.com', 'Atlantis', 'ZZZ', '2026-10-28 09:00+00');
+INSERT INTO customers (name, email, city, country, created_at)
+VALUES ('Ada Again', 'ada@example.com', 'London', 'GB', '2026-10-28 09:00+00');
+SELECT count(*) FROM customers;
+```
+<Explain>
+each one breaks a different rule: a NULL name, a three-letter country in a `char(2)` column, and an email Ada already has. each INSERT fails on its own, and a failed statement leaves nothing behind, so the count is still 2,000. run it below and read the three errors.
+</Explain>
+</Predict>
+
+```sql run db=shop errors=continue
+INSERT INTO customers (name, email, city, country, created_at)
+VALUES (NULL, 'ada@example.com', 'London', 'GB', '2026-10-28 09:00+00');
+INSERT INTO customers (name, email, city, country, created_at)
+VALUES ('Bob', 'bob@example.com', 'Atlantis', 'ZZZ', '2026-10-28 09:00+00');
+INSERT INTO customers (name, email, city, country, created_at)
+VALUES ('Ada Again', 'ada@example.com', 'London', 'GB', '2026-10-28 09:00+00');
+SELECT count(*) FROM customers;
+```
+
+each error says which rule, which column and which value. [reading an error](/learn/start/reading-errors) takes one apart, and [constraints](/learn/design/constraints) is the whole toolbox.
+
+<Gotcha title="a database doesn't save you from your own read-then-write">
+if your app reads a balance, adds 10 in its own code, and writes the number back (`UPDATE accounts SET balance = 110`), two requests can still lose one update, even in postgres. the database protected the row, but your app computed `110` from a value that was already stale. write `SET balance = balance + 10`, or lock the row first. [lost updates](/learn/transactions/lost-updates) has every variant.
+</Gotcha>
+
+## what's inside the box
+
+"database" gets used for three different things, so let's pull them apart.
+
+<Defs>
+<dt>DBMS</dt><dd>the program: postgres itself. it runs as a server, and programs (clients) connect to it and send SQL.</dd>
+<dt>a database</dt><dd>one named collection inside a postgres server, like `shop`. one server holds many. a connection talks to one at a time.</dd>
+<dt>the data</dt><dd>the rows, in tables, grouped into schemas. what you actually care about.</dd>
+</Defs>
+
+<Figure caption={<>one postgres server, the way this page's engine sees it. click a name to fold it. <code>public</code> is where your tables go unless you say otherwise; <code>pg_catalog</code> is postgres describing itself, in tables.</>}>
+<Tree>{`
+postgres 18.6 server
+    database postgres                        // the one this page's engine connects to
+        schema pg_catalog                    #meta // tables about tables
+        schema information_schema            #meta // the standard's view of the same
+        schema pg_toast                      #meta // where very long values go
+        schema public
+            customers                        // 2,000 rows
+            orders                           // 10,000 rows
+            order_items                      // 24,942 rows
+            products                         // 200 rows
+    database template0                       // a pristine copy, never changed
+    database template1                       // what CREATE DATABASE copies
+`}</Tree>
+</Figure>
+
+the catalog is just more tables, so you can query it like anything else:
+
+```sql run db=shop
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name;
+```
+
+and when you send a query, it passes through a few stages before rows come back. each one is a part of this book.
+
+<Figure caption="hover a stage. the parts of postgres a single query passes through, and where each one is explained.">
+<Flow
+  stages={[
+    { label: "client", sub: "psql, your app, this page", note: "sends SQL text over a connection. see psql and a real server." },
+    { label: "parser", sub: "text → tree", note: "checks the grammar and looks up every name in the catalog. most typos die here." },
+    { label: "planner", sub: "what → how", note: "picks scans, join methods and their order from statistics. that's the optimizer part of the book." },
+    { label: "executor", sub: "runs the plan", note: "pulls rows through the plan, one node at a time. that's how a query runs." },
+    { label: "storage", sub: "pages + WAL", note: "8 KB pages in files, a buffer pool in memory, and the log that makes it all crash-safe. storage, MVCC and WAL." },
+  ]}
+/>
+</Figure>
+
+<Interview q="what does a DBMS give you that files don't?">
+four things: durability (committed data survives crashes, via a write-ahead log), concurrency control (many users at once without lost or half-seen changes), declarative queries (you say what, a planner picks how) and integrity (types and constraints checked on every write). the first, second and fourth are most of what people mean by ACID. bonus point: a DBMS doesn't need a server. sqlite is a library that writes one file, and it still does all four.
+</Interview>
+
+<Keylines>
+- a database is data plus the program that guards it. the program is the point.
+- files get four things wrong: crashes, concurrent writers, new questions and bad rows.
+- postgres logs every change before making it, so a crash loses all of a change or none.
+- you ask for what you want in SQL. postgres decides how to get it.
+- a table refuses rows that break its rules, and tells you which rule.
+</Keylines>

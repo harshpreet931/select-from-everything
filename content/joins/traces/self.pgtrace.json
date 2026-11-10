@@ -1,0 +1,193 @@
+{
+ "v": 1,
+ "scenario": "content/joins/traces/self.scenario.sql",
+ "title": "the org chart joined to itself: managers, and pairs of vice presidents",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "departments": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"budget","type":"numeric"}]
+  },
+  "departments_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"departments"},
+  "departments_name_key": {"kind":"index","am":"btree","columns":[{"name":"name","type":"text"}],"on":"departments"},
+  "employees": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"manager_id","type":"int4"},
+    {"name":"dept_id","type":"int4"},
+    {"name":"title","type":"text"},
+    {"name":"salary","type":"numeric"},
+    {"name":"hired_on","type":"date"}
+   ]
+  },
+  "employees_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"employees"},
+  "oncall": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"},{"name":"on_call","type":"bool"}]
+  },
+  "oncall_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"shift_date","type":"date"},{"name":"employee_id","type":"int4"}],
+   "on": "oncall"
+  },
+  "vps": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"salary","type":"numeric"}]
+  }
+ },
+ "base": {"xid":796,"lsn":26704808},
+ "setup": "CREATE TABLE vps AS SELECT id, name, salary FROM employees WHERE title = 'vp' ORDER BY id;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT manager_id, name FROM employees WHERE id <= 5 ORDER BY id",
+   "note": "the left side of the self join: the first five employees, with their manager's id.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"manager_id","type":"int4"},{"name":"name","type":"text"}],
+    "data": [[null,"Fatima Lopez"],["1","Olivia Lopez"],["1","Mei Dubois"],["1","Chen Smith"],["2","Rahul Singh"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id, name FROM employees WHERE id <= 5 ORDER BY id",
+   "note": "the right side: the same five employees, by id.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"}],
+    "data": [["1","Fatima Lopez"],["2","Olivia Lopez"],["3","Mei Dubois"],["4","Chen Smith"],["5","Rahul Singh"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT id, name, salary FROM vps ORDER BY id",
+   "note": "the three vice presidents, the table the grid is drawn from.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"salary","type":"numeric"}],
+    "data": [["2","Olivia Lopez","220000.00"],["3","Mei Dubois","224000.00"],["4","Chen Smith","224000.00"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT a.id, a.name, b.id, b.name FROM vps AS a JOIN vps AS b ON true ORDER BY a.id, b.id",
+   "note": "ON true: every vp paired with every vp, themselves included. 3 × 3 = 9.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"}
+    ],
+    "data": [
+     ["2","Olivia Lopez","2","Olivia Lopez"],
+     ["2","Olivia Lopez","3","Mei Dubois"],
+     ["2","Olivia Lopez","4","Chen Smith"],
+     ["3","Mei Dubois","2","Olivia Lopez"],
+     ["3","Mei Dubois","3","Mei Dubois"],
+     ["3","Mei Dubois","4","Chen Smith"],
+     ["4","Chen Smith","2","Olivia Lopez"],
+     ["4","Chen Smith","3","Mei Dubois"],
+     ["4","Chen Smith","4","Chen Smith"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT a.id, a.name, b.id, b.name FROM vps AS a JOIN vps AS b ON a.id <> b.id ORDER BY a.id, b.id",
+   "note": "a.id <> b.id drops the diagonal, the pairs of a person with themselves. 6 left, and each pair is still there twice, once in each order.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"}
+    ],
+    "data": [
+     ["2","Olivia Lopez","3","Mei Dubois"],
+     ["2","Olivia Lopez","4","Chen Smith"],
+     ["3","Mei Dubois","2","Olivia Lopez"],
+     ["3","Mei Dubois","4","Chen Smith"],
+     ["4","Chen Smith","2","Olivia Lopez"],
+     ["4","Chen Smith","3","Mei Dubois"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT a.id, a.name, b.id, b.name FROM vps AS a JOIN vps AS b ON a.id < b.id ORDER BY a.id, b.id",
+   "note": "a.id < b.id keeps one half of the grid: every pair once, nobody with themselves. 3 pairs, n × (n - 1) / 2.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"}
+    ],
+    "data": [
+     ["2","Olivia Lopez","3","Mei Dubois"],
+     ["2","Olivia Lopez","4","Chen Smith"],
+     ["3","Mei Dubois","4","Chen Smith"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT a.id, a.name, b.id, b.name FROM vps AS a JOIN vps AS b ON a.salary < b.salary ORDER BY a.id, b.id",
+   "note": "a.salary < b.salary: who earns less than whom. Olivia earns less than both others. Mei and Chen earn the same, so neither pair passes.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"},
+     {"name":"id","type":"int4"},
+     {"name":"name","type":"text"}
+    ],
+    "data": [["2","Olivia Lopez","3","Mei Dubois"],["2","Olivia Lopez","4","Chen Smith"]]
+   }
+  }
+ ],
+ "db": "org"
+}

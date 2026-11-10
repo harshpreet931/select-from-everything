@@ -1,0 +1,107 @@
+import { LockKinds } from "@/components/figures/locking/LockKinds";
+import { WaitSamples } from "@/components/figures/locking/WaitSamples";
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import pin from "./traces/buffer-pin.pgtrace.json";
+
+{/* the pin capture is a real postgres 18.6 server (traces/buffer-pin.scenario.sql). the wait
+    samples are measured, not captured: pgbench against a throwaway native 18.6 cluster on this
+    mac, pg_stat_activity sampled every 10 ms; the method is in src/components/figures/locking/latchSamples.ts. */}
+
+export const pins = resultOf(pin, 1);
+export const vacLines = (i) => pin.steps[i].log.filter((l) => /tuples|pages:/.test(l)).map((l) => l.trim()).join("\n");
+
+<InShort>
+pg_locks shows **heavyweight locks**: on tables, transactions, rows in line. underneath them is a second layer that protects postgres's own shared memory: **LWLocks** (lightweight locks, shared or exclusive, held for microseconds) and **spinlocks** (a few instructions, busy-waiting). databases textbooks call these **latches**. they never appear in pg_locks, have no deadlock detector, and you only see them in **wait events**.
+</InShort>
+
+## the picture
+
+you know how two sessions can update two different rows on the same 8 KB page at the same moment, and nobody sees a lock in pg_locks? something still stops them from scribbling over each other's bytes. that something lives for a few microseconds.
+
+think of a shared kitchen. a heavyweight lock is a booking on the oven for tonight's dinner: written in the calendar, everyone can see it, held for hours. an LWLock is "hands off the cutting board while I chop this onion": nobody writes it down, it's over in seconds. a spinlock is reaching for the salt at the same time as someone else and waiting half a heartbeat.
+
+<Figure caption={<>postgres's three kinds of lock. a statement takes a few heavyweight locks and hundreds or thousands of <C k="hot">LWLock</C> and spinlock acquisitions. only the <C k="meta">heavyweight</C> ones are in pg_locks.</>}>
+<LockKinds />
+</Figure>
+
+the textbook word is **latch**: a short-term lock on an in-memory structure, as opposed to a lock on a database object that lasts the transaction ([b-trees under concurrency](/learn/index-internals/btree-concurrency) talks about latch crabbing on index pages). in postgres's source, "latch" means something else (a way to wake a sleeping process), so the code says LWLock.
+
+## what they protect
+
+a few LWLocks you'll meet in wait events, each guarding one shared structure:
+
+- **BufferContent**: one per buffer in the [buffer pool](/learn/storage/buffer-pool). shared to read a page's tuples, exclusive to change them. this is what keeps two UPDATEs on one page from corrupting it.
+- **BufferMapping**: the hash table from (table, block) to buffer. taken to find a page in the pool, or to load one.
+- **WALInsert** and **WALWrite**: reserving space in the WAL buffers, and writing them out ([the commit path](/learn/wal/commit-path)).
+- **LockManager**: a partition of the heavyweight lock table. taking a heavyweight lock means taking an LWLock first.
+- **ProcArray**: the list of running transactions that every snapshot is built from.
+
+postgres lists every wait event, with a description, in a view (new in 17):
+
+```sql run
+SELECT type, count(*) FROM pg_wait_events GROUP BY type ORDER BY type;
+SELECT name, description FROM pg_wait_events
+WHERE type = 'LWLock' AND name IN ('BufferContent', 'BufferMapping', 'LockManager', 'WALInsert', 'WALWrite')
+ORDER BY name;
+```
+
+## catching them in the act
+
+an LWLock wait lasts microseconds, so a one-off look at pg_stat_activity almost never sees one. under real contention it does. this is 32 pgbench clients hammering a real postgres 18.6 server on this mac, three ways, with pg_stat_activity sampled every 10 ms:
+
+<Figure wide caption={<>switch the workload. 32 updates of <C k="meta">one row</C> mostly wait on heavyweight locks (the row's transaction id and tuple lock), plus the LockManager LWLock that guards them. 32 reads of one row barely wait at all: everyone takes the page's content lock in shared mode. 32 inserts wait on <C k="hot">WALWrite</C> and BufferContent: the log and the table's last page are the bottlenecks.</>}>
+<WaitSamples />
+</Figure>
+
+read the first workload carefully: one hot row produces heavyweight waits (Lock:transactionid, Lock:tuple, the ones from [how row locks are stored](/learn/locking/row-lock-internals)), and those make the **LockManager** LWLock hot, because every one of those lock requests goes through a lock-table partition. a latch problem caused by a lock problem.
+
+the reads are the reassuring one: 275,031 transactions a second on one row, and not a single LWLock wait in the samples. shared mode is shared.
+
+<Predict question="32 sessions run SELECT on the same single row, flat out. what do they mostly wait on?" options={["LWLock:BufferContent", "Lock:tuple", "almost nothing"]} answer={2}>
+```sql
+-- each of 32 pgbench clients, in a loop:
+SELECT n FROM hot WHERE id = 1;
+```
+<Explain>
+almost nothing. a SELECT takes no row lock, and it reads the page under its content lock in shared mode, which any number of readers can hold at once. in the measured run every sample was either running or ClientRead (waiting for pgbench to send the next query). switch the figure to the SELECT workload to see it. the contention starts when someone needs the content lock exclusively: the INSERT workload, where everyone appends to the same last page.
+</Explain>
+</Predict>
+
+## pins
+
+one more mechanism sits next to the content lock: a **pin**. pinning a buffer says "I'm using this page, don't evict it". it's a counter, not a lock: pinned pages can still be read and changed by anyone. a scan pins the page it's on, and an open cursor that stopped halfway keeps its pin.
+
+<Figure wide caption={<>step through. T1's cursor fetches one row and stops, holding a pin on page 0. T2 updates a row on that page anyway: it only needs the content lock, for a moment. VACUUM needs a <C k="hot">cleanup lock</C> (the content lock plus nobody else's pin) to remove dead tuples, can't get it, and leaves bob's dead version behind. after T1 commits, the next VACUUM removes it.</>}>
+<LockLanes trace={pin} obs={{ 1: "SELECT ... FROM pg_buffercache", 3: "VACUUM (VERBOSE) accounts", 5: "VACUUM (VERBOSE) accounts" }} />
+</Figure>
+
+<Figure caption={<>pg_buffercache while the cursor is open: <code>pinning_backends</code> = 1 on the table's page 0. then the two VACUUM VERBOSE reports, trimmed to the lines that matter.</>}>
+<ResultTable columns={pins.columns} rows={pins.rows} />
+<SqlPanel code={vacLines(3)} lang="text" nolines file="VACUUM, cursor open" />
+<SqlPanel code={vacLines(5)} lang="text" nolines file="VACUUM, cursor closed" />
+<Provenance trace={prov(pin)} />
+</Figure>
+
+"1 dead from 1 pages not removed due to cleanup lock contention" is the pin at work. (the "1 are dead but not yet removable" in the same report is a different story: alice's old version, which T1's open snapshot could still need. see [the xmin horizon](/learn/mvcc/xmin-horizon).) a plain VACUUM skips a pinned page rather than wait; an aggressive one (freezing to prevent wraparound) that has to freeze that page waits for the pin, and that wait shows up as wait_event_type **BufferPin**.
+
+<Gotcha title="they're invisible on purpose">
+there's no "pg_lwlocks" view and no way to see who holds an LWLock right now. tracking holders would cost more than the locks themselves. what you get is wait events: sample pg_stat_activity (or use an extension that does it for you) and look at the distribution, the way the figure above does. a single snapshot with one LWLock wait means nothing; ten thousand samples with 40% in one LWLock means a bottleneck.
+</Gotcha>
+
+<Deep title="why there's no deadlock detector for these">
+the deadlock detector walks the heavyweight lock table, and it can afford to because it only runs after a backend has waited a whole second. an LWLock wait that took a second would already be a disaster. so postgres avoids LWLock deadlocks by construction instead: code that needs several takes them in a fixed order (all the lock-table partitions in ascending order, for instance), never waits for a heavyweight lock while holding one, and releases them all on error. spinlocks are stricter still: held for a handful of instructions, with no function calls that could fail. a spinlock that never comes free ends in a "stuck spinlock" PANIC: the server prefers crashing to hanging forever.
+</Deep>
+
+<Interview q="what's the difference between a lock and a latch in a database?">
+a lock protects a logical database object (a table, a row, a key range) for the duration of a transaction, has many modes, is visible to users, and takes part in deadlock detection. a latch protects a physical in-memory structure (a buffer page, a hash table, the log buffer) for the duration of one operation, usually has shared and exclusive modes only, and avoids deadlocks by lock ordering rules instead of detection. in postgres, locks are the heavyweight locks in pg_locks; latches are LWLocks and spinlocks, visible only as wait events (wait_event_type LWLock, or Timeout:SpinDelay). bonus point: buffer pins are a third thing: a reference count that blocks only operations needing a cleanup lock, like VACUUM pruning a page.
+</Interview>
+
+<Keylines>
+- heavyweight locks protect database objects for a transaction. pg_locks shows them.
+- LWLocks protect shared memory for microseconds, shared or exclusive. spinlocks for a few instructions.
+- neither is in pg_locks, and neither has a deadlock detector: lock ordering prevents cycles.
+- you see them as wait events. sample pg_stat_activity, look at the distribution.
+- a pin is a reference count, not a lock. VACUUM's cleanup lock is what it gets in the way of.
+</Keylines>

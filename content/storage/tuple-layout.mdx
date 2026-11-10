@@ -1,0 +1,169 @@
+import { TupleBytes } from "@/components/figures/storage/TupleBytes";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import tupleBytes from "./traces/tuple-bytes.pgtrace.json";
+
+export const raw = tupleBytes.steps[0].result.data;
+export const tuples = [
+  { key: "loose", label: "loose: bool, int8, bool, int8", r: raw[0] },
+  { key: "loose-null", label: "loose, with b NULL", r: raw[1] },
+  { key: "tight", label: "tight: int8, int8, bool, bool", r: raw[2] },
+].map(({ key, label, r }) => ({ key, label, table: r[0], len: Number(r[2]), hoff: Number(r[3]), bits: r[4], hex: r[5] }));
+export const tables = {
+  loose: [["a", "bool"], ["b", "int8"], ["c", "bool"], ["d", "int8"]],
+  tight: [["b", "int8"], ["d", "int8"], ["a", "bool"], ["c", "bool"]],
+};
+export const source = { engine: tupleBytes.engine, scenario: tupleBytes.scenario };
+export const sizes = tupleBytes.steps[1].result.data;
+
+<InShort>
+every tuple starts with a **23-byte header** (who wrote it, who deleted it, where the next version is, a few flag words), rounded up to 24. then a **null bitmap**, only if some column is NULL. then the columns, each one starting at a multiple of its type's **alignment**, with padding bytes in front if it has to.
+
+so a bool followed by a bigint wastes 7 bytes, every row. put the wide columns first and the padding goes away.
+</InShort>
+
+## the picture
+
+you know how a table with four tiny columns somehow takes 60 bytes a row? it's not the data. it's the header, and the gaps.
+
+think of a shelf with marks every 8 cm, and a rule that a big box (a `bigint`) has to start on a mark. put a matchbox (a `bool`) first and the big box can't go right after it: it waits for the next mark, and 7 cm of shelf stays empty. put the two big boxes first and the matchboxes after them, and nothing is wasted.
+
+here are the same four columns in two orders, straight off the page:
+
+<Figure wide caption={<>switch tuples. the <C k="meta">header</C> is the same 23 bytes for every row, rounded up to 24. dashed cells are <C k="mute">padding</C>: bytes that exist only so the next column starts on its boundary. the NULL row has a one-byte bitmap in the header and no bytes at all for b.</>}>
+<TupleBytes tuples={tuples} tables={tables} source={source} />
+</Figure>
+
+56 bytes for `loose`, 42 for `tight`, same values. 15 of loose's 56 bytes are padding: one rounds the 23-byte header up to 24, and 7 sit in front of each `int8`. and the one with a NULL is the smallest of all: a NULL costs a bit, not a column.
+
+## the header
+
+the 23 bytes are the same for every heap tuple. `heap_page_items()` shows them for the lab's accounts:
+
+```sql run db=lab
+SELECT lp, t_xmin, t_xmax, t_field3 AS t_cid, t_ctid, t_infomask2, t_infomask, t_hoff, t_bits
+FROM heap_page_items(get_raw_page('accounts', 0))
+ORDER BY lp;
+```
+
+<Defs>
+<dt>t_xmin, t_xmax (4 + 4 bytes)</dt><dd>the transaction that inserted this version, and the one that deleted or locked it (0 if none). they're what <a href="/learn/mvcc/visibility-rules">visibility</a> is decided on.</dd>
+<dt>t_cid (4 bytes)</dt><dd>which command inside the inserting transaction wrote it, so a statement doesn't see its own new rows. 207 here: the lab's data load ran a few hundred statements in one transaction.</dd>
+<dt>t_ctid (6 bytes)</dt><dd>4 bytes of page number, 2 of slot. itself, or the newer version after an update.</dd>
+<dt>t_infomask2 (2 bytes)</dt><dd>the number of columns (3 here) in the low bits, and the HOT flags.</dd>
+<dt>t_infomask (2 bytes)</dt><dd>flags: has NULLs, has variable-width columns, and the commit <a href="/learn/mvcc/commit-log-and-hint-bits">hint bits</a>.</dd>
+<dt>t_hoff (1 byte)</dt><dd>where the data starts: the header plus bitmap, rounded up to 8. 24 here.</dd>
+</Defs>
+
+t_infomask 2050 is two flags, and pageinspect can name them:
+
+```sql run db=lab
+SELECT lp, raw_flags
+FROM heap_page_items(get_raw_page('accounts', 0)),
+     heap_tuple_infomask_flags(t_infomask, t_infomask2)
+ORDER BY lp;
+```
+
+`HEAP_HASVARWIDTH` (there's a text column) and `HEAP_XMAX_INVALID` (nobody deleted it). no `HEAP_HASNULL`, so no bitmap, so t_bits is NULL and the data starts right at byte 24.
+
+## alignment
+
+every type has an alignment in the catalog, `typalign`: `c` is 1 byte (can start anywhere), `s` is 2, `i` is 4, `d` is 8.
+
+```sql run db=lab
+SELECT typname, typlen, typalign
+FROM pg_type
+WHERE typname IN ('bool', 'int2', 'int4', 'int8', 'float8', 'timestamptz', 'uuid', 'text', 'numeric')
+ORDER BY typlen, typname;
+```
+
+a column starts at the next multiple of its alignment, counted from the start of the tuple. so in `loose` (a bool, b int8, c bool, d int8): a goes at byte 24, b can't start before 32, c goes at 40, d can't start before 48. 7 + 7 bytes of nothing. reorder the columns biggest-alignment first and they pack:
+
+```sql run db=lab
+CREATE TABLE loose (a bool, b int8, c bool, d int8);
+CREATE TABLE tight (b int8, d int8, a bool, c bool);
+INSERT INTO loose VALUES (true, 1, false, 2), (true, NULL, false, 2);
+INSERT INTO tight VALUES (1, 2, true, false);
+SELECT 'loose' AS t, lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('loose', 0))
+UNION ALL
+SELECT 'tight', lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('tight', 0))
+ORDER BY t, lp;
+```
+
+14 bytes a row doesn't sound like much.
+
+<Predict question="10,000 rows in each. how much bigger is loose's file?" options={["the same size", "about 2% bigger", "about 16% bigger", "about 33% bigger"]} answer={2}>
+```sql
+INSERT INTO loose SELECT true, g, false, g FROM generate_series(1, 10000) AS g;
+INSERT INTO tight SELECT g, g, true, false FROM generate_series(1, 10000) AS g;
+SELECT pg_relation_size('loose'), pg_relation_size('tight');
+```
+<Explain>
+about 16%. not the 33% that 56 vs 42 would suggest, because both rows pay the same fixed costs: the 24-byte header and a 4-byte line pointer each, and tight's 42 bytes get rounded up to 48 anyway. that's 60 bytes a row against 52, so 136 rows per page against 157.
+</Explain>
+</Predict>
+
+<Figure caption={<>the same 10,000 rows in each order, file size in bytes.</>}>
+<Bars unit="bytes" data={sizes.map((r) => ({ label: r[0] === "loose" ? "loose: bool, int8, bool, int8" : "tight: int8, int8, bool, bool", value: Number(r[1]), tone: r[0] === "tight" ? "live" : undefined }))} />
+<Provenance trace={source} />
+</Figure>
+
+```sql run db=lab
+CREATE TABLE loose (a bool, b int8, c bool, d int8);
+CREATE TABLE tight (b int8, d int8, a bool, c bool);
+INSERT INTO loose SELECT true, g, false, g FROM generate_series(1, 10000) AS g;
+INSERT INTO tight SELECT g, g, true, false FROM generate_series(1, 10000) AS g;
+SELECT pg_relation_size('loose') AS loose_bytes, pg_relation_size('tight') AS tight_bytes,
+       round(100.0 * pg_relation_size('loose') / pg_relation_size('tight') - 100, 1) AS pct_bigger;
+```
+
+## NULLs cost a bit
+
+a NULL column has no bytes in the data at all. what it needs is the **null bitmap**: one bit per column, 1 for "has a value", stored right after the 23-byte header. and there's a free byte there already, the one that rounds 23 up to 24. so up to 8 columns, the bitmap fits in the padding and a row with NULLs is never bigger than one without. the 9th column needs a second byte, and t_hoff jumps to 32:
+
+```sql run db=lab
+CREATE TABLE eight (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int);
+CREATE TABLE nine (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int);
+INSERT INTO eight VALUES (1, 2, 3, 4, 5, 6, 7, 8), (1, 2, 3, 4, 5, 6, 7, NULL);
+INSERT INTO nine VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9), (1, 2, 3, 4, 5, 6, 7, 8, NULL);
+SELECT 'eight' AS t, lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('eight', 0))
+UNION ALL
+SELECT 'nine', lp, lp_len, t_hoff, t_bits FROM heap_page_items(get_raw_page('nine', 0))
+ORDER BY t, lp;
+```
+
+<Figure caption={<>the two null bitmaps from that query, bit by bit (1 = has a value). eight columns fit one byte, the spare one in the header. the ninth column needs a second byte, and the header grows to 32.</>}>
+<div className="grid gap-4">
+<ArrayViz values={["1", "1", "1", "1", "1", "1", "1", "0"]} tones={{ 7: "meta" }} cell={34} label="eight: t_bits 11111110, t_hoff 24" />
+<ArrayViz values={["1", "1", "1", "1", "1", "1", "1", "1", "0", "0", "0", "0", "0", "0", "0", "0"]} tones={{ 8: "meta" }} dim={[9, 10, 11, 12, 13, 14, 15]} cell={34} label="nine: t_bits 1111111100000000, t_hoff 32" />
+</div>
+</Figure>
+
+with eight columns, the NULL row is 4 bytes *smaller* (one int fewer). with nine, it's 4 bytes bigger: the bitmap needed 2 bytes, the header grew from 24 to 32, and losing one int didn't pay for that. the bitmap itself is always as wide as the table, NULLs or not, once any column in that row is NULL.
+
+## variable-width columns
+
+`text`, `numeric`, `jsonb` and friends are **varlena**: a length header, then the bytes. a short value (under 127 bytes) gets a 1-byte header and no alignment at all; longer ones get 4 bytes and int alignment. so `'alice'` is 6 bytes on the page:
+
+```sql run db=lab
+SELECT owner, octet_length(owner) AS chars, pg_column_size(owner) AS stored,
+       balance, pg_column_size(balance) AS numeric_stored
+FROM accounts ORDER BY id;
+```
+
+one byte of header for each name, and `numeric` 100.00 in 5 bytes. a value of a couple of kilobytes or more is another story: it gets compressed, or moved out of the row entirely. that's [TOAST](/learn/storage/toast).
+
+<Gotcha title="you can't reorder columns later">
+postgres has no `ALTER TABLE ... MOVE COLUMN`. new columns always go at the end, and the only way to change the physical order is to make a new table and copy the rows over. so think about it at `CREATE TABLE` time: fixed-width 8-byte columns (`bigint`, `timestamptz`, `float8`) first, then 4-byte, then 2, then `bool`s, then the variable-width ones. it's worth doing on a table with hundreds of millions of rows. on a table with thousands, it isn't worth a second of your time.
+</Gotcha>
+
+<Interview q="why is my table so much bigger than rows × the sum of the column sizes?">
+three fixed costs per row before any data: a 23-byte tuple header (rounded to 24), a 4-byte line pointer in the page, and padding to put every column on its alignment boundary, plus the whole tuple rounded up to 8 bytes. a row of four ints is 16 bytes of data and 44 bytes on disk. then pages are rarely 100% full: fillfactor, dead tuples waiting for vacuum, and the last bit of each page that no row fits into. bonus point: order the columns by alignment, widest first, and the padding part can disappear.
+</Interview>
+
+<Keylines>
+- every tuple has a 23-byte header (xmin, xmax, cid, ctid, two flag words, t_hoff), rounded up to 24.
+- each column starts at a multiple of its typalign: 1, 2, 4 or 8 bytes. the gaps are padding.
+- put 8-byte columns first and bools last, and the padding mostly goes away.
+- a NULL takes no data bytes, only a bit in the bitmap, which fits in the header's spare byte up to 8 columns.
+- short varlena values (under 127 bytes) have a 1-byte header and no alignment.
+</Keylines>

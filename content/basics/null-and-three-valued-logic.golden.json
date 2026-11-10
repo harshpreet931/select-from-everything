@@ -1,0 +1,359 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "dc8a1513a4f14005": {
+      "db": "empty",
+      "sql": "SELECT NULL = NULL AS \"NULL = NULL\",\n       NULL = 1    AS \"NULL = 1\",\n       NULL <> 1   AS \"NULL <> 1\",\n       NULL > 1    AS \"NULL > 1\";",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["NULL = NULL", "bool", 16],
+            ["NULL = 1", "bool", 16],
+            ["NULL <> 1", "bool", 16],
+            ["NULL > 1", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "4165cc5ec1875d2f",
+          "rows": [
+            [null, null, null, null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5871d80220ecfc29": {
+      "db": "shop",
+      "sql": "SELECT name FROM customers WHERE email = NULL;",
+      "statements": [
+        {
+          "tag": "SELECT 0",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25]
+          ],
+          "rowCount": 0,
+          "digest": "1e73e8853470d32c",
+          "rows": []
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "642655e8533b590b": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM customers WHERE email IS NULL;\nSELECT id, name, email FROM customers WHERE email IS NULL ORDER BY id LIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "cca6d0accc2540e3",
+          "rows": [
+            ["46"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["email", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "e611fda2e2d9157f",
+          "rows": [
+            ["2", "Grace Okafor", null],
+            ["11", "Ana Lima", null],
+            ["36", "Yuna Kowalski", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "553ea3bfda320a0e": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS london FROM customers WHERE city = 'London';\nSELECT count(*) AS not_london FROM customers WHERE NOT (city = 'London');\nSELECT count(*) AS everyone FROM customers;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["london", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "32c81edb6addb46f",
+          "rows": [
+            ["159"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["not_london", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "2d846ecd23dd8ba3",
+          "rows": [
+            ["1786"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["everyone", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "05607f819ed95341",
+          "rows": [
+            ["2000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d7464361eb39a049": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM customers WHERE (city = 'London') IS UNKNOWN;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "cca34daccc222c73",
+          "rows": [
+            ["55"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a9b04f51b29a9f83": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM customers WHERE city <> 'London';\nSELECT count(*) FROM customers WHERE city IS DISTINCT FROM 'London';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "3e01ebd2ccbc7bfb",
+          "rows": [
+            ["1786"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "46ab2e34b9dbc73c",
+          "rows": [
+            ["1841"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "a3f015318f64b4e7": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE email = 'ada@example.com';\nEXPLAIN (COSTS OFF) SELECT id FROM customers WHERE email IS NOT DISTINCT FROM 'ada@example.com';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "14489e3af3ddeb08",
+          "rows": [
+            ["Index Scan using customers_email_key on customers"],
+            ["  Index Cond: (email = 'ada@example.com'::text)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b0b1db2970993a47",
+          "rows": [
+            ["Seq Scan on customers"],
+            ["  Filter: (NOT (email IS DISTINCT FROM 'ada@example.com'::text))"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0fc9f1842096b6d8": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM products WHERE category NOT IN ('kitchen');\nSELECT count(*) FROM products WHERE category NOT IN ('kitchen', NULL);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "b992279ecaeaa8af",
+          "rows": [
+            ["178"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "3c20be21079ed006",
+          "rows": [
+            ["0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2c1ad55be6c0ae87": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS customers, count(email) AS emails, count(city) AS cities\nFROM customers;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customers", "int8", 20],
+            ["emails", "int8", 20],
+            ["cities", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "8409e8fd360265a7",
+          "rows": [
+            ["2000", "1954", "1945"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7d509eaaf276733a": {
+      "db": "empty",
+      "sql": "SELECT sum(x), count(x), count(*), avg(x)\nFROM (VALUES (1), (NULL), (3)) AS t (x);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["sum", "int8", 20],
+            ["count", "int8", 20],
+            ["count", "int8", 20],
+            ["avg", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "bed714b3d32ec38d",
+          "rows": [
+            ["4", "2", "3", "2.0000000000000000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0a85f7c202b15c8d": {
+      "db": "empty",
+      "sql": "SELECT 'Grace ' || NULL AS glued, concat('Grace ', NULL) AS concatenated, 1 + NULL AS added;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["glued", "text", 25],
+            ["concatenated", "text", 25],
+            ["added", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "f7ea5bd0764cef76",
+          "rows": [
+            [null, "Grace ", null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c96635d112d504e9": {
+      "db": "empty",
+      "sql": "CREATE TABLE line (qty int CHECK (qty > 0));\nINSERT INTO line VALUES (NULL);\nINSERT INTO line VALUES (0);",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23514",
+            "message": "new row for relation \"line\" violates check constraint \"line_qty_check\"",
+            "detail": "Failing row contains (0).",
+            "schema": "public",
+            "table": "line",
+            "constraint": "line_qty_check"
+          },
+          "digest": "d6e6142c50771bf5"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23514",
+        "message": "new row for relation \"line\" violates check constraint \"line_qty_check\"",
+        "detail": "Failing row contains (0).",
+        "schema": "public",
+        "table": "line",
+        "constraint": "line_qty_check",
+        "statement": 2
+      },
+      "txn": "I"
+    }
+  }
+}

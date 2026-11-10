@@ -1,0 +1,178 @@
+import { MatchGrid } from "@/components/figures/basics/MatchGrid";
+import { prov, resultOf } from "@/components/figures/basics/captured";
+import trace from "./traces/pattern-matching.pgtrace.json";
+
+{/* the grid and the byte table read traces/pattern-matching.scenario.sql (PGlite, the shop).
+    the character slides are drawn by hand: they show how a pattern lines up, and every verdict
+    on them is also a cell of the captured grid. */}
+
+export const grid = resultOf(trace, 0);
+export const bytes = resultOf(trace, 1);
+
+<InShort>
+**LIKE** matches text against a pattern with two wildcards: `%` is any run of characters (none included) and `_` is exactly one. it's case-sensitive. **ILIKE** isn't, and it's postgres only. `~` and `~*` match **POSIX regular expressions**.
+
+the postgres in this page uses the **C collation**: text compares by its bytes, so every capital sorts before every lower-case letter, and 'Zoe' < 'a'.
+</InShort>
+
+## the picture
+
+you know how `WHERE name = 'ada lovelace'` finds nobody, even though Ada is right there? `=` means the exact same string, capital A and capital L included. when you know only part of what you're looking for, or not the capitals, you need a pattern.
+
+think of a stencil laid over each name. most of the stencil is solid letters that have to match exactly. an `_` is a hole one letter wide, anything shows through. a `%` is a hole that stretches to whatever length it needs, including nothing. if the whole name fits the stencil, end to end, it matches.
+
+<Figure wide caption={<>click a pattern to light its column. LIKE wants the whole name to fit, capitals and all. ILIKE ignores case. the regular expression, with <code>~*</code>, looks for its pattern anywhere in the name and ignores case too.</>}>
+<MatchGrid
+  table={grid}
+  patterns={[
+    { col: "s%", label: "LIKE 'S%'", note: "a capital S, then anything. Sam and Sean." },
+    { col: "%lee", label: "LIKE '%Lee'", note: "anything, then Lee at the very end. % can stand for 'Sam ' as easily as for nothing." },
+    { col: "zo_", label: "LIKE 'Zo_ Martin'", note: "_ is exactly one character, and ë is one character, so both Zoë and Zoe fit." },
+    { col: "a%", label: "LIKE 'a%'", note: "nobody. Ada and Ana start with a capital A, and LIKE is case-sensitive." },
+    { col: "ilike a%", label: "ILIKE 'a%'", note: "the same pattern with ILIKE: case doesn't matter, so Ada and Ana are back." },
+    { col: "quote", label: "LIKE '%''%'", note: "a quote inside a string literal is written twice, so this pattern is %'%: any name with an apostrophe in it." },
+    { col: "regex", label: "~* 'lee|lima'", note: "a regular expression: lee or lima, anywhere in the name, any case. Sam Lee and Ana Lima." },
+  ]}
+  trace={prov(trace)}
+/>
+</Figure>
+
+## % and _
+
+LIKE has to match the *whole* string, which is why most patterns start or end with `%`. here's how three of them line up, one character at a time:
+
+<Figure caption={<>a pattern lined up against a name. <C k="live">literal characters</C> must match exactly, <C k="hot">_</C> takes one character, a % stretches over the rest. one mismatch and it's false. drawn by hand; the verdicts are the grid's.</>}>
+<Slides>
+<Slide note="'Sam Lee' LIKE 'S%': the S matches the S, and % takes the other six characters. true.">
+<ArrayViz values={["S", "a", "m", "␣", "L", "e", "e"]} tones={{ 0: "live" }} range={[1, 6, "hot"]} pointers={{ 0: "S", 3: "%" }} />
+</Slide>
+<Slide note="'Zoë Martin' LIKE 'Zo_ Martin': Z and o match, _ takes the ë (one character, though it's two bytes), and ' Martin' matches the rest. true.">
+<ArrayViz values={["Z", "o", "ë", "␣", "M", "a", "r", "t", "i", "n"]} tones={{ 0: "live", 1: "live", 2: "hot", 3: "live", 4: "live", 5: "live", 6: "live", 7: "live", 8: "live", 9: "live" }} pointers={{ 2: "_" }} />
+</Slide>
+<Slide note="'Ada Lovelace' LIKE 'a%': the pattern starts with a lower-case a, the name with a capital A. that's a different character, so it's false before % even gets a turn.">
+<ArrayViz values={["A", "d", "a", "␣", "L", "o", "v", "e", "l", "a", "c", "e"]} tones={{ 0: "dead" }} pointers={{ 0: "a?" }} dim={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]} />
+</Slide>
+</Slides>
+</Figure>
+
+the wildcards are ordinary characters everywhere else, which makes `_` sneaky. in an email, a sku or an identifier, an underscore you meant literally matches any character:
+
+```sql run db=shop
+SELECT email FROM customers WHERE email LIKE 'zoe_martin%' ORDER BY email;
+```
+
+that pattern was meant to find `zoe_martin@...`. it found `zoe.martin@example.com`, because `_` matched the dot. to mean a literal `%` or `_`, put a backslash in front of it, or name your own escape character with ESCAPE:
+
+```sql run
+SELECT '100%' LIKE '100\%'            AS backslash,
+       '100x' LIKE '100\%'            AS not_a_wildcard,
+       '100%' LIKE '100!%' ESCAPE '!' AS own_escape;
+```
+
+## case, ILIKE and the C collation
+
+LIKE is case-sensitive, always. postgres has `ILIKE` for case-insensitive matching (`~~*` is its operator, if you see that in a plan), but it's postgres only. the portable spelling lowers both sides:
+
+```sql run db=shop
+SELECT name FROM customers WHERE name ILIKE 'ada%' ORDER BY name;
+SELECT name FROM customers WHERE lower(name) LIKE 'ada%' ORDER BY name;
+```
+
+Ada Lovelace either way. so where's the surprise? it's in *comparing* and *sorting* text, and it comes from the collation this page's database was created with:
+
+```sql run
+SELECT datcollate, datctype FROM pg_database WHERE datname = current_database();
+```
+
+`datcollate` is `C`: strings compare by their bytes. `datctype` is `C.UTF-8`: postgres still knows that ë is a letter and that its capital is Ë, so `upper()`, `lower()` and ILIKE work on any alphabet here. it's only the *order* that's byte by byte:
+
+<Figure caption={<>seven characters, sorted by this page's postgres, with the UTF-8 bytes it sorted by. capitals are 41 to 5a, small letters 61 to 7a, and anything accented starts with c3, after all of them.</>}>
+<ResultTable columns={bytes.columns} rows={bytes.rows} />
+</Figure>
+
+so here, `'Zoe' < 'a'` is true, `ORDER BY name` puts every capitalised name before every lower-case one, and Zoë sorts after Zoe, because ë's first byte (c3) is bigger than e's (65). a range like `name >= 'a' AND name < 'b'` finds names starting with a small a, and no Ada. a server created with a language's collation sorts the way a dictionary does ([sorting with ORDER BY](/learn/basics/order-by) shows one), and [text, varchar and collations](/learn/types/text-and-collation) covers how to choose.
+
+<Note title="coming from mysql">
+mysql's default collation since 8.0, `utf8mb4_0900_ai_ci`, is accent- and case-insensitive: `WHERE name = 'ada lovelace'` finds Ada there ([mysql's character sets](https://dev.mysql.com/doc/refman/8.4/en/charset-mysql.html)). postgres's built-in collations are all deterministic, so `=` and LIKE compare exactly unless you ask otherwise.
+</Note>
+
+asking otherwise means a **nondeterministic** ICU collation, where strings that differ only in case count as equal. since postgres 18 <Since v={18} />, LIKE works with those too. the browser engine can't build one, so here's a real server:
+
+```sql native
+CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+SELECT name
+FROM (VALUES ('Zoë Martin'), ('ZOË MARTIN'), ('Zoe Martin')) AS t (name)
+WHERE name LIKE 'zoë%' COLLATE ci
+ORDER BY name;
+```
+
+`ks-level2` means "case doesn't matter, accents do": both spellings of Zoë match, plain Zoe doesn't. before 18, the same LIKE was an error.
+
+## regular expressions
+
+when % and _ aren't enough, postgres has POSIX regular expressions: `~` matches, `~*` matches ignoring case, and `!~` and `!~*` are their negations.
+
+<Predict options={["true, true", "false, true", "true, false"]} answer={1}>
+```sql
+SELECT 'Sam Lee' LIKE 'Lee' AS like_lee,
+       'Sam Lee' ~ 'Lee'    AS regex_lee;
+```
+<Explain>
+LIKE has to match the whole string, and 'Lee' alone doesn't cover 'Sam Lee', so it's false: you'd need '%Lee'. a regular expression is happy to find its pattern anywhere, so `~ 'Lee'` is true. to make a regex match the whole string, anchor it: `~ '^Lee$'`.
+</Explain>
+</Predict>
+
+```sql run
+SELECT 'Sam Lee' LIKE 'Lee' AS like_lee,
+       'Sam Lee' ~ 'Lee'    AS regex_lee,
+       'Sam Lee' ~ '^Lee$'  AS anchored;
+```
+
+two differences from LIKE trip people up, and that was the first: a regular expression matches *anywhere* in the string unless you anchor it with `^` and `$`. the second is that its wildcards are different: `.` is one character, `.*` is any run.
+
+```sql run db=shop
+SELECT sku, name FROM products WHERE sku ~ '^MSC-' ORDER BY sku;
+SELECT count(*) AS odd_skus FROM products WHERE sku !~ '^[A-Z]{3}-[0-9]{4}$';
+```
+
+the two products with an `MSC-` sku are the generated ones with no category (their sku prefix fell back to MSC), and every sku fits the three letters, dash, four digits shape. the same syntax pulls pieces out of strings and rewrites them:
+
+```sql run
+SELECT substring('ada@example.com' from '@(.*)$') AS domain,
+       regexp_replace('Sean O''Neil', '[^A-Za-z]', '', 'g') AS letters_only;
+```
+
+<Gotcha title="patterns and indexes">
+a b-tree index on `name` can help `LIKE 'Ada%'`, because every name starting with Ada sits in one stretch of the sorted index. in the C collation postgres does it without being asked, by turning the prefix into a range. a leading `%` can't use it, and neither can ILIKE:
+
+```sql run db=shop
+CREATE INDEX ON customers (name);
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE 'Ada%';
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name LIKE '%Lovelace';
+EXPLAIN (COSTS OFF) SELECT id FROM customers WHERE name ILIKE 'ada%';
+```
+
+`name >= 'Ada' AND name < 'Adb'` for the first one, a full scan for the other two. that's one real upside of byte order: under a language's collation, a plain index can't do the prefix trick, and you'd need `text_pattern_ops`. for `%anywhere%` and case-insensitive search, the answer is a trigram index ([full-text and fuzzy search](/learn/indexes/text-search)) or an index on `lower(name)` ([partial and expression indexes](/learn/indexes/partial-and-expression)).
+</Gotcha>
+
+<Deep title="SIMILAR TO, the third syntax">
+the standard has one more: `SIMILAR TO`, which takes LIKE's `%` and `_` and adds a few regular-expression pieces like `|` and parentheses. postgres implements it by translating the pattern into a regular expression, and the plan shows the translation:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF) SELECT id FROM products WHERE name SIMILAR TO '%(kite|yo-yo)';
+```
+
+it's neither as simple as LIKE nor as capable as `~`, so most people use one of those instead.
+</Deep>
+
+<Interview q="how do you do a case-insensitive search in postgres?">
+for a pattern, ILIKE (postgres only) or lower(col) LIKE lower(pattern) (portable). for equality, lower(col) = lower(value), backed by an index on lower(col) so it stays fast. since postgres 12 a nondeterministic ICU collation can make = itself case-insensitive, and since postgres 18 LIKE works with those collations too. bonus point: in the C collation, a plain b-tree index can serve a prefix LIKE like 'Ada%' but never ILIKE or a leading %, which need a trigram index.
+</Interview>
+
+<Keylines>
+- LIKE matches the whole string: % is any run of characters, _ is exactly one.
+- LIKE is case-sensitive. ILIKE isn't, and is postgres only. lower() on both sides is portable.
+- escape a literal % or _ with a backslash, or pick your own with ESCAPE.
+- ~ and ~* are regular expressions, and they match anywhere unless anchored.
+- this page compares text in C: by bytes, so capitals come first and Zoë sorts after Zoe.
+</Keylines>

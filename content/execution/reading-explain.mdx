@@ -1,0 +1,177 @@
+import { ExplainReader } from "@/components/figures/execution/ExplainReader";
+import { CostSpans } from "@/components/figures/execution/CostSpans";
+import { CostSum } from "@/components/figures/execution/CostSum";
+import { planText, records } from "@/components/figures/execution/source";
+import trace from "./traces/reading-explain.pgtrace.json";
+
+{/* every plan and number on this page comes from traces/reading-explain.scenario.sql, captured on
+    PGlite with the shop dataset (`pnpm pgtrace <file> --engine=pglite --twice`), so it matches
+    the run buttons: step 0 is the plain EXPLAIN, step 1 the text EXPLAIN ANALYZE, step 2 the
+    same plan as json, step 3 the seq scan's cost worked out from pg_class. */}
+
+export const scan = records(trace, 3)[0];
+export const scanLine = planText(trace, 0).split("\n").find((l) => l.includes("Seq Scan on customers")).trim();
+
+<InShort>
+EXPLAIN prints a **tree** of plan nodes, and you read it from the **inside out**: the most indented lines run first, and rows flow up to the top. every node line carries four estimates: **startup cost**, **total cost**, **rows** and **width**.
+
+none of them are measured. they're the planner's guesses, in made-up units, and that's fine once you know what each one means.
+</InShort>
+
+## the picture
+
+you know the wall of arrows EXPLAIN gives you, where the first line is the last thing that happens? kinda cursed. it reads fine once you stop reading it top to bottom.
+
+think of a recipe with sub-recipes. the card says "plate the 5 best dishes", and under it, indented, "sort the dishes", and under that "cook each customer's order", and under that two lines: "chop the onions" and "boil the stock". nobody starts at the plating. you start at the most indented line (the leaves), and each step hands its result up to the line above it (its parent).
+
+here's the query this page takes apart: the five customers in paris with the most orders.
+
+```sql run db=shop
+EXPLAIN
+SELECT c.name, count(*) AS orders
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+WHERE c.city = 'Paris'
+GROUP BY c.id
+ORDER BY orders DESC, c.id
+LIMIT 5;
+```
+
+seven nodes. every `->` is a child of the line above it with less indentation, and the lines under a node with no arrow (`Filter:`, `Hash Cond:`, `Sort Key:`) are that node's details. now as a tree, with the text beside it:
+
+<Figure wide caption={<>hover a node, in the tree or in the text, and its lines light up in the other. step through it in reading order, from the scan of customers up to the Limit. switch to <em>actuals</em> to see what really came out of each node when it ran.</>}>
+<ExplainReader
+  trace={trace}
+  text={1}
+  json={2}
+  notes={[
+    "the Limit, read last. it asks Sort for rows and stops at 5. its total cost is its child's startup cost plus 5/66 of the rest of the child's cost, because it only takes 5 of the 66 rows: 262.55, not 262.70.",
+    "the Sort orders the groups by count, then id. it can't hand over the biggest group until it has seen all 66, so its startup cost (262.54) is almost all of its total. with a LIMIT above it, it only keeps the best 5 as it goes: a top-N heapsort in 17kB.",
+    "the HashAggregate puts each joined row in the bucket for its c.id, then hands out one row per bucket. it eats all 369 joined rows before the first group comes out: startup 260.78.",
+    "the Hash Join streams the 10,000 orders past the hash table, and each order looks up its customer_id there. its startup cost is the Hash below it plus 0.83 for hashing 66 rows. it guessed 330 rows and got 369.",
+    "the Seq Scan on orders reads all 83 pages of orders, 10,000 rows, nothing filtered. width=4 because the only column anything above it needs is customer_id, a 4-byte int.",
+    "the Hash builds a hash table out of the 66 paris customers. startup and total are both 49.00: all of its work happens before it hands the table over, in one go.",
+    "start here. the Seq Scan on customers reads 24 pages, 2,000 rows, and its Filter keeps the 66 in paris. cost 0.00..49.00: nothing to do before its first row, 49 to finish.",
+  ]}
+/>
+</Figure>
+
+so the order it really runs in is the reverse of the order it's printed in: scan customers, hash them, stream orders past them, group, sort, cut. (the last two are the [logical order](/learn/basics/logical-order) you already know, GROUP BY before ORDER BY before LIMIT, showing through.)
+
+<Predict question="the whole query: what does postgres think it costs?" options={["262.55", "262.54", "1,326.82, all 7 added up"]} answer={0}>
+```text
+Limit  (cost=262.54..262.55 rows=5 width=24)
+  ->  Sort  (cost=262.54..262.70 rows=66 width=24)
+  ...
+```
+<Explain>
+262.55, the top node's total cost. every node's cost already includes everything below it, so the root's total is the whole query. 262.54 is only the startup cost (the work before the first row), and adding the seven totals up counts each scan again at every level above it.
+</Explain>
+</Predict>
+
+## four numbers per line
+
+every node line ends in `(cost=startup..total rows=n width=w)`. one at a time:
+
+**total cost** is what the planner thinks it costs to run this node to the end, including all of its children. the unit is arbitrary: reading one page in order costs `seq_page_cost`, which is 1.0, and everything else is priced relative to that. it isn't milliseconds, and it never will be.
+
+it's not magic either. here's the scan of customers, priced by hand from the catalog:
+
+```sql run db=shop
+EXPLAIN SELECT * FROM customers WHERE city = 'Paris';
+
+SELECT relpages, reltuples,
+       relpages * current_setting('seq_page_cost')::float8 AS page_cost,
+       reltuples * current_setting('cpu_tuple_cost')::float8 AS row_cost,
+       reltuples * current_setting('cpu_operator_cost')::float8 AS filter_cost
+FROM pg_class
+WHERE relname = 'customers';
+```
+
+<Figure caption={<>the seq scan's 49.00, term by term: pages from <code>pg_class.relpages</code>, rows from <code>reltuples</code>, each times a cost setting. the filter costs a quarter of what handling a row does.</>}>
+<CostSum
+  trace={trace}
+  terms={[
+    { what: "pages, read in order", n: Number(scan.relpages), setting: "seq_page_cost", per: 1 },
+    { what: "rows, looked at", n: Number(scan.reltuples), setting: "cpu_tuple_cost", per: 0.01 },
+    { what: "rows, run through the filter", n: Number(scan.reltuples), setting: "cpu_operator_cost", per: 0.0025 },
+  ]}
+  line={scanLine}
+/>
+</Figure>
+
+every node has a formula like that. the rest of them, and the knobs, are [the cost model](/learn/optimizer/cost-model).
+
+**startup cost** is the part of the total spent before the node can return its *first* row. a scan can hand over its first row right away, so its startup cost is 0.00. a Sort can't: the smallest row might be the last one it reads. so a Sort's startup cost is everything below it plus the sorting, and only the handing out is left for the rest. drawn on one axis, it looks like this:
+
+<Figure wide caption={<>each node's cost as a span, from startup (its first row) to total (its last). the <C k="hi">dark</C> spans are nodes that read all of their input before returning anything: the Hash, the HashAggregate and the Sort. they start late and end almost at once.</>}>
+<CostSpans trace={trace} step={2} />
+</Figure>
+
+that's why startup cost matters. with a LIMIT on top, postgres prefers plans that can stop early, and a plan full of Sorts and Hashes can't. ([the iterator model](/learn/execution/iterator-model) is about exactly that.)
+
+**rows** is how many rows the node expects to *return*, not to read. the Seq Scan on customers reads 2,000 rows and expects to return 66. the estimate comes from statistics about the column: Paris is one of its most common values, and ANALYZE wrote down how common:
+
+```sql run db=shop
+SELECT most_common_freqs[array_position(most_common_vals::text::text[], 'Paris')] AS paris
+FROM pg_stats
+WHERE tablename = 'customers' AND attname = 'city';
+```
+
+0.033 of 2,000 rows is 66. how the planner gets to that number for any WHERE is [estimating rows](/learn/optimizer/estimating-rows). for a node that runs more than once, it's per run ([loops](/learn/execution/explain-analyze)).
+
+**width** is the average size of one returned row, in bytes, counting only the columns the nodes above still need. not the table's row size:
+
+```sql run db=shop
+EXPLAIN SELECT * FROM customers;
+EXPLAIN SELECT id FROM customers;
+```
+
+same scan, same 44.00, width 61 versus 4. in the paris plan, customers comes out 16 bytes wide (an id of 4 and a name of 12 on average) and orders comes out 4 wide, since all the join needs from orders is `customer_id`. width times rows is roughly the memory a Hash or a Sort is going to want, which is why the planner tracks it.
+
+<Quiz question={<>the Hash Join line says <code>rows=330</code>. what is 330?</>} options={["rows it expects to read", "rows it expects to return", "rows it actually returned"]} answer={1}>
+<Explain>
+rows it expects to return: the join's output. it reads 10,000 orders and a hash table of 66 customers to get them. what it actually returned (369) only shows up with EXPLAIN ANALYZE, which runs the query.
+</Explain>
+</Quiz>
+
+## when you don't care about cost
+
+half the time you want the shape, not the numbers. `COSTS OFF` drops them:
+
+```sql run db=shop
+EXPLAIN (COSTS OFF)
+SELECT c.name, count(*) AS orders
+FROM customers AS c
+JOIN orders AS o ON o.customer_id = c.id
+WHERE c.city = 'Paris'
+GROUP BY c.id
+ORDER BY orders DESC, c.id
+LIMIT 5;
+```
+
+that's the form most of this part uses. the other options worth knowing: `ANALYZE` runs the query and adds what really happened ([the next chapter](/learn/execution/explain-analyze)), `VERBOSE` adds the output columns of every node, `SETTINGS` lists the planner settings you changed, and `FORMAT JSON` prints the same tree as json, which is what tools like this page's figures read.
+
+<Gotcha title="cost is not time">
+two plans for the same query compare fine: the planner picked the one with the lower total, and that's all a cost is for. two different queries don't. a cost ten times higher means "about ten times the work" only if the settings match the hardware, and they're guesses about pages and rows, not about locks, network or a cold cache. to know how long it took, run it: EXPLAIN ANALYZE.
+</Gotcha>
+
+<Deep title="the Limit's cost, worked out">
+a Limit doesn't do anything itself, it stops early. so its cost is a slice of its child's: the child's startup cost, plus the fraction of the child's remaining cost that it will consume. it takes 5 of the 66 rows the Sort expects, so:
+
+262.54 + (262.70 − 262.54) × 5 / 66 = 262.55
+
+that interpolation assumes rows come out evenly over the child's run, which is fine for a scan and generous for a Sort, but a Sort's startup cost already holds nearly everything, so the slice is tiny either way.
+</Deep>
+
+<Interview q="how do you read an EXPLAIN plan?">
+inside out. the most indented nodes are the leaves, they read tables; every node hands rows up to its parent, and the top node hands them to the client. each node line has cost=startup..total, the estimated rows it returns and their width in bytes. startup is the work before the first row, total includes all the children, and the units are arbitrary (one sequential page = 1.0). bonus point: estimates are per loop, and plain EXPLAIN doesn't run anything, so to compare guesses with reality you need EXPLAIN ANALYZE, and you look for nodes where the actual rows are 10x off from the estimate.
+</Interview>
+
+<Keylines>
+- read EXPLAIN inside out: the most indented nodes run first, rows flow up.
+- cost=startup..total, in units where one sequential page read is 1.0.
+- every node's cost includes its children, so the top line is the whole query.
+- rows is what a node returns (per loop), width is the average bytes per row it returns.
+- a high startup cost means "has to read everything first": Sort, Hash, aggregates.
+</Keylines>

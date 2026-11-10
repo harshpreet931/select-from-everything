@@ -1,0 +1,257 @@
+import golden from "./sql-interview.golden.json";
+
+{/* the two result figures read this chapter's own golden: the ranking block and the streak
+    block, so they show exactly what the run buttons return. */}
+
+export const out = (needle, k = 0) => Object.values(golden.blocks).find((b) => b.sql.includes(needle))?.statements[k];
+export const ranks = out("AS row_number");
+export const streak = out("AS island");
+export const cols = (s) => s.columns.map(([name, type]) => ({ name, type }));
+
+<InShort>
+the SQL round is about eight questions in different clothes: **second highest**, **duplicates**, **running totals**, **streaks**, **top n per group**, **pivot**, **median** and a **self join**. each has an answer that lands, and a trap the interviewer is waiting for: ties, NULLs, or a frame you didn't know you had.
+
+all of them below, runnable, on the book's datasets.
+</InShort>
+
+## the picture
+
+you know how interview SQL questions feel like puzzles you either know or don't? there are fewer of them than it seems. almost every one is a window function, a GROUP BY with HAVING, or a join of a table to itself, and almost every trap is about ties or NULLs.
+
+think of a cookbook with eight recipes. once you know them, a "new" question is one recipe with the names changed (salaries become scores, employees become players). the interviewer isn't checking that you've seen it, they're checking that you ask "what about ties?" before they do.
+
+<Figure caption={<>the eight questions, the tool that answers each, and the chapter behind it.</>}>
+<Tree>{`
+second highest, nth highest #hot // dense_rank(), or DISTINCT + OFFSET: ties decide which
+duplicates // GROUP BY ... HAVING count(*) > 1, on a normalized key; NULLs group together
+running totals // sum() OVER (ORDER BY ...): the default frame includes ties
+streaks #hot // gaps and islands: date minus row_number() is constant inside a streak
+top n per group // a ranking function PARTITION BY the group, filtered outside
+pivot // count(*) FILTER (WHERE ...) per column
+median // percentile_cont(0.5) WITHIN GROUP (ORDER BY ...), not avg()
+self join #ref // the table twice, with aliases, and a condition so pairs aren't counted twice
+`}</Tree>
+</Figure>
+
+## second highest salary, with ties
+
+the org dataset rounds salaries to 1,000, so there are ties on purpose. the classic answer:
+
+```sql run db=org
+SELECT max(salary) AS second_highest
+FROM employees
+WHERE salary < (SELECT max(salary) FROM employees);
+```
+
+224,000. it lands, and it handles ties at the top (two people at the max would both be excluded). but it doesn't generalize to "third" or "nth", and the interviewer's follow-up is always "now the nth". the window version does:
+
+```sql run db=org
+SELECT name, salary,
+       row_number() OVER w AS row_number,
+       rank()       OVER w AS rank,
+       dense_rank() OVER w AS dense_rank
+FROM employees
+WINDOW w AS (ORDER BY salary DESC)
+ORDER BY salary DESC, name
+LIMIT 6;
+```
+
+<Figure caption={<>the top six salaries and the three ranking functions, from the block above. two people tie at 224,000. "the second highest salary" is <C k="hot">dense_rank = 2</C>: row_number picks one of the two arbitrarily, and rank skips from 2 to 4.</>}>
+<ResultTable columns={cols(ranks)} rows={ranks.rows} rowTones={ranks.rows.map((r) => (r[4] === "2" ? "hot" : null))} />
+</Figure>
+
+so the answer that lands is `WHERE dense_rank = n` in an outer query ([ranking](/learn/analytics/ranking)): "the nth highest *distinct salary*". if they mean "the nth *person*", it's row_number with a tiebreaker. ask which. that's the whole point of the question.
+
+```sql run db=org
+SELECT DISTINCT salary
+FROM (SELECT salary, dense_rank() OVER (ORDER BY salary DESC) AS r FROM employees) AS ranked
+WHERE r = 2;
+```
+
+<Predict question="SELECT salary FROM employees ORDER BY salary DESC OFFSET 1 LIMIT 1 returns?" options={["224000.00", "220000.00", "301000.00"]} answer={0}>
+```sql
+SELECT salary FROM employees ORDER BY salary DESC OFFSET 1 LIMIT 1;
+```
+<Explain>
+224,000, but only by luck: OFFSET skips one *row*, and row 2 happens to hold the second distinct value. ask for the third highest with OFFSET 2 and you'd get 224,000 again (the tie), not 220,000. `SELECT DISTINCT salary ... OFFSET n - 1 LIMIT 1` fixes it, and so does dense_rank.
+</Explain>
+</Predict>
+
+## duplicates
+
+"find customers with the same email". the first answer is a GROUP BY with HAVING ([HAVING](/learn/basics/having-clause)):
+
+```sql run db=shop
+SELECT email, count(*) AS n
+FROM customers
+GROUP BY email
+HAVING count(*) > 1
+ORDER BY n DESC, email;
+```
+
+two traps in one result. the 46 customers with no email came back as one "duplicate" group: GROUP BY puts all NULLs together, though `NULL = NULL` isn't true ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic)). and Zoë and Zoe Martin are missing: `Zoe.Martin@Example.com` and `zoe.martin@example.com` are different strings. normalize the key and drop the NULLs, and return the rows, not just the counts:
+
+```sql run db=shop
+SELECT id, name, email
+FROM (SELECT id, name, email, count(*) OVER (PARTITION BY lower(email)) AS n
+      FROM customers WHERE email IS NOT NULL) AS c
+WHERE n > 1
+ORDER BY lower(email), id;
+```
+
+the follow-up is "delete the duplicates, keep the oldest": `DELETE ... WHERE id NOT IN (SELECT min(id) ... GROUP BY lower(email))`, or better, a row_number partitioned by the key and a DELETE of every row numbered above 1. and then add a unique index on `lower(email)` so it can't happen again ([NOT NULL, CHECK and UNIQUE](/learn/design/constraints)).
+
+## running totals
+
+a running total is `sum() OVER (ORDER BY ...)` ([LAG, LEAD and running totals](/learn/analytics/lag-and-lead)). the trap is the frame you didn't write. with ORDER BY and no frame, the default is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, and RANGE includes the current row's **peers**, every row with the same ORDER BY value:
+
+<Compare>
+<Bad label="default frame">
+```sql run db=shop
+SELECT id, (ordered_at AT TIME ZONE 'UTC')::date AS day,
+       count(*) OVER (ORDER BY (ordered_at AT TIME ZONE 'UTC')::date) AS running
+FROM orders
+ORDER BY ordered_at, id
+LIMIT 5;
+```
+</Bad>
+<Good label="ROWS, and a tiebreaker">
+```sql run db=shop
+SELECT id, (ordered_at AT TIME ZONE 'UTC')::date AS day,
+       count(*) OVER (ORDER BY (ordered_at AT TIME ZONE 'UTC')::date, id
+                      ROWS UNBOUNDED PRECEDING) AS running
+FROM orders
+ORDER BY ordered_at, id
+LIMIT 5;
+```
+</Good>
+</Compare>
+
+every order placed on the same day is a peer, so with the default frame each of them gets the day's whole count at once, the total *after* adding all of them. that might be what you want (a total "as of that day"); usually it's a bug. a unique ORDER BY plus ROWS makes each row add exactly one row ([window frames](/learn/analytics/window-frames)).
+
+## streaks: gaps and islands
+
+"find each user's longest streak of consecutive active days". the trick: number each user's days in order. inside a run of consecutive days, the date and the row number go up together, so **date minus row number** is the same for every day of the streak, and changes after a gap ([gaps and islands](/learn/analytics/gaps-and-islands)). user 17 is active every day for 30 days from april 21, except may 5:
+
+```sql run db=events
+WITH days AS (
+  SELECT DISTINCT (occurred_at AT TIME ZONE 'UTC')::date AS day
+  FROM events WHERE user_id = 17 AND occurred_at >= '2026-04-21'
+)
+SELECT day,
+       row_number() OVER (ORDER BY day) AS rn,
+       day - row_number() OVER (ORDER BY day)::int AS island
+FROM days
+ORDER BY day
+LIMIT 18;
+```
+
+<Figure caption={<>user 17's days from the block above, shaded by island. the <code>island</code> value holds steady through april and the first days of may, then jumps by one at may 6: the missing may 5 is the gap.</>}>
+<ResultTable columns={cols(streak)} rows={streak.rows} group="island" dense />
+</Figure>
+
+then GROUP BY the island and count. for every user at once:
+
+```sql run db=events
+WITH days AS (
+  SELECT DISTINCT user_id, (occurred_at AT TIME ZONE 'UTC')::date AS day FROM events
+), islands AS (
+  SELECT user_id, day - (row_number() OVER (PARTITION BY user_id ORDER BY day))::int AS island
+  FROM days
+)
+SELECT user_id, count(*) AS streak_days
+FROM islands
+GROUP BY user_id, island
+ORDER BY streak_days DESC, user_id
+LIMIT 5;
+```
+
+the top streaks are 47 days: april 15 to may 31. nobody's streak crosses april 14, the one day the dataset has no events at all. the traps: count distinct *days*, not events (a user with three events on one day isn't on a three-day streak), and pick the time zone the "day" is in before you cast ([timestamptz and time zones](/learn/types/timestamptz)).
+
+## top n per group
+
+"the top 2 earners in each department". rank inside each partition, filter outside, because a window function can't go in WHERE ([top n per group](/learn/analytics/top-n-per-group)):
+
+```sql run db=org
+SELECT dept, name, salary, r
+FROM (SELECT d.name AS dept, e.name, e.salary,
+             dense_rank() OVER (PARTITION BY d.id ORDER BY e.salary DESC) AS r
+      FROM employees AS e JOIN departments AS d ON d.id = e.dept_id) AS ranked
+WHERE r <= 2
+ORDER BY dept, r, name;
+```
+
+with dense_rank, a tie can give a department more than two rows. that's the trap again: "top 2 people" (row_number, plus a tiebreaker) and "the people with the top 2 salaries" (dense_rank) are different questions. postgres also has a LATERAL version (`FROM departments CROSS JOIN LATERAL (… ORDER BY salary DESC LIMIT 2)`), which is the fast one when there's an index on (dept_id, salary) ([LATERAL joins](/learn/joins/lateral-joins)).
+
+## pivot
+
+"orders per status, one column per quarter": `FILTER` on an aggregate makes each column ([FILTER and pivoting](/learn/analytics/filter-and-pivots)).
+
+```sql run db=shop
+SELECT status,
+       count(*) FILTER (WHERE ordered_at <  '2025-10-01') AS q3_2025,
+       count(*) FILTER (WHERE ordered_at >= '2025-10-01' AND ordered_at < '2026-01-01') AS q4_2025,
+       count(*) FILTER (WHERE ordered_at >= '2026-01-01' AND ordered_at < '2026-04-01') AS q1_2026,
+       count(*) FILTER (WHERE ordered_at >= '2026-04-01') AS q2_2026
+FROM orders
+GROUP BY status
+ORDER BY status;
+```
+
+the trap: columns have to be known when you write the query. a pivot whose columns come from the data (one per product, say) needs dynamic SQL or the application. `CASE WHEN ... THEN 1 END` inside count() is the portable spelling; FILTER is standard SQL that postgres supports and mysql doesn't.
+
+## median
+
+`avg()` isn't the median. the median is an [ordered-set aggregate](/learn/analytics/ordered-set-aggregates):
+
+```sql run db=org
+SELECT d.name AS dept,
+       count(*) AS people,
+       round(avg(e.salary)) AS mean,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY e.salary) AS median,
+       percentile_disc(0.5) WITHIN GROUP (ORDER BY e.salary) AS median_disc
+FROM employees AS e JOIN departments AS d ON d.id = e.dept_id
+GROUP BY d.name
+ORDER BY d.name;
+```
+
+the mean sits above the median in most departments: one director's salary pulls the average up and barely moves the median. that's why "median" is asked: it tests whether you know they differ. `percentile_cont` interpolates between the two middle values when the count is even; `percentile_disc` returns an actual value from the data. say which you mean.
+
+## the self join
+
+"find pairs of employees in the same department with the same salary". the table twice, with aliases ([self joins](/learn/joins/self-and-cross-joins)):
+
+```sql run db=org
+SELECT a.name AS first, b.name AS second, a.salary, a.dept_id
+FROM employees AS a
+JOIN employees AS b
+  ON b.dept_id = a.dept_id AND b.salary = a.salary AND b.id > a.id
+WHERE a.dept_id = 5
+ORDER BY a.salary DESC, a.id, b.id
+LIMIT 6;
+```
+
+the trap is `b.id > a.id`. with `b.id <> a.id`, every pair comes back twice (a, b and b, a). with nothing at all, everyone also pairs with themselves. the classic sibling of this question, "employees who earn more than their manager", is the same join on `b.id = a.manager_id`; in org it returns nothing, because salaries are set by level, and saying "an empty result is an answer" is a fine thing to say out loud.
+
+<Quiz question="SELECT count(*) FROM a LEFT JOIN b ON ... WHERE b.x = 1 behaves like?" options={["a LEFT JOIN", "an INNER JOIN", "a CROSS JOIN"]} answer={1}>
+<Explain>
+an inner join. the rows the LEFT JOIN kept for unmatched a have NULL in every b column, and `b.x = 1` is not true for NULL, so WHERE throws them away. put the condition in ON to keep them ([outer joins](/learn/joins/outer-joins)). it's the most common bonus trap in a SQL round.
+</Explain>
+</Quiz>
+
+<Gotcha title="ORDER BY, always">
+almost every answer above ends in a total ORDER BY. without one, "the top 3" and "the first row" are whatever order the plan produced, which changes with the data, the plan and the postgres version ([sorting with ORDER BY](/learn/basics/order-by)). interviewers notice LIMIT without ORDER BY.
+</Gotcha>
+
+<Interview q="find the second highest salary. now the nth. now per department.">
+the max below the max works for second. for nth, rank in a subquery and filter outside: `dense_rank() OVER (ORDER BY salary DESC)` = n if they mean the nth distinct salary, `row_number()` with a tiebreaker if they mean the nth person, and say which you picked. per department, add `PARTITION BY dept_id` to the window. mention what happens with ties (dense_rank returns several people) and with fewer than n distinct salaries (no row, so wrap it in a scalar subquery if they want a NULL). bonus point: for "top n per group" on a big table, a LATERAL subquery with ORDER BY ... LIMIT n per group uses an index on (dept_id, salary).
+</Interview>
+
+<Keylines>
+- ties: dense_rank for "nth value", row_number plus a tiebreaker for "nth row". ask which.
+- duplicates: GROUP BY a normalized key, HAVING count(*) > 1, and drop the NULLs first.
+- running totals: the default frame includes peers. ROWS and a unique ORDER BY.
+- streaks: date minus row_number is constant inside a streak.
+- median is percentile_cont(0.5) WITHIN GROUP, never avg().
+- self joins: alias both sides, and b.id > a.id so each pair comes back once.
+</Keylines>

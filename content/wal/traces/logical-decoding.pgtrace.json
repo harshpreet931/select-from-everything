@@ -1,0 +1,171 @@
+{
+ "v": 1,
+ "scenario": "content/wal/traces/logical-decoding.scenario.sql",
+ "title": "logical decoding with test_decoding: the WAL turned back into row changes",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "logical",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23261120},
+ "setup": "CREATE TABLE accounts (id int PRIMARY KEY, owner text NOT NULL, balance numeric(12,2) NOT NULL);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "SELECT slot_name, lsn FROM pg_create_logical_replication_slot('cdc', 'test_decoding')",
+   "note": "a logical slot with the test_decoding plugin. from here on, the server keeps every change this slot hasn't consumed.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"slot_name","type":"name"},{"name":"lsn","type":"pg_lsn"}],
+    "data": [["cdc","0/162EFF8"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 25.00 WHERE id = 1;\nUPDATE accounts SET balance = balance + 25.00 WHERE id = 2;\nCOMMIT",
+   "note": "a transfer: two updates in one transaction.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO accounts VALUES (3, 'carol', 50.00);\nDELETE FROM accounts WHERE id = 2",
+   "note": "a new account, and a closed one.",
+   "status": "ok",
+   "result": {"command":"DELETE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "obs",
+   "sql": "SELECT data FROM pg_logical_slot_get_changes('cdc', NULL, NULL)",
+   "note": "reading the slot: every committed change since it was created, in commit order, as rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 10,
+    "columns": [{"name":"data","type":"text"}],
+    "data": [
+     ["BEGIN 759"],
+     ["table public.accounts: UPDATE: id[integer]:1 owner[text]:'alice' balance[numeric]:75.00"],
+     ["table public.accounts: UPDATE: id[integer]:2 owner[text]:'bob' balance[numeric]:125.00"],
+     ["COMMIT 759"],
+     ["BEGIN 760"],
+     ["table public.accounts: INSERT: id[integer]:3 owner[text]:'carol' balance[numeric]:50.00"],
+     ["COMMIT 760"],
+     ["BEGIN 761"],
+     ["table public.accounts: DELETE: id[integer]:2"],
+     ["COMMIT 761"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "obs",
+   "sql": "SELECT count(*) AS changes FROM pg_logical_slot_get_changes('cdc', NULL, NULL)",
+   "note": "read it again: nothing. get_changes consumed them; the slot's position moved past them.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"changes","type":"int8"}],"data":[["0"]]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "ALTER TABLE accounts REPLICA IDENTITY FULL;\nUPDATE accounts SET balance = balance + 1.00 WHERE id = 1;\nDELETE FROM accounts WHERE id = 3",
+   "note": "replica identity full: the WAL now carries the whole old row on UPDATE and DELETE, not just the key.",
+   "status": "ok",
+   "result": {"command":"DELETE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "obs",
+   "sql": "SELECT data FROM pg_logical_slot_get_changes('cdc', NULL, NULL)",
+   "note": "the same kind of changes, now with old-key showing every column of the row before.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [{"name":"data","type":"text"}],
+    "data": [
+     ["BEGIN 762"],
+     ["COMMIT 762"],
+     ["BEGIN 763"],
+     [
+      "table public.accounts: UPDATE: old-key: id[integer]:1 owner[text]:'alice' balance[numeric]:75.00 new-tuple: id[integer]:1 owner[text]:'alice' balance[numeric]:76.00"
+     ],
+     ["COMMIT 763"],
+     ["BEGIN 764"],
+     ["table public.accounts: DELETE: id[integer]:3 owner[text]:'carol' balance[numeric]:50.00"],
+     ["COMMIT 764"]
+    ]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "BEGIN;\nINSERT INTO accounts VALUES (4, 'dave', 10.00);\nROLLBACK",
+   "note": "a rolled-back transaction.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 8,
+   "session": "obs",
+   "sql": "SELECT count(*) AS changes FROM pg_logical_slot_peek_changes('cdc', NULL, NULL)",
+   "note": "it never shows up: decoding only emits committed transactions.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"changes","type":"int8"}],"data":[["0"]]}
+  },
+  {
+   "i": 9,
+   "session": "obs",
+   "sql": "SELECT slot_name FROM pg_create_logical_replication_slot('cdc_ha', 'pgoutput', failover => true);\nSELECT slot_name, plugin, slot_type, failover FROM pg_replication_slots ORDER BY slot_name",
+   "note": "a failover slot (postgres 17+): marked so a standby can keep a synced copy and take over the stream.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [
+     {"name":"slot_name","type":"name"},
+     {"name":"plugin","type":"name"},
+     {"name":"slot_type","type":"text"},
+     {"name":"failover","type":"bool"}
+    ],
+    "data": [["cdc","test_decoding","logical","f"],["cdc_ha","pgoutput","logical","t"]]
+   }
+  }
+ ]
+}

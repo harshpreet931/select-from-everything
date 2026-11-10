@@ -1,0 +1,149 @@
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/partial-expression.pgtrace.json";
+
+{/* the size bars and both plan switches read traces/partial-expression.scenario.sql, captured
+    on PGlite. */}
+
+export const size = Object.fromEntries(trace.steps[1].result.data.map((r) => [r[0], { bytes: Number(r[1]), entries: Number(r[2]) }]));
+export const kb = (b) => (b / 1024).toLocaleString("en-US");
+
+<InShort>
+two ways to make an index fit the query instead of the table. a **partial index** has a `WHERE`: it only holds the rows you actually search, so it's smaller and cheaper to keep up. an **expression index** indexes a computed value like `lower(email)`, so a query that searches on that expression can use it.
+
+both only work when the query says the same thing the index says.
+</InShort>
+
+## the picture
+
+you know the "open orders" screen every shop has? 113 of 10,000 orders are open (placed or paid), and that screen asks for them all day. an index on `ordered_at` for the whole table is a phone book of the whole city, to find the 113 people on your street. a partial index is the list of your street.
+
+<Figure caption={<>the same column indexed twice: every order, and only the open ones. sizes in KB, from the capture.</>}>
+<Bars data={[
+  { label: `orders (ordered_at): ${size.orders_at_all.entries.toLocaleString("en-US")} entries`, value: size.orders_at_all.bytes / 1024 },
+  { label: `... WHERE status IN ('placed', 'paid'): ${size.orders_at_open.entries} entries`, value: size.orders_at_open.bytes / 1024, tone: "live" },
+]} unit="KB" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+{kb(size.orders_at_all.bytes)} KB against {kb(size.orders_at_open.bytes)} KB: the smallest an index can be, a metapage and one leaf. and the saving isn't only space. an order that's delivered never touches the partial index again: no new entries when it's updated, nothing for VACUUM to clean.
+
+## partial indexes
+
+```sql run db=shop session=pe
+CREATE INDEX orders_open ON orders (ordered_at)
+WHERE status IN ('placed', 'paid');
+
+EXPLAIN (COSTS OFF)
+SELECT id, customer_id, ordered_at FROM orders
+WHERE status IN ('placed', 'paid')
+ORDER BY ordered_at
+LIMIT 10;
+```
+
+no `Filter` line, no `Index Cond` on status: every entry in the index is an open order, so there's nothing to check. the planner can use a partial index when it can **prove** from the query's `WHERE` that every row the query wants is in the index. that's a logical test, done when the query is planned:
+
+<Figure wide caption={<>three queries against the partial index on open orders. <code>IN ('placed', 'paid')</code> matches its WHERE exactly. <code>status = 'placed'</code> implies it, so the index still works, with status checked per row. <code>'shipped'</code> rows aren't in it at all, so it's useless there.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="WHERE status"
+  show={["actual", "buffers"]}
+  pages
+  plans={[
+    { label: "IN ('placed', 'paid')", step: 3 },
+    { label: "= 'placed'", step: 4 },
+    { label: "= 'shipped'", step: 5 },
+  ]}
+/>
+</Figure>
+
+<Predict question="the partial index has WHERE status IN ('placed', 'paid'). which query can use it?" options={["WHERE status <> 'delivered'", "WHERE status = 'paid'", "WHERE status = $1, with $1 = 'paid'"]} answer={1}>
+```sql
+SELECT id FROM orders WHERE status = 'paid' ORDER BY ordered_at LIMIT 10;
+```
+<Explain>
+only `status = 'paid'`. `<> 'delivered'` includes shipped, cancelled and refunded orders, which aren't in the index. and a parameter is a trap: with a generic plan (prepared statements after a few executions, or most ORMs) the planner doesn't know the value, so it can't prove the row is in the index, and it won't use it. the proof has to work at plan time ([generic plans](/learn/optimizer/generic-plans)).
+</Explain>
+</Predict>
+
+### a partial unique index
+
+`UNIQUE` on a partial index means unique among the rows it covers. "one open cart per customer" is one line:
+
+```sql run session=pe expect=error
+CREATE UNIQUE INDEX one_placed_order ON orders (customer_id) WHERE status = 'placed';
+INSERT INTO orders (customer_id, status, ordered_at)
+SELECT customer_id, 'placed', '2026-07-01' FROM orders WHERE status = 'placed' ORDER BY id LIMIT 1;
+```
+
+the existing 51 placed orders all belong to different customers, so the index builds, and a second placed order for the same customer is refused (`23505`). delivered orders, any number of them, are none of its business. the same trick makes soft deletes work with uniqueness: `UNIQUE (email) WHERE deleted_at IS NULL` ([soft delete](/learn/design/history-and-soft-delete)).
+
+## expression indexes
+
+an index on `email` is sorted by `email`. a query on `lower(email)` asks about a different value, which the index doesn't have ([why isn't my index used?](/learn/indexes/index-not-used)). so index the expression:
+
+```sql run db=shop session=ex
+CREATE INDEX customers_lower_email ON customers (lower(email));
+ANALYZE customers;
+SELECT id, name, email FROM customers
+WHERE lower(email) = 'zoe.martin@example.com'
+ORDER BY id;
+```
+
+two customers: Zoë at `Zoe.Martin@Example.com` and Zoe at `zoe.martin@example.com`, emails that differ only in case. the index stores `lower(email)` for every row, computed once when the row is written, and the query has to use **the same expression** to find it:
+
+<Figure wide caption={<>an expression index on <code>lower(email)</code> next to the table's unique index on <code>email</code>. the expression finds both Zoes. the bare column uses the unique index and finds one. <code>ILIKE</code> asks something neither index can answer.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="WHERE"
+  show={["actual", "buffers"]}
+  plans={[
+    { label: "lower(email) = …", step: 7 },
+    { label: "email = …", step: 8 },
+    { label: "email ILIKE …", step: 9 },
+  ]}
+/>
+</Figure>
+
+the `ANALYZE` above isn't decoration. postgres keeps statistics for each indexed expression (they show up in `pg_stats` under the index's name), so after an ANALYZE the planner knows how selective `lower(email) = ...` is instead of guessing.
+
+<Gotcha title="the function has to be IMMUTABLE">
+an index stores the expression's result once, so the function must give the same answer for the same input forever. `date(created_at)` on a `timestamptz` depends on the session's time zone, so postgres refuses it:
+
+```sql run db=shop expect=error
+CREATE INDEX ON customers (date(created_at));
+```
+
+the way out is to say which day you mean, with the zone fixed in the expression:
+
+```sql run db=shop
+CREATE INDEX customers_signup_day ON customers (((created_at AT TIME ZONE 'UTC')::date));
+```
+
+then queries have to write it exactly the same way. or skip the expression and query a range of `created_at`, which the plain index serves ([timestamptz](/learn/types/timestamptz)).
+</Gotcha>
+
+and a unique expression index is how you'd make emails unique ignoring case. on this data it can't be built, because of the two Zoes:
+
+```sql run db=shop expect=error
+CREATE UNIQUE INDEX customers_email_ci ON customers (lower(email));
+```
+
+the error names the duplicate. that's the index doing its job before it exists.
+
+## both at once
+
+an index can be partial and on an expression. "active customers by lowercase email" is `CREATE INDEX ON customers (lower(email)) WHERE email IS NOT NULL`, which also skips the NULL emails nobody can search for. the same rules hold: the query must repeat the expression, and its WHERE must imply the index's.
+
+<Interview q="when would you use a partial index?">
+when the queries only ever look at a small, well-defined subset of the rows: open orders, unprocessed jobs, non-deleted rows. the index only holds those rows, so it's smaller, faster to search, and cheaper to maintain (rows outside it never touch it). the query's WHERE has to imply the index's predicate at plan time, which rules out generic plans with a parameter in the deciding column. bonus point: a partial unique index enforces uniqueness only inside the subset, like one open cart per customer, or unique emails among non-deleted users.
+</Interview>
+
+<Keylines>
+- a partial index holds only the rows matching its WHERE. smaller, and rows outside it cost nothing.
+- the query's WHERE must imply the index's, at plan time. parameters can break that.
+- an expression index stores a computed value. the query must use the same expression.
+- index expressions must be IMMUTABLE: no time zones, no now().
+- partial unique indexes enforce rules like "one open order per customer".
+</Keylines>

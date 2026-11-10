@@ -1,0 +1,275 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "9e3cf863b2649cbf": {
+      "db": "lab",
+      "sql": "SELECT oid, relname, relfilenode, pg_relation_filepath(oid) AS path\nFROM pg_class WHERE relname IN ('notes', 'notes_pkey') ORDER BY relname;\nSELECT oid, datname FROM pg_database ORDER BY oid;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["relname", "name", 19],
+            ["relfilenode", "oid", 26],
+            ["path", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "4296f6f2dcf8e380",
+          "rows": [
+            ["16486", "notes", "16486", "base/5/16486"],
+            ["16493", "notes_pkey", "16493", "base/5/16493"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["datname", "name", 19]
+          ],
+          "rowCount": 3,
+          "digest": "172d1bd98ab27717",
+          "rows": [
+            ["1", "template1"],
+            ["4", "template0"],
+            ["5", "postgres"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4a844a7a9446f84f": {
+      "db": "lab",
+      "sql": "SELECT oid, relfilenode, pg_relation_filepath('notes') FROM pg_class WHERE relname = 'notes';\nTRUNCATE notes;\nSELECT oid, relfilenode, pg_relation_filepath('notes') FROM pg_class WHERE relname = 'notes';\nSELECT pg_filenode_relation(0, 16486) AS old_file_belongs_to;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["relfilenode", "oid", 26],
+            ["pg_relation_filepath", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "f18da4f533578b80",
+          "rows": [
+            ["16486", "16486", "base/5/16486"]
+          ]
+        },
+        {
+          "tag": "TRUNCATE TABLE",
+          "command": "TRUNCATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "1f913a0d2f99fc12"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["oid", "oid", 26],
+            ["relfilenode", "oid", 26],
+            ["pg_relation_filepath", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "6925b29d24662408",
+          "rows": [
+            ["16486", "24576", "base/5/24576"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["old_file_belongs_to", "regclass", 2205]
+          ],
+          "rowCount": 1,
+          "digest": "8246a7112e1ab023",
+          "rows": [
+            [null]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "162575da3058d4a6": {
+      "db": "lab",
+      "sql": "SELECT f AS file, (pg_stat_file('base/5/' || f)).size AS bytes\nFROM pg_ls_dir('base/5') AS f WHERE f LIKE '16486%' ORDER BY f;\nVACUUM notes;\nSELECT f AS file, (pg_stat_file('base/5/' || f)).size AS bytes\nFROM pg_ls_dir('base/5') AS f WHERE f LIKE '16486%' ORDER BY f;\nSELECT pg_relation_size('notes', 'main') AS main, pg_relation_size('notes', 'fsm') AS fsm,\n       pg_relation_size('notes', 'vm') AS vm, pg_total_relation_size('notes') AS everything;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["file", "text", 25],
+            ["bytes", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "c44ff3b96c984615",
+          "rows": [
+            ["16486", "40960"],
+            ["16486_fsm", "24576"]
+          ]
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "3e0b59b8463f41c3"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["file", "text", 25],
+            ["bytes", "int8", 20]
+          ],
+          "rowCount": 3,
+          "digest": "5533e931c8d88853",
+          "rows": [
+            ["16486", "40960"],
+            ["16486_fsm", "24576"],
+            ["16486_vm", "8192"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["main", "int8", 20],
+            ["fsm", "int8", 20],
+            ["vm", "int8", 20],
+            ["everything", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "0eb9ca421b8b6688",
+          "rows": [
+            ["40960", "24576", "8192", "98304"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4074ee420aabe5be": {
+      "db": "lab",
+      "sql": "SHOW block_size;\nSHOW segment_size;",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["block_size", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7d973211cb46a875",
+          "rows": [
+            ["8192"]
+          ]
+        },
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["segment_size", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "d85eeeb9bd23b98a",
+          "rows": [
+            ["1GB"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "71646b306a61eb52": {
+      "db": "empty",
+      "sql": "CREATE UNLOGGED TABLE big (pad text);\nALTER TABLE big ALTER COLUMN pad SET STORAGE PLAIN;\nINSERT INTO big SELECT repeat('x', 2000) FROM generate_series(1, 530000);\nSELECT pg_relation_size('big') / 8192 AS pages;\nSELECT replace(f, pg_relation_filenode('big')::text, '<relfilenode>') AS file,\n       (pg_stat_file(regexp_replace(pg_relation_filepath('big'), '[0-9]+$', '') || f)).size AS bytes\nFROM pg_ls_dir(regexp_replace(pg_relation_filepath('big'), '/[0-9]+$', '')) AS f\nWHERE f LIKE pg_relation_filenode('big') || '%'\nORDER BY f;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "09faaedc5586cc0c"
+        },
+        {
+          "tag": "INSERT 0 530000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 530000,
+          "digest": "c3d3895a39de9ae8"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "181d1520059f2286",
+          "rows": [
+            ["132500"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["file", "text", 25],
+            ["bytes", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "94b1d081148c2b2f",
+          "rows": [
+            ["<relfilenode>", "1073741824"],
+            ["<relfilenode>.1", "11698176"],
+            ["<relfilenode>_fsm", "286720"],
+            ["<relfilenode>_init", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I",
+      "engine": "PostgreSQL 18.6 (native)"
+    },
+    "952f1df22b967724": {
+      "db": "lab",
+      "sql": "SELECT d AS entry FROM pg_ls_dir('.') AS d\nWHERE d IN ('base', 'global', 'pg_wal', 'pg_xact', 'pg_multixact', 'pg_tblspc', 'PG_VERSION')\nORDER BY d;",
+      "statements": [
+        {
+          "tag": "SELECT 7",
+          "command": "SELECT",
+          "columns": [
+            ["entry", "text", 25]
+          ],
+          "rowCount": 7,
+          "digest": "9cce0470d4a36423",
+          "rows": [
+            ["PG_VERSION"],
+            ["base"],
+            ["global"],
+            ["pg_multixact"],
+            ["pg_tblspc"],
+            ["pg_wal"],
+            ["pg_xact"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

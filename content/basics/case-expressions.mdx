@@ -1,0 +1,193 @@
+import { Ladder } from "@/components/figures/basics/Ladder";
+import { RunSwitch } from "@/components/figures/basics/RunSwitch";
+import { prov, resultOf } from "@/components/figures/basics/captured";
+import trace from "./traces/case-expressions.pgtrace.json";
+
+{/* the ladders and the sort switch read traces/case-expressions.scenario.sql (PGlite, the shop).
+    which rung caught each row comes from a second CASE in the same captured query. */}
+
+export const q = (v) => (v === null ? "null" : `'${v}'`);
+export const bands = resultOf(trace, 0).rows.map(([id, name, price, band, rung]) => ({ label: name, facts: `price = ${price}`, hit: Number(rung), out: band }));
+export const reach = resultOf(trace, 1).rows.map(([id, name, city, email, out, rung]) => ({ label: name, facts: `city = ${q(city)}, email = ${q(email)}`, hit: Number(rung), out }));
+export const sorts = { "status": resultOf(trace, 2), "CASE status …": resultOf(trace, 3) };
+export const source = prov(trace);
+
+<InShort>
+**CASE** is if/else inside an expression. postgres tries the WHENs top to bottom, the **first one that's true wins**, and if none is, you get the ELSE, or NULL when there's no ELSE.
+
+two shortcuts cover most of what you'd write it for: **COALESCE** returns its first argument that isn't NULL, and **NULLIF(a, b)** returns NULL when a equals b.
+</InShort>
+
+## the picture
+
+you know how SQL has no `if` statement? you can't write "if the price is zero, say free" as a line of its own. what it has is better suited to a language where everything is a table: an expression that picks a value, row by row, and can go anywhere a value can go.
+
+think of a coin sorter: a coin rolls down a ladder of slots, smallest first, and drops into the first one it fits. it never tries the slots below. CASE is that ladder, and each row is a coin.
+
+<Figure wide caption={<>pick a product. it falls past the tests that are false, stops at the first one that's <C k="live">true</C>, and never reaches the rest. the paper clips cost 0.00, which is also under 25 and under 100, but the first rung catches them.</>}>
+<Ladder
+  sql={"SELECT name, price,\n       CASE WHEN price = 0 THEN 'free'\n            WHEN price < 25 THEN 'under 25'\n            WHEN price < 100 THEN 'under 100'\n            ELSE '100 and up'\n       END AS band\nFROM products\nWHERE id IN (4, 200, 1, 8, 5);"}
+  rungs={[
+    { test: "price = 0", then: "'free'" },
+    { test: "price < 25", then: "'under 25'" },
+    { test: "price < 100", then: "'under 100'" },
+  ]}
+  last="'100 and up'"
+  rows={bands}
+  start={2}
+  outName="band"
+  trace={source}
+/>
+</Figure>
+
+order is the whole trick. the tests overlap (anything under 25 is also under 100), and that's fine, because a row only gets to the third test after failing the second. swap the rungs and the teapot would land in "under 100". so put the narrow tests first.
+
+the same query for real, every row of it:
+
+```sql run db=shop
+SELECT name, price,
+       CASE WHEN price = 0 THEN 'free'
+            WHEN price < 25 THEN 'under 25'
+            WHEN price < 100 THEN 'under 100'
+            ELSE '100 and up'
+       END AS band
+FROM products
+WHERE id IN (4, 200, 1, 8, 5)
+ORDER BY price;
+```
+
+## two spellings
+
+that's the **searched** CASE: every WHEN is a full condition. when every test compares the same thing with `=`, the **simple** CASE says it once:
+
+```sql run db=shop
+SELECT id, status,
+       CASE status
+         WHEN 'delivered' THEN 'done'
+         WHEN 'cancelled' THEN 'done'
+         WHEN 'refunded'  THEN 'done'
+         ELSE 'in progress'
+       END AS stage
+FROM orders
+WHERE customer_id = 42
+ORDER BY id;
+```
+
+`CASE status WHEN 'delivered'` means `CASE WHEN status = 'delivered'`. which matters the moment you try to catch a NULL with it.
+
+<Predict options={["'none'", "NULL", "an error"]} answer={1}>
+```sql
+SELECT CASE category WHEN NULL THEN 'none' ELSE category END
+FROM products
+WHERE id = 7;   -- the wooden train, no category
+```
+<Explain>
+the simple CASE turns `WHEN NULL` into `category = NULL`, which is unknown even when category is NULL ([three-valued logic](/learn/basics/null-and-three-valued-logic)). unknown isn't true, so the rung doesn't fire, the ELSE does, and the ELSE returns category, which is NULL. to catch a NULL, use the searched form with IS NULL.
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT CASE category WHEN NULL THEN 'none' ELSE category END AS simple,
+       CASE WHEN category IS NULL THEN 'none' ELSE category END AS searched
+FROM products
+WHERE id = 7;
+```
+
+## COALESCE
+
+"use this, or if it's missing, that" comes up so often it has its own function. `coalesce(a, b, c)` returns the first argument that isn't NULL. it's a CASE ladder where every rung asks IS NOT NULL:
+
+<Figure caption={<>three customers through <code>coalesce(city, email, 'nothing on file')</code>. José has no city, so he falls through to his email. Ana's city is an empty string, which is not NULL, so coalesce stops there and hands back <code>''</code>.</>}>
+<Ladder
+  sql={"SELECT name,\n       coalesce(city, email, 'nothing on file') AS reach\nFROM customers\nWHERE id IN (42, 6, 11);"}
+  rungs={[
+    { test: "city IS NOT NULL", then: "city" },
+    { test: "email IS NOT NULL", then: "email" },
+  ]}
+  last="'nothing on file'"
+  rows={reach}
+  missed="NULL"
+  lastLabel="otherwise"
+  start={1}
+  outName="reach"
+  trace={source}
+/>
+</Figure>
+
+that's the classic trap. coalesce rescues you from NULL, and only from NULL. an empty string, a zero, the string `'Null'` (customer 10 says hi) are all values, and coalesce returns them without a second look. it's also standard SQL, unlike the `ifnull` and `nvl` you might know from mysql or oracle.
+
+like a CASE, it stops at the first hit: the arguments after it are never evaluated. so `coalesce(cheap_column, expensive_function())` only pays for the function when it has to.
+
+## NULLIF
+
+`nullif(a, b)` is the opposite move: it returns NULL when `a = b`, and `a` otherwise. it turns a value you don't want into NULL. two uses cover nearly all of it.
+
+the first is cleaning up Ana. treat an empty city as no city, and then coalesce can do its job:
+
+```sql run db=shop
+SELECT id, name,
+       city,
+       coalesce(city, 'unknown') AS coalesced,
+       coalesce(nullif(city, ''), 'unknown') AS cleaned
+FROM customers
+WHERE id IN (6, 11, 42)
+ORDER BY id;
+```
+
+the second is dividing safely. dividing by zero is an error in postgres, and dividing by NULL is just NULL:
+
+```sql run expect=error
+SELECT 10 / 0;
+```
+
+```sql run
+SELECT 10 / nullif(0, 0) AS ratio;
+```
+
+so `sum(x) / nullif(count(*), 0)` returns NULL for an empty group instead of stopping the whole query.
+
+## CASE anywhere
+
+CASE is an expression, so it goes wherever a value goes: SELECT, WHERE, ORDER BY, GROUP BY, inside an aggregate. in ORDER BY it lets you invent an order the data doesn't have. order statuses sort alphabetically by default, which puts cancelled first and shipped last:
+
+<Figure caption={<>switch the sort key. by the text, statuses come out alphabetical. by a CASE that numbers them, they come out in the order an order lives them. the trailing <code>status</code> breaks the tie between cancelled and refunded, which share the 5.</>}>
+<RunSwitch options={[{ key: "ORDER BY", values: ["status", "CASE status …"] }]} runs={sorts} hot={["ORDER BY status", "ORDER BY CASE status"]} trace={source} />
+</Figure>
+
+inside an aggregate, CASE counts things conditionally: `sum(CASE WHEN discontinued THEN 1 ELSE 0 END)` counts discontinued products. postgres has a tidier spelling for that, `count(*) FILTER (WHERE discontinued)`, and [FILTER and pivoting](/learn/analytics/filter-and-pivots) is all about it.
+
+<Gotcha title="every branch has to be the same type">
+a CASE returns one column, and a column has one type. postgres works it out from the THEN and ELSE values, and when it can't make them agree, it says so:
+
+```sql run db=shop expect=error
+SELECT name, CASE WHEN price > 100 THEN price ELSE 'cheap' END AS label
+FROM products;
+```
+
+`price` is numeric, so postgres tries to read `'cheap'` as a number and fails. return text from every branch (`price::text`), or keep the number and put the label in another column. [types and casts](/learn/types/types-and-casts) explains how postgres picks.
+</Gotcha>
+
+<Deep title="when the ladder doesn't protect you">
+the manual promises that a CASE evaluates only the branch it needs, and that's what makes `CASE WHEN x <> 0 THEN 1 / x END` safe. two exceptions are worth knowing.
+
+constant expressions get simplified when the query is planned, before any row is read. `1 / 0` is a constant, so planning it fails even if no row would ever reach that branch:
+
+```sql run db=shop expect=error
+SELECT CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END
+FROM products;
+```
+
+every product has an id over 0, and it still fails. and aggregates inside a CASE are computed for the whole group up front, before the CASE looks at anything, so a CASE can't stop an aggregate from dividing by zero. keep dangerous arithmetic out of constants, and put the guard (a `nullif`) inside the aggregate, not around it.
+</Deep>
+
+<Interview q="what's the difference between COALESCE and NULLIF?">
+COALESCE(a, b, ...) returns the first argument that isn't NULL, so it fills in missing values. NULLIF(a, b) returns NULL if a equals b and a otherwise, so it turns a specific value into a missing one. they combine: coalesce(nullif(city, ''), 'unknown') treats an empty string like a missing city. bonus point: both are shorthand for CASE, and both are standard SQL, unlike ifnull or nvl. and the most common NULLIF of all is the divide-by-zero guard: x / nullif(y, 0).
+</Interview>
+
+<Keylines>
+- CASE tries its WHENs in order and stops at the first true one. no match and no ELSE gives NULL.
+- put the narrow tests first: later rungs only see rows that failed the earlier ones.
+- CASE x WHEN NULL never fires. use CASE WHEN x IS NULL.
+- COALESCE returns the first non-NULL argument. '' and 0 aren't NULL.
+- NULLIF(a, b) makes a value NULL: empty strings, and divisors that might be zero.
+</Keylines>

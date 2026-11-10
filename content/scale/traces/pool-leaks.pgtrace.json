@@ -1,0 +1,115 @@
+{
+ "v": 1,
+ "scenario": "content/scale/traces/pool-leaks.scenario.sql",
+ "title": "two server connections behind a transaction pooler, and the session state that leaks between clients",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["c1","c2"],
+ "rels": {
+  "orders": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"total","type":"numeric"}]},
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"}
+ },
+ "base": {"xid":759,"lsn":23190160},
+ "setup": "CREATE TABLE orders (id int PRIMARY KEY, total numeric(10,2) NOT NULL);\nINSERT INTO orders VALUES (1, 19.99), (2, 5.00);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "c1",
+   "sql": "SET statement_timeout = '50ms'",
+   "note": "alice is on c1. she sets a statement timeout for her session, she thinks.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "c1",
+   "sql": "PREPARE order_total(int) AS SELECT total FROM orders WHERE id = $1",
+   "note": "still on c1, she prepares a statement to run later.",
+   "status": "ok",
+   "result": {"command":"PREPARE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "c1",
+   "sql": "SELECT pg_advisory_lock(42)",
+   "note": "and takes a session-level advisory lock, as a mutex for a cron job.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_lock","type":"void"}],"data":[[""]]},
+   "locks": [{"session":"c1","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 3,
+   "session": "c1",
+   "sql": "SHOW statement_timeout",
+   "note": "her transaction is over, so the pooler gives c1 to bob. bob never set a timeout, but he has alice's.",
+   "status": "ok",
+   "result": {"command":"SHOW","rows":null,"columns":[{"name":"statement_timeout","type":"text"}],"data":[["50ms"]]}
+  },
+  {
+   "i": 4,
+   "session": "c2",
+   "sql": "EXECUTE order_total(1)",
+   "note": "alice's next transaction lands on c2, which never saw her PREPARE.",
+   "status": "error",
+   "error": {"sqlstate":"26000","message":"prepared statement \"order_total\" does not exist"}
+  },
+  {
+   "i": 5,
+   "session": "c2",
+   "sql": "SELECT pg_advisory_unlock(42)",
+   "note": "she tries to release her lock from c2. there is nothing to release here: the lock belongs to c1.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_advisory_unlock","type":"bool"}],"data":[["f"]]},
+   "locks": [{"session":"c1","type":"advisory","target":"0:42:1","mode":"ExclusiveLock","granted":true}]
+  },
+  {
+   "i": 6,
+   "session": "c2",
+   "sql": "SELECT pg_try_advisory_lock(42)",
+   "note": "and nobody else can take it, from any connection but c1, until c1 lets go.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_try_advisory_lock","type":"bool"}],"data":[["f"]]}
+  },
+  {
+   "i": 7,
+   "session": "c1",
+   "sql": "DISCARD ALL",
+   "note": "what a pooler runs between clients in session mode (server_reset_query): DISCARD ALL wipes settings, prepared statements and session locks.",
+   "status": "ok",
+   "result": {"command":"DISCARD ALL","rows":null,"columns":[],"data":[]},
+   "locks": []
+  },
+  {
+   "i": 8,
+   "session": "c1",
+   "sql": "SHOW statement_timeout",
+   "note": "the next client on c1 starts clean.",
+   "status": "ok",
+   "result": {"command":"SHOW","rows":null,"columns":[{"name":"statement_timeout","type":"text"}],"data":[["0"]]}
+  }
+ ]
+}

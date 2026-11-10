@@ -1,0 +1,228 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "2ac1920d1c524b73": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT name, city FROM customers WHERE id = 42;\nEXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT name, city FROM customers WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "00cb3f6538d4c599",
+          "rows": [
+            ["Index Scan using customers_pkey on customers (actual rows=1.00 loops=1)"],
+            ["  Index Cond: (id = 42)"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared read=3"],
+            ["Planning:"],
+            ["  Buffers: shared hit=42 read=4 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "fcdadcb56c139888",
+          "rows": [
+            ["Index Scan using customers_pkey on customers (actual rows=1.00 loops=1)"],
+            ["  Index Cond: (id = 42)"],
+            ["  Index Searches: 1"],
+            ["  Buffers: shared hit=3"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f5788bfb41c36bde": {
+      "db": "shop",
+      "sql": "SELECT name, city FROM customers WHERE id = 42;\nSELECT c.relname, b.relblocknumber AS block, b.usagecount, b.isdirty, b.pinning_backends\nFROM pg_buffercache b\nJOIN pg_class c ON c.relfilenode = b.relfilenode\nWHERE c.relname IN ('customers', 'customers_pkey', 'customers_email_key')\n  AND b.relforknumber = 0\nORDER BY c.relname, block;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "09c4ee8b535ce504",
+          "rows": [
+            ["Ada Lovelace", "London"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["block", "int8", 20],
+            ["usagecount", "int2", 21],
+            ["isdirty", "bool", 16],
+            ["pinning_backends", "int4", 23]
+          ],
+          "rowCount": 5,
+          "digest": "44475b9f4e357e6d",
+          "rows": [
+            ["customers", "0", "1", "f", "0"],
+            ["customers_email_key", "0", "1", "f", "0"],
+            ["customers_pkey", "0", "1", "f", "0"],
+            ["customers_pkey", "1", "1", "f", "0"],
+            ["customers_pkey", "3", "1", "f", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "8078eb1afb906bb8": {
+      "db": "shop",
+      "sql": "SHOW shared_buffers;\nSELECT buffers_used, buffers_unused, buffers_dirty, buffers_pinned\nFROM pg_buffercache_summary();",
+      "statements": [
+        {
+          "tag": "SHOW",
+          "command": "SHOW",
+          "columns": [
+            ["shared_buffers", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "2c10687bf030554b",
+          "rows": [
+            ["128MB"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["buffers_used", "int4", 23],
+            ["buffers_unused", "int4", 23],
+            ["buffers_dirty", "int4", 23],
+            ["buffers_pinned", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "cb23a1dec9e80109",
+          "rows": [
+            ["298", "16086", "55", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "99329b7d3fbbda3e": {
+      "db": "events",
+      "sql": "BEGIN;\nDECLARE c CURSOR FOR SELECT id FROM events;\nFETCH 1 FROM c;\nSELECT b.relblocknumber AS block, b.pinning_backends, b.usagecount\nFROM pg_buffercache b\nWHERE b.relfilenode = pg_relation_filenode('events') AND b.pinning_backends > 0;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "DECLARE CURSOR",
+          "command": "DECLARE CURSOR",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bcc103186e3599c8"
+        },
+        {
+          "tag": "FETCH 1",
+          "command": "FETCH",
+          "columns": [
+            ["id", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "443134c4553663e0",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["block", "int8", 20],
+            ["pinning_backends", "int4", 23],
+            ["usagecount", "int2", 21]
+          ],
+          "rowCount": 1,
+          "digest": "9edfbef9b8a7bc2f",
+          "rows": [
+            ["0", "1", "1"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "753270741c360f16"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "318580d961197f51": {
+      "db": "shop",
+      "sql": "UPDATE customers SET city = 'Paris' WHERE id = 42;\nSELECT CASE b.relforknumber WHEN 0 THEN 'main' WHEN 1 THEN 'fsm' ELSE 'vm' END AS fork,\n       b.relblocknumber AS block, b.isdirty\nFROM pg_buffercache b\nWHERE b.relfilenode = pg_relation_filenode('customers') AND b.isdirty\nORDER BY fork, block;\nCHECKPOINT;\nSELECT count(*) FILTER (WHERE b.isdirty) AS dirty, count(*) AS frames\nFROM pg_buffercache b\nWHERE b.relfilenode = pg_relation_filenode('customers');",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "d4149e3cbcb8aced"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["fork", "text", 25],
+            ["block", "int8", 20],
+            ["isdirty", "bool", 16]
+          ],
+          "rowCount": 3,
+          "digest": "70bdbe458e2db1a7",
+          "rows": [
+            ["main", "0", "t"],
+            ["main", "23", "t"],
+            ["vm", "0", "t"]
+          ]
+        },
+        {
+          "tag": "CHECKPOINT",
+          "command": "CHECKPOINT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "15024938cb3e2aa3"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["dirty", "int8", 20],
+            ["frames", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "28c5a5080351af96",
+          "rows": [
+            ["0", "6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

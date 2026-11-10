@@ -1,0 +1,163 @@
+import { ZoneRulers } from "@/components/figures/types/ZoneRulers";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf, runsOf, valueOf } from "@/lib/db/captured";
+import trace from "./traces/timestamptz.pgtrace.json";
+
+{/* the rulers, the clock-change table and the AT TIME ZONE switch read
+    traces/timestamptz.scenario.sql, captured on PGlite with the shop dataset. customer 12 signed
+    up at 01:30 UTC on 2026-03-29, half an hour after europe's clocks went forward. */}
+
+export const zones = [
+  { zone: "UTC", printed: valueOf(trace, 0), note: "TimeZone = UTC: postgres prints the instant as it stores it. +00 is the offset it printed it in, not something stored with the value." },
+  { zone: "Asia/Kolkata", printed: valueOf(trace, 1), note: "india is five and a half hours ahead all year, so the clock says 07:00. same row, same bytes on disk; only the printing changed." },
+  { zone: "Europe/Paris", printed: valueOf(trace, 2), note: "paris had just changed its clocks: at 01:00 UTC the wall clock jumped from 02:00 to 03:00, so half an hour later it says 03:30, and the offset is +02 where it was +01 an hour before." },
+  { zone: "America/New_York", printed: valueOf(trace, 3), note: "new york is four hours behind (its clocks changed two weeks earlier), so it's still saturday evening there. ask for this customer's signup date in new york and you get the 28th." },
+];
+export const ticks = resultOf(trace, 4).rows;
+export const gap = resultOf(trace, 5);
+export const gapTones = gap.rows.map((r) => (r[0] !== r[1].slice(0, 16) ? "hot" : null));
+export const at = runsOf(trace, ["timestamptz AT TIME ZONE", "timestamp AT TIME ZONE", "timestamptz::timestamp", "timestamp::timestamptz"], 6);
+export const source = prov(trace);
+
+<InShort>
+a **timestamptz** stores an **instant**, a point on the world's one timeline, as UTC. it doesn't store a time zone. the session's **TimeZone** setting decides how it's read from text and printed back. a plain **timestamp** is a wall-clock reading with no zone at all.
+
+**AT TIME ZONE** converts between the two, and a clock change makes some wall times happen twice and others never.
+</InShort>
+
+## the picture
+
+you know how "with time zone" sounds like the value carries its zone around? it doesn't. `timestamp with time zone` stores no zone at all. it stores a moment, and *prints* it in whatever zone your session says. the type with "without time zone" in its name is the one that's missing something.
+
+think of a photo of the sky at one instant. ask people in four cities what their clock said when it was taken, and you get four answers, all correct. the photo is the timestamptz. the four clocks are four TimeZone settings printing it.
+
+<Figure wide caption={<>one signup, one stored value, four sessions. pick a TimeZone: the query and the stored bytes never change, only the printing does. the <C k="hot">line</C> is the instant. the dashed cut is where paris's clock jumped from 02:00 to 03:00.</>}>
+<ZoneRulers zones={zones} ticks={ticks} instant={valueOf(trace, 0)} trace={source} />
+</Figure>
+
+## it stores an instant
+
+here's that customer, under two settings. the value doesn't move; the text does:
+
+```sql run db=shop
+SET TimeZone = 'UTC';
+SELECT name, created_at FROM customers WHERE id = 12;
+SET TimeZone = 'Asia/Kolkata';
+SELECT name, created_at FROM customers WHERE id = 12;
+```
+
+01:30 in UTC, 07:00 in Kolkata, the same 8 bytes on disk. the zone is applied on the way in, when text becomes a timestamptz, and on the way out, when it's printed:
+
+- **in**: if the text has an offset or a zone name (`+05:30`, `Europe/Paris`), that's used. if not, the session's TimeZone is.
+- **out**: always the session's TimeZone, with the offset printed after it.
+
+a plain `timestamp` skips both steps. and it doesn't complain if you hand it an offset; it just drops it:
+
+```sql run
+SET TimeZone = 'UTC';
+SELECT timestamp   '2026-03-29 01:30+05:30' AS plain,
+       timestamptz '2026-03-29 01:30+05:30' AS with_tz;
+```
+
+the timestamp kept the wall clock and threw the `+05:30` away. the timestamptz used it to find the instant, 20:00 UTC the evening before.
+
+so: **timestamptz for things that happened** (an order, a login, an event), because what you want later is "when", and you'll want to print it in whichever zone the reader is in. a plain timestamp only for wall-clock times that aren't instants yet: "the shop opens at 09:00, local". a birthday is a `date`.
+
+## AT TIME ZONE, both ways
+
+`AT TIME ZONE` is the converter, and it goes in both directions depending on what you hand it. that's the classic confusion: the same words, opposite jobs.
+
+<Figure caption={<>four conversions of 01:30. pick one and watch the result type. AT TIME ZONE on a timestamptz gives the wall clock in that zone; on a timestamp, it reads the wall clock as that zone's and gives the instant. the plain casts use the session's zone, UTC here.</>}>
+<RunPick options={[{ key: "convert", values: ["timestamptz AT TIME ZONE", "timestamp AT TIME ZONE", "timestamptz::timestamp", "timestamp::timestamptz"] }]} runs={at} hot={["AT TIME ZONE 'Asia/Kolkata'", "::timestamptz", "::timestamp"]} file="convert.sql" trace={source} />
+</Figure>
+
+<Predict options={["2026-03-29 07:00:00+00", "2026-03-28 20:00:00+00", "2026-03-29 01:30:00+05:30"]} answer={1}>
+```sql
+SET TimeZone = 'UTC';
+SELECT timestamp '2026-03-29 01:30' AT TIME ZONE 'Asia/Kolkata';
+```
+<Explain>
+a timestamp has no zone, so AT TIME ZONE tells postgres which zone that wall clock was in: "01:30 in Kolkata". that's 20:00 UTC the evening before, a timestamptz, printed in the session's zone. going the other way (a timestamptz AT TIME ZONE 'Asia/Kolkata') would give 07:00, a plain timestamp.
+</Explain>
+</Predict>
+
+a handy reading: `instant AT TIME ZONE z` asks "what did the clocks in z say?", and `wall_clock AT TIME ZONE z` asks "when was it, if that was a clock in z?"
+
+## the hour that never happened
+
+on 2026-03-29 at 01:00 UTC, paris moved its clocks from 02:00 straight to 03:00. a paris wall time between 02:00 and 03:00 doesn't exist that day. type one in anyway:
+
+<Figure caption={<>paris wall times typed into a timestamptz with TimeZone = Europe/Paris. the two that <C k="hot">don't exist</C> aren't rejected: postgres reads them with the offset from before the change (+01), which lands them an hour later, on the same instants as 03:00 and 03:30.</>}>
+<ResultTable columns={gap.columns.map((c) => c.name)} rows={gap.rows} rowTones={gapTones} />
+<Provenance trace={source} />
+</Figure>
+
+no error, no warning. 02:30 becomes 03:30, and two different inputs now mean the same moment. if you store wall times typed by people, validate them in the zone they meant, or store the instant they meant, not what they typed.
+
+in october it goes the other way. on 2026-10-25 paris sets its clocks back from 03:00 to 02:00, so 02:30 happens twice. postgres picks the second one, after the change, at +01:
+
+```sql run
+SET TimeZone = 'Europe/Paris';
+SELECT timestamptz '2026-10-25 02:30'             AS typed,
+       timestamptz '2026-10-25 00:30+00'          AS first_0230,
+       timestamptz '2026-10-25 01:30+00'          AS second_0230;
+```
+
+the first 02:30 can only be written with its offset (`02:30+02`), or as UTC.
+
+<Predict options={["the same: 24 hours later", "1 day: 12:00 the next day", "24 hours: 13:00 the next day"]} answer={2}>
+```sql
+SET TimeZone = 'Europe/Paris';
+SELECT timestamptz '2026-03-28 12:00' + interval '1 day',
+       timestamptz '2026-03-28 12:00' + interval '24 hours';
+```
+<Explain>
+different. `1 day` moves the calendar: same wall-clock time tomorrow, 12:00, which is only 23 real hours later because the clocks jumped overnight. `24 hours` moves the clock by 24 real hours, which reads 13:00.
+</Explain>
+</Predict>
+
+the interval's day field and its time field are [kept apart](/learn/types/dates-and-intervals) for exactly this:
+
+```sql run
+SET TimeZone = 'Europe/Paris';
+SELECT timestamptz '2026-03-28 12:00' + interval '1 day'    AS plus_day,
+       timestamptz '2026-03-28 12:00' + interval '24 hours' AS plus_24h;
+```
+
+`1 day` means "same wall-clock time tomorrow", in the session's zone, so it lands at 12:00 after only 23 real hours. `24 hours` means 24 hours, so the clock reads 13:00. both are right, for different questions.
+
+## the day depends on where you stand
+
+anything that turns an instant into a calendar day, `::date`, `date_trunc('day', ...)`, `extract(day ...)`, does it in the session's zone. the same customers, counted per day, in two places:
+
+```sql run db=shop
+SET TimeZone = 'UTC';
+SELECT count(*) AS signed_up_on_the_29th FROM customers WHERE created_at::date = '2026-03-29';
+SET TimeZone = 'America/New_York';
+SELECT count(*) AS signed_up_on_the_29th FROM customers WHERE created_at::date = '2026-03-29';
+```
+
+1 in UTC, 0 in new york, where Ravi signed up on the 28th. that's why an index on `created_at::date` isn't allowed: its value depends on a setting. ([expression indexes](/learn/indexes/partial-and-expression) shows the error and the fix: name the zone in the expression.) for daily reports, decide whose days they are and say it: `(created_at AT TIME ZONE 'Europe/Paris')::date`. generate_series has the same issue with daily steps, and a fourth argument for the zone ([generate_series](/learn/analytics/generate-series)).
+
+<Gotcha title="'UTC+5' is five hours behind">
+`SET TimeZone = 'UTC+5'` looks like india-ish. it's a POSIX zone string, and POSIX counts the other way, positive meaning *west* of Greenwich:
+
+```sql run
+SET TimeZone = 'UTC+5';
+SELECT timestamptz '2026-01-01 12:00+00' AS noon_utc;
+```
+
+07:00, five hours *behind*. use names from the zone database (`Asia/Kolkata`, `America/New_York`), which also know about clock changes, or an ISO offset in a value (`+05:30`), which means what it says.
+</Gotcha>
+
+<Interview q="what's the difference between timestamp and timestamptz?">
+timestamptz stores an absolute instant (internally UTC), converting input from the session's TimeZone (or the offset given) and printing in the session's TimeZone. timestamp stores a wall-clock reading with no zone and does no conversion at all, even dropping an offset you give it. both take 8 bytes and neither stores a zone. use timestamptz for anything that happened at a moment. bonus point: AT TIME ZONE converts timestamptz to the wall clock in a zone, and a wall clock (timestamp) to the instant it was in a zone, and anything that derives a date from a timestamptz depends on the session's zone, so it can't be indexed directly.
+</Interview>
+
+<Keylines>
+- timestamptz stores an instant, not a zone. TimeZone only changes how it's read and printed.
+- timestamp is a wall clock with no zone, and it silently drops an offset you give it.
+- instant AT TIME ZONE z gives z's wall clock; wall clock AT TIME ZONE z gives the instant.
+- a clock change skips some wall times and repeats others, and postgres doesn't complain.
+- turning an instant into a day needs a zone. say which one.
+</Keylines>

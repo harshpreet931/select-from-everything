@@ -1,0 +1,159 @@
+import { PivotFlip } from "@/components/figures/analytics/PivotFlip";
+import { FilterSees } from "@/components/figures/analytics/FilterSees";
+import { resultOf, runsOf, prov } from "@/lib/db/captured";
+import trace from "./traces/filter-and-pivots.pgtrace.json";
+
+{/* the pivot, the which-rows-count table and the spelling switch read
+    traces/filter-and-pivots.scenario.sql, captured on PGlite against shop's orders. */}
+
+export const long = resultOf(trace, 0);
+export const wide = resultOf(trace, 1);
+export const ada = resultOf(trace, 2);
+export const adaCounts = resultOf(trace, 3);
+export const S = ["FILTER", "sum(CASE ... ELSE 0)", "count(CASE ... END)", "count(CASE ... ELSE 0)"];
+export const spellings = runsOf(trace, S, 4);
+
+<InShort>
+**FILTER (WHERE ...)** after an aggregate makes it look at only the rows where the condition holds: `count(*) FILTER (WHERE status = 'cancelled')`. several of them side by side, one per value, turn rows into columns: that's a **pivot**.
+
+before FILTER there was `sum(CASE WHEN ... THEN 1 ELSE 0 END)`, which still works, and has a near twin that gives the wrong answer.
+</InShort>
+
+## the picture
+
+you know how GROUP BY month, status gives you a tall list (march, cancelled, 18; march, delivered, 834; ...) and the person asking wanted a table with months down the side and statuses across the top? that's the same numbers, turned. SQL doesn't have a "turn" button, but each column of the wide table is just a count with a condition on it.
+
+think of a mail sorter's desk with a row of trays, one per status. every order from march goes past the trays, and each tray only catches its own kind. the trays are the FILTER clauses; the month is the GROUP BY.
+
+<Figure wide caption={<>pick a column of the wide table. the <C k="hot">long rows</C> that feed it light up: each FILTER column is the long table's rows for its status, laid side by side. june is the only month still in flight, so <code>in_flight</code> collects three statuses there and nothing anywhere else.</>}>
+<PivotFlip
+  long={long}
+  wide={wide}
+  feeds={{ delivered: ["delivered"], in_flight: ["placed", "paid", "shipped"], cancelled: ["cancelled"], refunded: ["refunded"] }}
+  notes={{
+    delivered: "one long row per month becomes one cell per month. 834 in march, both ways.",
+    in_flight: "a FILTER can take any condition, so one column can collect several statuses: placed, paid and shipped. 62 + 51 + 120 = 233 in june. the other months have no such rows, and count gives 0, not NULL.",
+    cancelled: "cancelled orders: 18, 23, 27, 18. the same numbers as the long table's cancelled rows.",
+    refunded: "refunded orders, a handful a month.",
+  }}
+  trace={prov(trace)}
+/>
+</Figure>
+
+## FILTER
+
+the FILTER clause goes right after an aggregate and takes a WHERE condition. the aggregate then sees only the rows of its group where that condition is true:
+
+```sql run db=shop
+SELECT date_trunc('month', ordered_at)::date AS month,
+       count(*) FILTER (WHERE status = 'delivered') AS delivered,
+       count(*) FILTER (WHERE status IN ('placed', 'paid', 'shipped')) AS in_flight,
+       count(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+       count(*) FILTER (WHERE status = 'refunded') AS refunded
+FROM orders
+WHERE ordered_at >= '2026-03-01'
+GROUP BY 1
+ORDER BY 1;
+```
+
+the important word is *only*. the query's WHERE decides which rows exist at all (orders since march). each FILTER decides which of those rows one aggregate counts, without touching the others. every aggregate in a row can have its own:
+
+<Figure wide caption={<>Ada Lovelace's seven orders, and for each aggregate whether its FILTER is true for the row (✓). pick one: the rows it <C k="live">counted</C> are tinted, the rows its FILTER kept out are struck. the bottom row is what postgres returned.</>}>
+<FilterSees
+  rows={ada}
+  result={adaCounts}
+  show={2}
+  notes={{
+    "count(*)": "no FILTER: count(*) counts every row of the group.",
+    delivered: "four of her orders were delivered. the cancelled, refunded and placed ones are invisible to this count, and only to this one.",
+    in_flight: "one order, placed and not yet paid, is in flight.",
+    cancelled: "one cancelled order. the same rows, a different FILTER, a different count.",
+  }}
+  trace={prov(trace)}
+/>
+</Figure>
+
+FILTER works on any aggregate, not just count: `sum(amount) FILTER (WHERE kind = 'purchase')`, `avg(price) FILTER (WHERE NOT discontinued)`, `string_agg(name, ', ' ORDER BY name) FILTER (WHERE ...)`. it's in the SQL standard and in postgres since 9.4. not every engine has it, which is one reason the CASE spelling is everywhere.
+
+## the CASE spellings
+
+before FILTER, you'd put the condition inside the aggregate, with CASE turning each row into "something" or "nothing":
+
+<Figure wide caption={<>four spellings of "cancelled orders per month". the first three agree. the fourth counts every order, because <code>ELSE 0</code> gives count a value to count.</>}>
+<RunPick options={[{ key: "spelling", values: S }]} runs={spellings} hot={["FILTER (WHERE status = 'cancelled')", "THEN 1 ELSE 0 END", "THEN 1 END"]} trace={prov(trace)} />
+</Figure>
+
+the trap is in what each aggregate skips. `sum` adds the 1s and the 0s, so ELSE 0 is harmless there. `count` counts every value that isn't NULL, and 0 isn't NULL. leave the ELSE off and CASE gives NULL for the other rows, which count skips: correct. write `ELSE 0` out of habit and count counts everything ([aggregates](/learn/basics/aggregates) has the NULL-skipping rule).
+
+<Predict options={["the 18 cancelled ones", "all 859 orders", "0"]} answer={1}>
+```sql
+SELECT count(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END)
+FROM orders
+WHERE ordered_at >= '2026-03-01' AND ordered_at < '2026-04-01';
+```
+<Explain>
+all 859. every order produces either a 1 or a 0, and count counts values that aren't NULL, so it counts all of them. sum would have added them up to 18. FILTER doesn't have this trap at all, which is the best argument for it: the condition says which rows, and the aggregate does what its name says.
+</Explain>
+</Predict>
+
+and a FILTERed count is 0 when no row matches, while `sum(CASE WHEN ... THEN 1 END)` with no ELSE is NULL. that difference shows up in the empty cells of a pivot:
+
+```sql run db=shop
+SELECT date_trunc('month', ordered_at)::date AS month,
+       count(*) FILTER (WHERE status = 'paid') AS paid_filter,
+       sum(CASE WHEN status = 'paid' THEN 1 END) AS paid_sum_case
+FROM orders
+WHERE ordered_at >= '2026-04-01'
+GROUP BY 1
+ORDER BY 1;
+```
+
+april and may had no paid orders left: FILTER says 0, the sum says NULL. if you need the sum spelling, wrap it in `coalesce(..., 0)`.
+
+## pivots, and their one real limit
+
+a pivot in SQL is "one FILTER per column you want". which means you have to know the columns when you write the query: a SQL query's result columns are fixed before it reads a single row. a new status next month gets no column until someone adds one.
+
+that's the limit everyone hits, and the ways around it all move the turning somewhere else:
+
+- **write the columns out.** fine when the values are a known, short list (statuses, quarters, a few regions).
+- **generate the query.** read the distinct values first, then build the SELECT in application code or with `format()` in PL/pgSQL. dynamic SQL, with all the quoting care that implies ([parameters and injection](/learn/writes/parameters-and-injection)).
+- **pivot in the client.** return the long table and let the spreadsheet, chart library or psql do it: psql's `\crosstabview` turns a long result into a grid on screen.
+- **crosstab()** from the `tablefunc` extension takes a query for the long table and returns a wide one, but you still have to declare the output columns in the call. (it isn't in this page's browser engine.)
+
+going the other way, wide to long (unpivot), is easier: a `CROSS JOIN LATERAL (VALUES ...)` that turns each row into one row per column:
+
+```sql run db=shop
+WITH wide AS (
+  SELECT date_trunc('month', ordered_at)::date AS month,
+         count(*) FILTER (WHERE status = 'delivered') AS delivered,
+         count(*) FILTER (WHERE status = 'cancelled') AS cancelled
+  FROM orders
+  WHERE ordered_at >= '2026-05-01'
+  GROUP BY 1
+)
+SELECT w.month, v.status, v.n
+FROM wide AS w
+CROSS JOIN LATERAL (VALUES ('delivered', w.delivered), ('cancelled', w.cancelled)) AS v (status, n)
+ORDER BY w.month, v.status;
+```
+
+([LATERAL joins](/learn/joins/lateral-joins) is why `VALUES` can see `w`.)
+
+<Gotcha title="FILTER is not WHERE">
+moving a condition from FILTER to WHERE changes the question. `WHERE status = 'cancelled'` removes the other rows from the whole query, so every other aggregate (and every group with no cancelled orders) is gone too. FILTER keeps the rows and narrows one aggregate. if all your aggregates share the same condition, it belongs in WHERE; if each has its own, it's FILTER.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/sql-expressions.html#SYNTAX-AGGREGATES" title="aggregate expressions">the grammar for aggregate calls, FILTER included: only the input rows for which the filter clause is true are fed to the aggregate function, the others are discarded.</Docs>
+
+<Interview q="how do you turn rows into columns in SQL?">
+group by the row key and write one conditional aggregate per output column: `count(*) FILTER (WHERE status = 'paid') AS paid` in postgres, or `sum(CASE WHEN status = 'paid' THEN 1 ELSE 0 END)` in engines without FILTER. the columns have to be known when the query is written, so a truly dynamic pivot needs dynamic SQL, crosstab, or the client. bonus point: `count(CASE WHEN ... THEN 1 ELSE 0 END)` counts every row, because 0 isn't NULL; leave the ELSE off for count, or just use FILTER.
+</Interview>
+
+<Keylines>
+- FILTER (WHERE ...) narrows one aggregate to the rows where the condition holds.
+- one FILTERed aggregate per column turns a long result wide: a pivot.
+- count(CASE ... ELSE 0 END) counts everything. no ELSE for count, or use FILTER.
+- a FILTERed count says 0 for no rows; a sum of CASE says NULL.
+- result columns are fixed when the query is written, so dynamic pivots need dynamic SQL or the client.
+</Keylines>

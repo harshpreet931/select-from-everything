@@ -1,0 +1,156 @@
+import { SwitchPlans } from "@/components/figures/optimizer/SwitchPlans";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import trace from "./traces/switches.pgtrace.json";
+
+{/* the switch figure reads traces/switches.scenario.sql, captured on PGlite with the shop
+    dataset (`pnpm pgtrace <file> --engine=pglite --twice`): steps 0-3 are the same join's text
+    EXPLAIN under four sets of enable_* switches. */}
+
+<InShort>
+core postgres has **no query hints**. you can't write "use this index" next to a query. what you can change are the planner's **inputs**: statistics, cost settings, the `enable_*` switches, and the shape of the query itself, at the level of a server, a tablespace, a database, a role, a function, a session or a single transaction.
+
+the switches don't forbid anything: postgres 18 just avoids **disabled** plans when it has another choice, and prints `Disabled: true` when it doesn't.
+</InShort>
+
+## the picture
+
+you know how other databases let you write `/*+ INDEX(orders) */` and postgres people tell you to fix your statistics instead? it's a deliberate choice: a hint is frozen while the data changes, and postgres would rather you fix what made the planner wrong.
+
+think of a sat-nav. you can't tell it "take this road" (no hints). you can tell it a road is closed (an enable_* switch), that tolls are expensive (a cost setting), give it a better map (statistics), or pick a different destination that means the same (a rewrite). it still picks the route.
+
+here's what the switches do to one join:
+
+<Figure wide caption={<>the paris join from <a href="/learn/execution/reading-explain">reading EXPLAIN</a> with join methods switched off one by one. each step down is the planner's next-best plan, and the bars are its own estimate of how much worse. with all three off it still produces a nested loop, marked <C k="dead">Disabled: true</C>.</>}>
+<SwitchPlans trace={trace} keys={["none", "hash join", "hash + merge", "all three"]} from={0} k="turned off" />
+</Figure>
+
+## the enable_* switches
+
+```sql run
+SELECT name, setting FROM pg_settings WHERE name LIKE 'enable%' ORDER BY name;
+```
+
+one per plan node type or technique: scans (seqscan, indexscan, indexonlyscan, bitmapscan, tidscan), joins (nestloop, hashjoin, mergejoin), sorts and aggregation (sort, incremental_sort, hashagg), memoize, material, parallel plans, partition pruning and partitionwise joins, and a few more.
+
+turning one off doesn't remove the option. before postgres 18, a disabled path got a huge cost penalty (1e10). since 18, the planner counts disabled nodes in each path and compares that count before cost, so a plan with fewer disabled nodes always wins, and when every option is disabled you still get the cheapest of them, with `Disabled: true` on the nodes that broke the rule:
+
+```sql run db=shop
+SET enable_seqscan = off;
+EXPLAIN SELECT * FROM products WHERE name = 'left-handed teapot';
+RESET enable_seqscan;
+```
+
+no index on name, so there's nothing else to do but read the table, and the plan says so.
+
+the switches are a diagnostic: "what would the plan be without a hash join, and how much worse does postgres think it is?" they're too blunt for production, because they apply to every join in every query of the session.
+
+<Predict question="SET enable_indexscan = off; on a query whose only sensible plan is an index scan. what happens?" options={["an error", "a seq scan or bitmap scan instead", "the index scan, marked Disabled"]} answer={1}>
+```sql
+SET enable_indexscan = off;
+EXPLAIN SELECT * FROM orders WHERE id = 42;
+```
+<Explain>
+another plan: here a bitmap scan of the same index, which isn't disabled (enable_bitmapscan is a separate switch). Disabled: true only shows up when every alternative is disabled too. the switch moved the planner to its next-best idea, and that's all it can do.
+</Explain>
+</Predict>
+
+```sql run db=shop
+SET enable_indexscan = off;
+EXPLAIN SELECT * FROM orders WHERE id = 42;
+RESET enable_indexscan;
+```
+
+## cost settings, at the right level
+
+[the cost model](/learn/optimizer/cost-model)'s settings describe hardware, and every one can be set at the level it's true for:
+
+```sql run db=shop
+ALTER TABLESPACE pg_default SET (random_page_cost = 1.1);
+CREATE ROLE reporting;
+ALTER ROLE reporting SET work_mem = '64MB';
+ALTER ROLE reporting SET plan_cache_mode = force_custom_plan;
+SELECT spcname, spcoptions FROM pg_tablespace ORDER BY spcname;
+SELECT r.rolname, s.setconfig
+FROM pg_db_role_setting AS s JOIN pg_roles AS r ON r.oid = s.setrole
+ORDER BY r.rolname;
+ALTER TABLESPACE pg_default RESET (random_page_cost);
+DROP ROLE reporting;
+```
+
+(the last two lines put things back: a tablespace and a role belong to the whole server, not to one database.)
+
+<Figure caption={<>where a planner setting can live, from widest to narrowest. a narrower level overrides a wider one. the ones in <C k="live">live</C> are where hardware and workload facts belong; the session and transaction levels are for experiments and the odd report.</>}>
+<Tree>{`
+server #live             // postgresql.conf, ALTER SYSTEM: the defaults for everything
+    tablespace #live         // ALTER TABLESPACE ... SET (random_page_cost, seq_page_cost, effective_io_concurrency)
+    database           // ALTER DATABASE ... SET work_mem = ...
+        role #live               // ALTER ROLE reporting SET work_mem = '64MB'
+        role in database   // ALTER ROLE ... IN DATABASE ... SET
+            function           // CREATE FUNCTION ... SET plan_cache_mode = force_custom_plan
+            session            // SET enable_nestloop = off
+                transaction        // SET LOCAL ..., gone at COMMIT or ROLLBACK
+`}</Tree>
+<Provenance drawn="the scopes postgres reads settings from" />
+</Figure>
+
+`SET LOCAL` is the safest experiment: it ends with the transaction, so a forgotten switch can't leak into the rest of a pooled connection.
+
+```sql run db=shop
+BEGIN;
+SET LOCAL enable_hashjoin = off;
+SHOW enable_hashjoin;
+COMMIT;
+SHOW enable_hashjoin;
+```
+
+## better inputs
+
+most bad plans are bad estimates, and the estimates have their own controls ([when estimates go wrong](/learn/optimizer/misestimates)):
+
+- **a bigger sample** for a skewed column: `ALTER TABLE … ALTER COLUMN … SET STATISTICS 1000` ([pg_stats and ANALYZE](/learn/optimizer/statistics)).
+- **correlated columns**: `CREATE STATISTICS` ([extended statistics](/learn/optimizer/extended-statistics)).
+- **a distinct count you know better** than the sample can guess: override it, and ANALYZE keeps your number.
+
+```sql run db=shop
+ALTER TABLE orders ALTER COLUMN customer_id SET (n_distinct = 500);
+ANALYZE orders;
+SELECT n_distinct FROM pg_stats WHERE tablename = 'orders' AND attname = 'customer_id';
+```
+
+- **fresh statistics** after bulk changes: ANALYZE, or tune autovacuum's analyze threshold for the table.
+
+## rewrites
+
+the query's shape is yours too. rewrites that steer without lying to the planner:
+
+- **join order**: with `join_collapse_limit = 1` (per transaction, with SET LOCAL), explicit JOINs are joined in the order written ([join order search](/learn/optimizer/join-ordering)).
+- **a fence**: `WITH … AS MATERIALIZED` or `OFFSET 0` computes a subquery on its own, so a misestimate inside it can't poison the join order outside ([how subqueries get planned](/learn/optimizer/subquery-planning)).
+- **a predicate the statistics can see**: `kind = 'view'`, not `lower(kind) = 'view'`; `created_at >= '2026-04-01'`, not `date(created_at) >= …`.
+- **keep an index out of it**: an expression on the column, the oldest trick there is.
+
+```sql run db=shop
+EXPLAIN SELECT * FROM customers WHERE id = 42;
+EXPLAIN SELECT * FROM customers WHERE id + 0 = 42;
+```
+
+the second can't use the primary key, and its estimate falls back to the 0.005 default (10 rows instead of 1). that's the cost of tricks: they work by hiding information, so they make estimates worse too. reach for them last, and leave a comment.
+
+<Deep title="pg_hint_plan">
+hints exist as an extension: `pg_hint_plan` reads comments like `/*+ IndexScan(orders) HashJoin(c o) */` and forces scan methods, join methods and join order. it's widely used, and it's not part of postgres: you install it, and you own the hints when the data changes under them. the core answer is still: fix the estimate, then the costs, then the query.
+</Deep>
+
+<Gotcha title="a setting that fixed one query breaks another">
+`SET random_page_cost = 1` in a session to rescue one report, and every other query on that connection is planned for imaginary hardware. through a connection pooler, "that connection" is someone else's next request. prefer SET LOCAL, a role or a function, and write down why.
+</Gotcha>
+
+<Interview q="postgres has no hints. how do you force a plan?">
+mostly you don't: you fix why the planner chose wrong. check estimated vs actual rows; fix statistics (ANALYZE, a higher statistics target, CREATE STATISTICS, an n_distinct override); set cost settings that match the hardware, per tablespace or role. to test a theory, enable_* switches with SET LOCAL show the next-best plan and its estimated cost (on 18 a disabled node prints Disabled: true). to force structure: join_collapse_limit = 1 for written join order, MATERIALIZED CTEs or OFFSET 0 as fences, rewriting predicates so they use the bare column. bonus point: pg_hint_plan exists as an extension when you truly need hints.
+</Interview>
+
+<Keylines>
+- no hints in core postgres. you change the planner's inputs, not its decision.
+- enable_* switches don't forbid: postgres 18 counts disabled nodes and prints Disabled: true when there's no other way.
+- cost settings belong where they're true: server, tablespace, role. SET LOCAL for experiments.
+- most fixes are estimate fixes: ANALYZE, statistics targets, CREATE STATISTICS, n_distinct overrides.
+- rewrites (join_collapse_limit, fences, sargable predicates) steer the shape. tricks hide information.
+</Keylines>

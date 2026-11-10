@@ -1,0 +1,64 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "062c4d3b3c737b4b": {
+      "db": "lab",
+      "sql": "SELECT pg_size_pretty(pg_relation_size('bloat')) AS before;\nVACUUM bloat;\nSELECT pg_size_pretty(pg_relation_size('bloat')) AS after_vacuum;\nVACUUM FULL bloat;\nSELECT pg_size_pretty(pg_relation_size('bloat')) AS after_vacuum_full;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["before", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "1b1e9982596f3267",
+          "rows": [
+            ["232 kB"]
+          ]
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "3e0b59b8463f41c3"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["after_vacuum", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "694544e40f08f19a",
+          "rows": [
+            ["232 kB"]
+          ]
+        },
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b44fd9ee573101c9"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["after_vacuum_full", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "45d8725214321f18",
+          "rows": [
+            ["120 kB"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

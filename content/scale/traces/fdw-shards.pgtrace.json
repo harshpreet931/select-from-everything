@@ -1,0 +1,160 @@
+{
+ "v": 1,
+ "scenario": "content/scale/traces/fdw-shards.scenario.sql",
+ "title": "events hash-sharded on user_id across two postgres_fdw \"shards\", and what each query sends to them",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"}
+ },
+ "base": {"xid":819,"lsn":33014704},
+ "setup": "DO $$ BEGIN\n  EXECUTE format('CREATE SERVER shard1 FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host %L, port %L, dbname %L)',\n                 current_setting('unix_socket_directories'), current_setting('port'), current_database());\n  EXECUTE format('CREATE SERVER shard2 FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host %L, port %L, dbname %L)',\n                 current_setting('unix_socket_directories'), current_setting('port'), current_database());\nEND $$;\nCREATE USER MAPPING FOR CURRENT_USER SERVER shard1 OPTIONS (user 'postgres');\nCREATE USER MAPPING FOR CURRENT_USER SERVER shard2 OPTIONS (user 'postgres');\nCREATE SCHEMA s1;\nCREATE SCHEMA s2;\nCREATE TABLE s1.events (LIKE events);\nCREATE TABLE s2.events (LIKE events);\nCREATE TABLE ev (LIKE events) PARTITION BY HASH (user_id);\nCREATE FOREIGN TABLE ev_shard1 PARTITION OF ev FOR VALUES WITH (MODULUS 2, REMAINDER 0) SERVER shard1 OPTIONS (schema_name 's1', table_name 'events');\nCREATE FOREIGN TABLE ev_shard2 PARTITION OF ev FOR VALUES WITH (MODULUS 2, REMAINDER 1) SERVER shard2 OPTIONS (schema_name 's2', table_name 'events');\nINSERT INTO s1.events SELECT * FROM events WHERE satisfies_hash_partition('ev'::regclass, 2, 0, user_id) ORDER BY id;\nINSERT INTO s2.events SELECT * FROM events WHERE satisfies_hash_partition('ev'::regclass, 2, 1, user_id) ORDER BY id;\nCREATE INDEX ON s1.events (user_id);\nCREATE INDEX ON s2.events (user_id);\nANALYZE s1.events;\nANALYZE s2.events;\nANALYZE ev;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT tableoid::regclass AS shard, count(*) AS events, count(DISTINCT user_id) AS users\nFROM ev GROUP BY tableoid ORDER BY shard",
+   "note": "how many rows each shard holds.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"shard","type":"regclass"},{"name":"events","type":"int8"},{"name":"users","type":"int8"}],
+    "data": [["ev_shard1","13531","268"],["ev_shard2","11469","232"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "EXPLAIN (VERBOSE, COSTS OFF)\nSELECT count(*) FROM ev WHERE user_id = 17",
+   "note": "a query with the shard key goes to one shard, and the WHERE travels with it.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Aggregate"],
+     ["  Output: count(*)"],
+     ["  ->  Foreign Scan on public.ev_shard1 ev"],
+     ["        Remote SQL: SELECT NULL FROM s1.events WHERE ((user_id = 17))"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "EXPLAIN (VERBOSE, COSTS OFF)\nSELECT count(*) FROM ev WHERE kind = 'purchase'",
+   "note": "without the shard key, every shard gets the query: scatter, then gather.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Aggregate"],
+     ["  Output: count(*)"],
+     ["  ->  Append"],
+     ["        ->  Foreign Scan on public.ev_shard1 ev_1"],
+     ["              Remote SQL: SELECT NULL FROM s1.events WHERE ((kind = 'purchase'))"],
+     ["        ->  Foreign Scan on public.ev_shard2 ev_2"],
+     ["              Remote SQL: SELECT NULL FROM s2.events WHERE ((kind = 'purchase'))"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SET enable_partitionwise_aggregate = on;\nEXPLAIN (VERBOSE, COSTS OFF)\nSELECT user_id, count(*) FROM ev GROUP BY user_id",
+   "note": "grouped by the shard key, with partitionwise aggregation on: each shard runs the GROUP BY itself and sends back only its groups.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Append"],
+     ["  ->  Foreign Scan"],
+     ["        Output: ev.user_id, (count(*))"],
+     ["        Relations: Aggregate on (public.ev_shard1 ev)"],
+     ["        Remote SQL: SELECT user_id, count(*) FROM s1.events GROUP BY 1"],
+     ["  ->  Foreign Scan"],
+     ["        Output: ev_1.user_id, (count(*))"],
+     ["        Relations: Aggregate on (public.ev_shard2 ev_1)"],
+     ["        Remote SQL: SELECT user_id, count(*) FROM s2.events GROUP BY 1"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "EXPLAIN (VERBOSE, COSTS OFF)\nSELECT count(*) FROM ev WHERE kind = 'purchase'",
+   "note": "a total across shards: each shard still ships its matching rows, and the counting happens here. postgres_fdw doesn't push partial aggregates down.",
+   "status": "ok",
+   "result": {
+    "command": "EXPLAIN",
+    "rows": null,
+    "columns": [{"name":"QUERY PLAN","type":"text"}],
+    "data": [
+     ["Finalize Aggregate"],
+     ["  Output: count(*)"],
+     ["  ->  Append"],
+     ["        ->  Partial Aggregate"],
+     ["              Output: PARTIAL count(*)"],
+     ["              ->  Foreign Scan on public.ev_shard1 ev"],
+     ["                    Remote SQL: SELECT NULL FROM s1.events WHERE ((kind = 'purchase'))"],
+     ["        ->  Partial Aggregate"],
+     ["              Output: PARTIAL count(*)"],
+     ["              ->  Foreign Scan on public.ev_shard2 ev_1"],
+     ["                    Remote SQL: SELECT NULL FROM s2.events WHERE ((kind = 'purchase'))"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT count(*) AS purchases FROM ev WHERE kind = 'purchase'",
+   "note": "the answers agree, however the work was split.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"purchases","type":"int8"}],"data":[["1765"]]}
+  }
+ ],
+ "db": "events"
+}

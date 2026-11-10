@@ -1,0 +1,149 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "826d5a828ff2a198": {
+      "db": "empty",
+      "sql": "SELECT '{\"a\": 1, \"b\": 2}'::jsonb = '{\"b\": 2, \"a\": 1}'::jsonb AS same_object,\n       '{\"price\": 1.50}'::jsonb ->> 'price'                AS keeps_digits;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["same_object", "bool", 16],
+            ["keeps_digits", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "264f9126bd8bb4a1",
+          "rows": [
+            ["t", "1.50"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "31d99d8f28c58d47": {
+      "db": "events",
+      "sql": "SELECT props FROM events WHERE id = 26;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["props", "jsonb", 3802]
+          ],
+          "rowCount": 1,
+          "digest": "ee0c3cc6f2ee7b8c",
+          "rows": [
+            ["{\"utm\": {\"source\": \"search\", \"campaign\": \"spring\"}, \"page\": \"/p/17\", \"device\": \"web\"}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f1d579df890a010c": {
+      "db": "events",
+      "sql": "SELECT count(*) FILTER (WHERE props -> 'device' IS NULL)   AS missing_key,\n       count(*) FILTER (WHERE props -> 'device' = 'null')  AS json_null,\n       count(*) FILTER (WHERE props ->> 'device' IS NULL)  AS either\nFROM events;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["missing_key", "int8", 20],
+            ["json_null", "int8", 20],
+            ["either", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "4bd1b533081f55ed",
+          "rows": [
+            ["749", "725", "1474"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "06bd1f3f7180cf2c": {
+      "db": "events",
+      "sql": "SELECT count(*) FILTER (WHERE props @> '{\"utm\": {\"source\": \"newsletter\"}}')     AS contains,\n       count(*) FILTER (WHERE props @? '$.utm ? (@.source == \"newsletter\")')   AS jsonpath\nFROM events;\nSELECT jsonb_path_query_array('{\"items\": [{\"sku\": \"A\", \"qty\": 2}, {\"sku\": \"B\", \"qty\": 5}]}', '$.items[*] ? (@.qty > 3).sku') AS big_orders;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["contains", "int8", 20],
+            ["jsonpath", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "02c635500dff67cb",
+          "rows": [
+            ["832", "832"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["big_orders", "jsonb", 3802]
+          ],
+          "rowCount": 1,
+          "digest": "bec71f7a0a184a36",
+          "rows": [
+            ["[\"B\"]"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "2e0445400a1d3c34": {
+      "db": "empty",
+      "sql": "SELECT JSON_OBJECT('id': 42, 'name': 'Ada', 'email': NULL)               AS with_nulls,\n       JSON_OBJECT('id': 42, 'email': NULL ABSENT ON NULL)                AS absent_on_null,\n       JSON_ARRAY(1, 'two', NULL, true)                                   AS array_skips_null;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["with_nulls", "json", 114],
+            ["absent_on_null", "json", 114],
+            ["array_skips_null", "json", 114]
+          ],
+          "rowCount": 1,
+          "digest": "6688e18e6ea5c9cc",
+          "rows": [
+            ["{\"id\" : 42, \"name\" : \"Ada\", \"email\" : null}", "{\"id\" : 42}", "[1, \"two\", true]"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "fafda3bb28077bae": {
+      "db": "empty",
+      "sql": "SELECT jt.*\nFROM JSON_TABLE(\n  '{\"order\": 1042, \"items\": [{\"sku\": \"KIT-0001\", \"qty\": 2, \"price\": 49.00},\n                             {\"sku\": \"AUD-0005\", \"qty\": 1, \"price\": 129.99, \"gift\": true}]}',\n  '$.items[*]'\n  COLUMNS (line FOR ORDINALITY, sku text PATH '$.sku', qty int PATH '$.qty',\n           price numeric(10,2) PATH '$.price', gift boolean PATH '$.gift' DEFAULT false ON EMPTY)\n) AS jt\nORDER BY jt.line;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["line", "int4", 23],
+            ["sku", "text", 25],
+            ["qty", "int4", 23],
+            ["price", "numeric", 1700],
+            ["gift", "bool", 16]
+          ],
+          "rowCount": 2,
+          "digest": "420e36850c224777",
+          "rows": [
+            ["1", "KIT-0001", "2", "49.00", "f"],
+            ["2", "AUD-0005", "1", "129.99", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

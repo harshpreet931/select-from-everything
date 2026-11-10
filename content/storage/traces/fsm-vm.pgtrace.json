@@ -1,0 +1,218 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/fsm-vm.scenario.sql",
+ "title": "an 8-page table: a delete, an insert, a vacuum, another insert, an update. free space map and visibility map after each",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"},
+  "t": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"pad","type":"text"}]},
+  "t_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t"}
+ },
+ "base": {"xid":756,"lsn":26267432},
+ "setup": "CREATE TABLE t (id int PRIMARY KEY, pad text);\nINSERT INTO t SELECT g, repeat('x', 200) FROM generate_series(1, 272) AS g ORDER BY g;\n-- one row per heap page: live and dead bytes (tuples rounded up to 8), the free gap, the two\n-- visibility map bits, and what the free space map says about the page\nCREATE FUNCTION page_stats(rel regclass)\nRETURNS TABLE (blkno int, live bigint, dead bigint, free int, all_visible bool, all_frozen bool, fsm int)\nLANGUAGE sql AS $f$\n  SELECT b,\n         (SELECT coalesce(sum((lp_len + 7) / 8 * 8), 0) FROM heap_page_items(get_raw_page(rel::text, b)) WHERE lp_flags = 1 AND t_xmax = 0),\n         (SELECT coalesce(sum((lp_len + 7) / 8 * 8), 0) FROM heap_page_items(get_raw_page(rel::text, b)) WHERE lp_flags = 1 AND t_xmax <> 0),\n         (SELECT upper - lower FROM page_header(get_raw_page(rel::text, b))),\n         v.all_visible, v.all_frozen, pg_freespace(rel, b)::int\n  FROM generate_series(0, (pg_relation_size(rel) / 8192)::int - 1) AS b\n  JOIN pg_visibility_map(rel) AS v ON v.blkno = b\n  ORDER BY b\n$f$;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT * FROM page_stats('t')",
+   "note": "272 rows, 34 to a page, 8 pages, all live. never vacuumed, so no page has a visibility map bit yet.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"blkno","type":"int4"},
+     {"name":"live","type":"int8"},
+     {"name":"dead","type":"int8"},
+     {"name":"free","type":"int4"},
+     {"name":"all_visible","type":"bool"},
+     {"name":"all_frozen","type":"bool"},
+     {"name":"fsm","type":"int4"}
+    ],
+    "data": [
+     ["0","7888","0","144","f","f","128"],
+     ["1","7888","0","144","f","f","128"],
+     ["2","7888","0","144","f","f","128"],
+     ["3","7888","0","144","f","f","128"],
+     ["4","7888","0","144","f","f","128"],
+     ["5","7888","0","144","f","f","128"],
+     ["6","7888","0","144","f","f","128"],
+     ["7","7888","0","144","f","f","0"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "DELETE FROM t WHERE id BETWEEN 69 AND 102 OR id BETWEEN 171 AND 204;\nSELECT * FROM page_stats('t')",
+   "note": "delete the rows on pages 2 and 5. the tuples stay, dead. the free space map doesn't hear about it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"blkno","type":"int4"},
+     {"name":"live","type":"int8"},
+     {"name":"dead","type":"int8"},
+     {"name":"free","type":"int4"},
+     {"name":"all_visible","type":"bool"},
+     {"name":"all_frozen","type":"bool"},
+     {"name":"fsm","type":"int4"}
+    ],
+    "data": [
+     ["0","7888","0","144","f","f","128"],
+     ["1","7888","0","144","f","f","128"],
+     ["2","0","7888","144","f","f","128"],
+     ["3","7888","0","144","f","f","128"],
+     ["4","7888","0","144","f","f","128"],
+     ["5","0","7888","144","f","f","128"],
+     ["6","7888","0","144","f","f","128"],
+     ["7","7888","0","144","f","f","0"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "INSERT INTO t VALUES (1001, repeat('y', 200));\nSELECT * FROM page_stats('t')",
+   "note": "insert a row. the free space map has nothing to offer, so it goes on the last page.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"blkno","type":"int4"},
+     {"name":"live","type":"int8"},
+     {"name":"dead","type":"int8"},
+     {"name":"free","type":"int4"},
+     {"name":"all_visible","type":"bool"},
+     {"name":"all_frozen","type":"bool"},
+     {"name":"fsm","type":"int4"}
+    ],
+    "data": [
+     ["0","7888","0","144","f","f","128"],
+     ["1","7888","0","144","f","f","128"],
+     ["2","0","7888","144","f","f","128"],
+     ["3","7888","0","144","f","f","128"],
+     ["4","7888","0","144","f","f","128"],
+     ["5","0","7888","144","f","f","128"],
+     ["6","7888","0","144","f","f","128"],
+     ["7","7888","0","144","f","f","128"],
+     ["8","232","0","7932","f","f","0"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "VACUUM t;\nSELECT * FROM page_stats('t')",
+   "note": "VACUUM. the dead tuples go, pages 2 and 5 are empty, the free space map learns about every page, and every page gets both visibility bits.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"blkno","type":"int4"},
+     {"name":"live","type":"int8"},
+     {"name":"dead","type":"int8"},
+     {"name":"free","type":"int4"},
+     {"name":"all_visible","type":"bool"},
+     {"name":"all_frozen","type":"bool"},
+     {"name":"fsm","type":"int4"}
+    ],
+    "data": [
+     ["0","7888","0","144","t","f","128"],
+     ["1","7888","0","144","t","f","128"],
+     ["2","0","0","8164","t","t","8160"],
+     ["3","7888","0","144","t","f","128"],
+     ["4","7888","0","144","t","f","128"],
+     ["5","0","0","8164","t","t","8160"],
+     ["6","7888","0","144","t","f","128"],
+     ["7","7888","0","144","t","f","128"],
+     ["8","232","0","7932","t","f","7904"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO t VALUES (1002, repeat('y', 200));\nSELECT * FROM page_stats('t')",
+   "note": "insert another row. the free space map points at page 2 now.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"blkno","type":"int4"},
+     {"name":"live","type":"int8"},
+     {"name":"dead","type":"int8"},
+     {"name":"free","type":"int4"},
+     {"name":"all_visible","type":"bool"},
+     {"name":"all_frozen","type":"bool"},
+     {"name":"fsm","type":"int4"}
+    ],
+    "data": [
+     ["0","7888","0","144","t","f","128"],
+     ["1","7888","0","144","t","f","128"],
+     ["2","232","0","7932","f","f","8160"],
+     ["3","7888","0","144","t","f","128"],
+     ["4","7888","0","144","t","f","128"],
+     ["5","0","0","8164","t","t","8160"],
+     ["6","7888","0","144","t","f","128"],
+     ["7","7888","0","144","t","f","128"],
+     ["8","232","0","7932","t","f","7904"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "UPDATE t SET pad = repeat('z', 200) WHERE id = 210;\nSELECT * FROM page_stats('t')",
+   "note": "update a row on page 6. the new version has to go to another page, and both pages lose their visibility bits.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"blkno","type":"int4"},
+     {"name":"live","type":"int8"},
+     {"name":"dead","type":"int8"},
+     {"name":"free","type":"int4"},
+     {"name":"all_visible","type":"bool"},
+     {"name":"all_frozen","type":"bool"},
+     {"name":"fsm","type":"int4"}
+    ],
+    "data": [
+     ["0","7888","0","144","t","f","128"],
+     ["1","7888","0","144","t","f","128"],
+     ["2","464","0","7696","f","f","8160"],
+     ["3","7888","0","144","t","f","128"],
+     ["4","7888","0","144","t","f","128"],
+     ["5","0","0","8164","t","t","8160"],
+     ["6","7656","232","144","f","f","128"],
+     ["7","7888","0","144","t","f","128"],
+     ["8","232","0","7932","t","f","7904"]
+    ]
+   }
+  }
+ ],
+ "db": "lab"
+}

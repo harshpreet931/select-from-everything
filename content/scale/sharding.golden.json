@@ -1,0 +1,55 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "d632204e95833783": {
+      "db": "events",
+      "sql": "SELECT ((hashint4(user_id) % 4) + 4) % 4 AS shard,\n       count(DISTINCT user_id) AS users,\n       count(*) AS events\nFROM events\nGROUP BY 1\nORDER BY 1;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["shard", "int4", 23],
+            ["users", "int8", 20],
+            ["events", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "230c4cab00dfa26e",
+          "rows": [
+            ["0", "121", "5920"],
+            ["1", "123", "5480"],
+            ["2", "125", "6644"],
+            ["3", "131", "6956"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aff30bd66aa96f19": {
+      "db": "events",
+      "sql": "SELECT user_id, count(*) AS events, round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct\nFROM events\nGROUP BY user_id\nORDER BY events DESC, user_id\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["user_id", "int4", 23],
+            ["events", "int8", 20],
+            ["pct", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "0237f8f16dc9e388",
+          "rows": [
+            ["1", "1134", "4.5"],
+            ["2", "460", "1.8"],
+            ["3", "385", "1.5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

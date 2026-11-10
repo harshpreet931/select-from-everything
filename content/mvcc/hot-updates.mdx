@@ -1,0 +1,148 @@
+import { PageSteps } from "@/components/figures/mvcc/PageSteps";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import hotChain from "./traces/hot-chain.pgtrace.json";
+import ff from "./traces/hot-fillfactor.pgtrace.json";
+
+export const free0 = hotChain.steps[0].heap.items[0].upper - hotChain.steps[0].heap.items[0].lower;
+export const free3 = hotChain.steps[3].heap.items[0].upper - hotChain.steps[3].heap.items[0].lower;
+export const free4 = hotChain.steps[4].heap.items[0].upper - hotChain.steps[4].heap.items[0].lower;
+export const loaded = Object.fromEntries(ff.steps[0].result.data.map((r) => [r[0], { heap: Number(r[1]), index: Number(r[2]) }]));
+export const after = Object.fromEntries(ff.steps[2].result.data.map((r) => [r[0], { upd: Number(r[1]), hot: Number(r[2]), moved: Number(r[3]), heap: Number(r[4]), index: Number(r[5]) }]));
+
+<InShort>
+a **HOT update** (heap-only tuple) is an UPDATE that writes the new version on the **same page** and changes **no indexed column**. then no index is touched: the index entries keep pointing at the old version's slot, and readers follow the chain from there. and the old versions in that chain can be **pruned** by any later read of the page, without waiting for VACUUM.
+</InShort>
+
+## the picture
+
+you know how [every UPDATE writes a new version](/learn/mvcc/update-is-insert)? if that new version lands somewhere else, every index on the table needs a new entry pointing at it, and every one of those entries needs cleaning up later. a table with five indexes pays six writes per update. that's the expensive part of postgres's MVCC, and HOT is how it gets out of paying it.
+
+think of a library card catalog (the index) pointing at a shelf position (the line pointer). when a book is replaced by a new edition, you could rewrite the catalog card. or, if there's room on the same shelf, you leave a note in the old spot: "newer edition, two to the right". the catalog never changes, and when the old edition is thrown out, the note stays where the catalog points.
+
+the capture is a real postgres 18.6 server: a table `items` with an index on `id` and one on `sku`, on a page that's nearly full. two updates change `qty`, which no index covers. one changes `sku`, which `items_sku` covers. then another session just reads.
+
+<Figure wide caption={<>step through. the first two updates stay on the page and touch no index: the chain grows <C k="ref">1 → 9 → 10</C>, the new versions are heap-only (H), and both indexes still have one entry for row 1. the sku update is on the same page too, and it is <em>not</em> HOT: <C k="hot">both</C> indexes get a new entry for row 2. then T2's read prunes the page.</>}>
+<PgStepper trace={hotChain} panels={["lanes", "chain:items:id=1", "btree:items_pkey", "btree:items_sku"]} />
+</Figure>
+
+## the two conditions
+
+an update is HOT when both hold:
+
+1. **no indexed column changed.** "indexed" means any column an index uses: in its key, its INCLUDE list, its expression, or a [partial index's WHERE](/learn/indexes/partial-and-expression). [BRIN](/learn/index-internals/brin) indexes don't count <Since v={16} />: they summarize page ranges and don't point at tuples.
+2. **the new version fits on the same page.** if it doesn't, it goes to another page, and an index entry has to point there.
+
+you can watch both in the browser. lab's accounts table gets an index on `owner`:
+
+```sql run db=lab session=hot
+CREATE INDEX accounts_owner ON accounts (owner);
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+UPDATE accounts SET owner = 'alicia' WHERE id = 2;
+UPDATE accounts SET owner = owner WHERE id = 3;
+SELECT lp, t_ctid, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags
+FROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;
+```
+
+slot 1 says `HEAP_HOT_UPDATED` and its new version in slot 4 says `HEAP_ONLY_TUPLE`: balance isn't indexed. slot 2 has neither: changing owner wrote a normal tuple in slot 5, with its own index entry. and slot 3?
+
+<Predict question="UPDATE accounts SET owner = owner, on the indexed column, changing nothing. HOT or not?" options={["HOT", "not HOT", "no new version at all"]} answer={0}>
+```sql
+UPDATE accounts SET owner = owner WHERE id = 3;
+```
+<Explain>
+HOT. postgres doesn't go by which columns the statement names. it compares the old and new values of every indexed column, byte for byte, and owner came out identical. so the index has nothing to learn, and the update can stay heap-only. (a new version is still written, though: <a href="/learn/mvcc/update-is-insert">no-op updates always are</a>.)
+</Explain>
+</Predict>
+
+the index tells the same story from the other side, and the statistics count it:
+
+```sql run session=hot
+SELECT itemoffset, ctid, data FROM bt_page_items('accounts_owner', 1) ORDER BY itemoffset;
+SELECT pg_stat_force_next_flush();
+SELECT n_tup_upd, n_tup_hot_upd, n_tup_newpage_upd
+FROM pg_stat_user_tables WHERE relname = 'accounts';
+```
+
+four entries for three rows: 'alicia' at (0,5) is the non-HOT update's new entry, and the stale 'bob' at (0,2) stays until VACUUM. 3 updates, 2 HOT, none moved to a new page <Since v={16} />. on a real table, `n_tup_hot_upd` against `n_tup_upd` is the number to watch.
+
+## following the chain
+
+an index scan for `id = 1` in the capture finds the entry `(0,1)`, an address made of a page and a [line pointer](/learn/storage/the-page). slot 1's tuple is dead to new readers, but it's `HEAP_HOT_UPDATED`, so the scan follows its `t_ctid` to slot 9, then slot 10, and checks visibility at each stop. all inside one page, already in memory. a chain never leaves its page: that's what makes it safe to skip the index.
+
+## pruning: cleanup without VACUUM
+
+after the three updates, the page was down to {free3} bytes free. that's the trigger: any statement that reads a page whose free space has dropped below a tenth of it (or below the fillfactor reserve, whichever is bigger) first tries to prune it, if the page has versions nobody can see anymore. here's the page before and after T2's read, and after the VACUUM at the end:
+
+<Figure wide caption={<>switch moments and pick slot 1. after the read, slot 1 is a <C k="ref">redirect</C> to slot 10, slot 9 is unused, and slot 2 (row 2's old version, which an index entry still points at) is a <C k="dead">dead</C> line pointer. after VACUUM removes those index entries, slot 2 is unused too.</>}>
+<PageSteps trace={hotChain} rel="items" steps={[3, 4, 5]} labels={["after the updates", "after T2's read", "after VACUUM"]} focus={1} fields={["id", "sku", "qty"]} />
+</Figure>
+
+what pruning did, slot by slot:
+
+- **slot 1**, the root of row 1's chain, lost its tuple but became a **redirect** line pointer to slot 10. it has to stay, because both indexes point at (0,1).
+- **slot 9**, a heap-only tuple in the middle of the chain, is gone completely, line pointer and all. no index points at a heap-only tuple, so nothing can be left dangling.
+- **slot 2**, row 2's old version, left behind by a non-HOT update, lost its tuple but stays as a **dead** line pointer: two index entries still point at it, and only [VACUUM](/learn/mvcc/vacuum) can remove those. (b-trees have a trick of their own for this kind of churn, [bottom-up deletion](/learn/index-internals/dedup-and-bottom-up-deletion).)
+- the surviving tuples were slid together, and free space went from {free3} to {free4} bytes.
+
+pruning works on one page, while holding it. it never touches an index, which is why it can run in the middle of a SELECT. and in the browser engine, where no other session ever holds a snapshot, it happens on almost every read of a full page (the [reference chapter](/learn/mvcc/update-is-insert) runs into it on bank).
+
+## fillfactor: making room on purpose
+
+the second condition is the one you can do something about. a packed table has no room on any page, so the first update of a row always moves it. [fillfactor](/learn/storage/fillfactor) leaves room. this capture updates one row a thousand times, each update its own transaction, in three tables of 226 rows: packed at fillfactor 100, at fillfactor 90, and packed with the updated column indexed.
+
+<Figure caption={<>a thousand updates of one row, on a log scale. the packed table moves the row once, to a new page, and then stays HOT there. at fillfactor 90 every update is HOT, on the page the row started on. index the updated column and none are: the heap goes from {loaded.idx100.heap / 1024} KB to {after.idx100.heap / 1024} KB and the indexes from {loaded.idx100.index / 1024} KB to {after.idx100.index / 1024} KB.</>}>
+<Bars data={[
+  { label: "ff100: HOT", value: after.ff100.hot, tone: "live" },
+  { label: "ff100: moved to a new page", value: after.ff100.moved, tone: "hot" },
+  { label: "ff90: HOT", value: after.ff90.hot, tone: "live" },
+  { label: "ff90: moved to a new page", value: after.ff90.moved, tone: "hot" },
+  { label: "idx100: HOT", value: after.idx100.hot, tone: "live" },
+  { label: "idx100: moved to a new page", value: after.idx100.moved, tone: "hot" },
+]} log />
+<Provenance trace={prov(ff)} />
+</Figure>
+
+the same experiment, in the browser:
+
+```sql run db=lab session=ff
+CREATE TABLE ff100 (id int PRIMARY KEY, hits int NOT NULL);
+CREATE TABLE ff90 (id int PRIMARY KEY, hits int NOT NULL) WITH (fillfactor = 90);
+CREATE TABLE idx100 (id int PRIMARY KEY, hits int NOT NULL);
+CREATE INDEX idx100_hits ON idx100 (hits);
+INSERT INTO ff100 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;
+INSERT INTO ff90 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;
+INSERT INTO idx100 SELECT g, 0 FROM generate_series(1, 226) AS g ORDER BY g;
+CREATE PROCEDURE bump(t regclass, n int) LANGUAGE plpgsql AS $$
+BEGIN
+  FOR i IN 1..n LOOP
+    EXECUTE format('UPDATE %s SET hits = hits + 1 WHERE id = 1', t);
+    COMMIT;
+  END LOOP;
+END $$;
+CALL bump('ff100', 1000);
+CALL bump('ff90', 1000);
+CALL bump('idx100', 1000);
+SELECT pg_stat_force_next_flush();
+SELECT relname, n_tup_hot_upd AS hot, n_tup_newpage_upd AS new_page,
+       pg_relation_size(relid) AS heap_bytes, pg_indexes_size(relid) AS index_bytes
+FROM pg_stat_user_tables WHERE relname IN ('ff100', 'ff90', 'idx100') ORDER BY relname;
+```
+
+ff90 started a page bigger ({loaded.ff90.heap / 1024} KB against {loaded.ff100.heap / 1024} KB for the same rows) and never grew. ff100 grew by exactly that one page, the first time the row had to move, and then pruning kept it at that size for 999 more updates. idx100 never had a HOT update: the heap grew to {after.idx100.heap / 1024} KB because every update left a dead line pointer behind, which only VACUUM can free, so pages ran out of line pointers one after another ({after.idx100.moved} moves), and the indexes grew with it. fillfactor can't help a column that's indexed.
+
+<Gotcha title="the index you added for one query turned off HOT for all of them">
+a `status` or `updated_at` column that changes on every update is the classic case. index it, and every update of the table becomes a non-HOT update: one new entry in every index, a dead line pointer per update in the heap, and much more for VACUUM to do. before adding an index on a hot column, check `n_tup_hot_upd / n_tup_upd` and ask whether the query really needs it. a partial index has the same effect if its WHERE clause mentions the column.
+</Gotcha>
+
+<Interview q="what is a HOT update and when does postgres do one?">
+a heap-only tuple update: the new row version goes on the same heap page and no index entry is added, because no indexed column changed. the old version gets HEAP_HOT_UPDATED, the new one HEAP_ONLY_TUPLE, and index scans reach the new one by following t_ctid within the page. it needs both conditions: no column used by any (non-BRIN) index changed value, and the new version fits on the page. lowering fillfactor leaves room for the second. bonus point: HOT chains can be pruned by any reader of a nearly full page, without VACUUM: intermediate versions disappear, and the chain's first slot becomes a redirect so the index entries keep working.
+</Interview>
+
+<Keylines>
+- HOT = same page + no indexed column changed. then no index is touched.
+- "changed" means a different value: `SET col = col` on an indexed column is still HOT.
+- index scans follow the chain inside the page, from the slot the index points at.
+- pruning: a read of a nearly full page removes dead versions; the chain root becomes a redirect.
+- fillfactor leaves room for HOT. indexing the updated column rules it out.
+</Keylines>

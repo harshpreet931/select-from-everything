@@ -1,0 +1,185 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "961a8e75dfdd66ae": {
+      "db": "lab",
+      "sql": "BEGIN;\nSELECT owner FROM accounts WHERE id = 1 FOR SHARE;\nSAVEPOINT s;\nUPDATE accounts SET balance = balance + 1 WHERE id = 1;\nSELECT lp, t_xmax, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags\nFROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 1;\nSELECT * FROM pg_get_multixact_members(\n  (SELECT t_xmax FROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 1))\nORDER BY xid::text::bigint;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "acb2235cb3edc87e",
+          "rows": [
+            ["alice"]
+          ]
+        },
+        {
+          "tag": "SAVEPOINT",
+          "command": "SAVEPOINT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bd9a4934dd00cf92"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "982af26933a33534"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmax", "xid", 28],
+            ["raw_flags", "text[]", 1009]
+          ],
+          "rowCount": 1,
+          "digest": "6c30d4bc84b6070b",
+          "rows": [
+            ["1", "1", "{HEAP_HASVARWIDTH,HEAP_XMAX_EXCL_LOCK,HEAP_XMIN_COMMITTED,HEAP_XMAX_IS_MULTI,HEAP_HOT_UPDATED}"]
+          ]
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["xid", "xid", 28],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "c916b64e1ef26edc",
+          "rows": [
+            ["753", "sh"],
+            ["754", "nokeyupd"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "722a5aee5ca78144"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f305bcaf08e4f989": {
+      "db": "lab",
+      "sql": "CREATE TABLE owners (id int PRIMARY KEY, name text);\nCREATE TABLE pets (id int PRIMARY KEY, owner_id int REFERENCES owners);\nINSERT INTO owners VALUES (1, 'ada');\nBEGIN;\nINSERT INTO pets VALUES (1, 1);\nSELECT t_xmax, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags\nFROM heap_page_items(get_raw_page('owners', 0));\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "9bac3c1aed284e97"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "ced3313e28d15fcb"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "df87a14945d138e9"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["t_xmax", "xid", 28],
+            ["raw_flags", "text[]", 1009]
+          ],
+          "rowCount": 1,
+          "digest": "cec77773df7afb0d",
+          "rows": [
+            ["756", "{HEAP_HASVARWIDTH,HEAP_XMAX_KEYSHR_LOCK,HEAP_XMAX_LOCK_ONLY,HEAP_XMIN_COMMITTED}"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "722a5aee5ca78144"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c8c7e6e4a4d4a301": {
+      "db": "lab",
+      "sql": "SELECT datname, datminmxid, mxid_age(datminmxid) FROM pg_database ORDER BY datname;\nSELECT name, setting FROM pg_settings\nWHERE name LIKE '%multixact%freeze%' OR name LIKE '%multixact%failsafe%' ORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["datname", "name", 19],
+            ["datminmxid", "xid", 28],
+            ["mxid_age", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "29e283cfc366ab9a",
+          "rows": [
+            ["postgres", "1", "0"],
+            ["template0", "1", "0"],
+            ["template1", "1", "0"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "af5fdb08a518190e",
+          "rows": [
+            ["autovacuum_multixact_freeze_max_age", "400000000"],
+            ["vacuum_multixact_failsafe_age", "1600000000"],
+            ["vacuum_multixact_freeze_min_age", "5000000"],
+            ["vacuum_multixact_freeze_table_age", "150000000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

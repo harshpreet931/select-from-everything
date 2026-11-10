@@ -1,0 +1,119 @@
+import { LeafGrid } from "@/components/figures/indexes/LeafGrid";
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import grid from "./traces/composite-grid.pgtrace.json";
+import skip from "./traces/skip-scan.pgtrace.json";
+
+{/* the grid reads traces/composite-grid.scenario.sql (the same (a, b) index as
+    composite-indexes); the plans read traces/skip-scan.scenario.sql. both captured on PGlite. */}
+
+export const node = (i) => { const p = skip.steps[i].explain.Plan; return p.Plans ? p.Plans[0] : p; };
+export const top = (i) => skip.steps[i].explain.Plan;
+export const pg = (n) => n["Shared Hit Blocks"] + n["Shared Read Blocks"];
+export const sizes = Object.fromEntries(skip.steps[8].result.data);
+
+<InShort>
+before postgres 18, an index on `(a, b)` was no use for `WHERE b = 5`: the matches are scattered, one inside every value of `a`. postgres 18 adds **skip scan**: it treats the missing `a` as "every value of a", and goes down the tree once for each, reading only the bits where `b = 5` can be. it pays off when the leading column has **few distinct values**, and the planner skips it when there are many.
+</InShort>
+
+## the picture
+
+back to the phone book, sorted by last name, then first name. you want every Ravi. reading the whole book works. but if the book only has four surnames (a very small town), you can open it at "Patel, Ravi", then at "Shah, Ravi", then at "Singh, Ravi", then at "Smith, Ravi". four lookups instead of the whole book.
+
+that's skip scan <Since v={18} />. here's the (a, b) index from [multicolumn indexes](/learn/indexes/composite-indexes) again, six values of `a`. each <C k="ref">marked entry</C> is where a search down the tree landed.
+
+<Figure wide caption={<>the same 240-entry index on (a, b). for <code>b = 7</code> the scan goes down the tree for <C k="ref">each value of a</C> and reads one entry there: <code>Index Searches: 7</code>: six landings, plus one more search than there are values (the figure marks the six). a range on a hops only inside the range. <code>a = 3</code> is the ordinary single search, for comparison.</>}>
+<LeafGrid
+  trace={grid}
+  index="ab_a_b"
+  at={0}
+  hops
+  queries={[
+    { label: "b = 7", rows: 8, plan: 9 },
+    { label: "a BETWEEN 2 AND 4 AND b = 7", rows: 10, plan: 11 },
+    { label: "a = 3", rows: 2, plan: 3 },
+  ]}
+/>
+</Figure>
+
+the manual describes it as postgres generating an equality condition on its own: for the column with no condition, a "dynamic equality constraint" that matches every value stored in the index. so `WHERE b = 7` runs like `WHERE a = 1 AND b = 7`, then `a = 2 AND b = 7`, and so on, where the next value of `a` is found by looking at the index, not by knowing it in advance.
+
+## few values hop, many don't
+
+two tables with the same 30,000 rows of `(a, b)`. in `few`, `a` has 4 distinct values. in `many`, it has 3,000. same query on both:
+
+```sql run db=empty session=skip
+CREATE TABLE few (a int NOT NULL, b int NOT NULL, pad text NOT NULL);
+INSERT INTO few SELECT i % 4, i / 4, repeat('x', 40) FROM generate_series(0, 29999) AS i ORDER BY i;
+CREATE INDEX few_a_b ON few (a, b);
+CREATE TABLE many (a int NOT NULL, b int NOT NULL, pad text NOT NULL);
+INSERT INTO many SELECT i % 3000, i / 3000, repeat('x', 40) FROM generate_series(0, 29999) AS i ORDER BY i;
+CREATE INDEX many_a_b ON many (a, b);
+VACUUM ANALYZE few, many;
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM few WHERE b = 5;
+```
+
+look for `Index Searches: {node(0)["Index Searches"]}` on the Bitmap Index Scan: 4 values of `a`, 5 trips down the tree. the condition reads `Index Cond: (b = 5)`, with no mention of `a`. the hopping is inside the index scan; EXPLAIN only shows it through that counter.
+
+<Predict question="the same query on many, where a has 3,000 values. what does postgres do?" options={["skip scan, 3,001 searches", "seq scan", "error: no usable index"]} answer={1}>
+```sql
+EXPLAIN SELECT * FROM many WHERE b = 5;
+```
+<Explain>
+a seq scan. 3,000 trips down the tree would cost more than reading the {sizes.many}-page table. skip scan is a choice the planner prices like any other, and with that many distinct values it loses. it never errors: an index that doesn't fit the query just doesn't get used.
+</Explain>
+</Predict>
+
+```sql run session=skip
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT * FROM many WHERE b = 5;
+```
+
+and if you take the seq scan away, the index scan postgres turned down doesn't hop at all. it reads the index from the first entry to the last (`Index Searches: 1`) and checks `b` in every entry:
+
+<Figure wide caption={<>the same <code>b = 5</code>, four ways. on few, the hops read {pg(top(4))} pages. on many, a full index scan reads {pg(top(3))} and the seq scan postgres actually picks reads all {pg(top(1))} pages of the table. the bars are whole-query buffer counts.</>}>
+<PlanPick
+  trace={skip}
+  keyLabel="table"
+  pages
+  plans={[
+    { label: "few (picked)", step: 0 },
+    { label: "few, index scan", step: 4 },
+    { label: "many (picked)", step: 1 },
+    { label: "many, index scan", step: 3 },
+  ]}
+/>
+</Figure>
+
+## a real one
+
+the usual way to meet skip scan isn't a table named `few`. it's an index someone built for one query, used by another. an index on `orders (status, customer_id)`, made for "the paid orders of customer 42", and a query that only knows the customer:
+
+<Figure wide caption={<>an index on (status, customer_id), and <code>WHERE customer_id = 42</code>. status has {skip.steps[7].result.data.find((r) => r[0] === "orders.status")[1]} values, and the scan made {node(6)["Index Searches"]} searches. the count isn't exactly one per value: the scan only goes back to the root when the next value it needs isn't on the leaf page it's already reading.</>}>
+<PlanTree plan={skip.steps[6].explain} show={["actual", "buffers"]} provenance={<Provenance trace={prov(skip)} />} />
+</Figure>
+
+that's useful, and it's also a trap. the plan is fine today, with six statuses. it says nothing about what happens when someone adds a twentieth status, or when the leading column is a timestamp instead. if a query on `customer_id` alone is a hot path, give it its own index, or put `customer_id` first. skip scan is a safety net for the queries you didn't plan for, not a reason to stop thinking about column order.
+
+## when it can't
+
+- **many distinct values in the skipped column.** the planner estimates one search per value; past a point, the seq scan or a full index scan is cheaper. the manual says it's generally only chosen when most leaf pages can be skipped.
+- **only b-trees.** skip scan is part of the btree access method. GiST, GIN and BRIN multicolumn indexes work differently ([index types](/learn/indexes/index-types)).
+- **a condition the index can't use at all.** skip scan fills in a missing equality. it does nothing for `lower(b) = 'x'` on a plain index, or a type mismatch ([why isn't my index used](/learn/indexes/index-not-used)).
+- **before postgres 18.** the same query on 17 is a full index scan or a seq scan. if your production server is older than your laptop, check there.
+
+<Docs href="https://www.postgresql.org/docs/18/indexes-multicolumn.html" title="multicolumn indexes">the manual's section on multicolumn indexes explains skip scan: a generated equality condition that matches every value of a leading column without one, used when the planner expects to skip most of the index. it notes that with many distinct values, a seq scan is usually preferred. the postgres 18 release notes list it under "allow skip scans of btree indexes".</Docs>
+
+<Interview q="can postgres use an index on (a, b) for a query on b alone?">
+since postgres 18, sometimes: skip scan. it runs the scan as a = v AND b = 5 for every distinct v of a found in the index, one descent each (EXPLAIN ANALYZE shows Index Searches: N). it wins when a has few distinct values, and the planner falls back to a seq scan when it has many. before 18, the answer was no, short of reading the whole index. bonus point: it also works with a range on the leading column, hopping only through the values inside the range, and a dedicated index with b first is still the right fix for a hot query.
+</Interview>
+
+<Keylines>
+- postgres 18 can use an index on (a, b) for b alone: one search per value of a.
+- EXPLAIN ANALYZE shows it as Index Searches: N on an ordinary index scan.
+- few distinct leading values: it hops. many: seq scan.
+- it's a safety net. a hot query on b still deserves an index that starts with b.
+</Keylines>

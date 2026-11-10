@@ -1,0 +1,134 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/soft-delete.scenario.sql",
+ "title": "a soft-deleted customer tries to sign up again, and the unique constraint remembers her",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"email","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"deleted_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_live": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nCREATE TABLE customers (\n  id         int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  email      text NOT NULL UNIQUE,\n  name       text NOT NULL,\n  deleted_at timestamptz\n);\nINSERT INTO customers (email, name) VALUES ('ada@example.com', 'Ada Lovelace'), ('grace@example.com', 'Grace Okafor')",
+   "note": "customers with a deleted_at column: NULL means live.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":2,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id, email, deleted_at FROM customers ORDER BY id",
+   "note": "two live customers.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"email","type":"text"},{"name":"deleted_at","type":"timestamptz"}],
+    "data": [["1","ada@example.com",null],["2","grace@example.com",null]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE customers SET deleted_at = '2026-03-10 09:00+00' WHERE email = 'ada@example.com'",
+   "note": "Ada closes her account. nothing is deleted: the row gets a timestamp.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT id, email, deleted_at FROM customers ORDER BY id",
+   "note": "after it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"email","type":"text"},{"name":"deleted_at","type":"timestamptz"}],
+    "data": [["1","ada@example.com","2026-03-10 09:00:00+00"],["2","grace@example.com",null]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "INSERT INTO customers (email, name) VALUES ('ada@example.com', 'Ada Lovelace')",
+   "note": "a month later Ada signs up again. UNIQUE (email) still sees the deleted row, and refuses.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"customers_email_key\"",
+    "detail": "Key (email)=(ada@example.com) already exists."
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "ALTER TABLE customers DROP CONSTRAINT customers_email_key;\nCREATE UNIQUE INDEX customers_email_live ON customers (email) WHERE deleted_at IS NULL",
+   "note": "the fix: uniqueness only among live rows, a partial unique index.",
+   "status": "ok",
+   "result": {"command":"CREATE INDEX","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "INSERT INTO customers (email, name) VALUES ('ada@example.com', 'Ada Lovelace')",
+   "note": "the same sign-up now works: the old row is outside the index.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT id, email, deleted_at FROM customers ORDER BY id",
+   "note": "two rows for ada@example.com, one deleted, one live.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"email","type":"text"},{"name":"deleted_at","type":"timestamptz"}],
+    "data": [
+     ["1","ada@example.com","2026-03-10 09:00:00+00"],
+     ["2","grace@example.com",null],
+     ["4","ada@example.com",null]
+    ]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "INSERT INTO customers (email, name) VALUES ('ada@example.com', 'Ada again')",
+   "note": "and the rule still holds where it matters: two live rows with one email are refused.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23505",
+    "message": "duplicate key value violates unique constraint \"customers_email_live\"",
+    "detail": "Key (email)=(ada@example.com) already exists."
+   }
+  }
+ ]
+}

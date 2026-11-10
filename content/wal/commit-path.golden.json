@@ -1,0 +1,168 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "d5b803d4eeee71b6": {
+      "db": "lab",
+      "sql": "SELECT count(*) FROM accounts;\nSELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;\nUPDATE accounts SET balance = balance + 1 WHERE id = 1;\nSELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c52673244bcc470e",
+          "rows": [
+            ["3"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["inserted", "pg_lsn", 3220],
+            ["flushed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "0f978764b4b738b0",
+          "rows": [
+            ["0/17EBCF0", "0/17DB878"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0b180bc9b96cf94b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["inserted", "pg_lsn", 3220],
+            ["flushed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "89a1eec5495aa37d",
+          "rows": [
+            ["0/17EDD98", "0/17EDD98"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "af7bfec5178fe7fb": {
+      "db": "lab",
+      "sql": "SET synchronous_commit = off;\nUPDATE accounts SET balance = balance + 1 WHERE id = 2;\nSELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;\nSELECT xmin, pg_xact_status(xmin::text::xid8) AS status FROM accounts WHERE id = 2;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0bc04ee54866abc6"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["inserted", "pg_lsn", 3220],
+            ["flushed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "90072218372d7352",
+          "rows": [
+            ["0/17EDE08", "0/17EDD98"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["xmin", "xid", 28],
+            ["status", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "ee8f1a0ff13647ac",
+          "rows": [
+            ["754", "committed"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "5818923048c3d2b6": {
+      "db": "lab",
+      "sql": "SET synchronous_commit = on;\nSELECT pg_current_wal_flush_lsn() AS flushed_before;\nBEGIN;\nUPDATE accounts SET balance = 0 WHERE id = 3;\nROLLBACK;\nSELECT pg_current_wal_insert_lsn() AS inserted, pg_current_wal_flush_lsn() AS flushed;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["flushed_before", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "b220528c4fa0a2ff",
+          "rows": [
+            ["0/17EDD98"]
+          ]
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "982af26933a33534"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a25a386d4d4ec7b"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["inserted", "pg_lsn", 3220],
+            ["flushed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "32221e31faa02b5e",
+          "rows": [
+            ["0/17EDE78", "0/17EDD98"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

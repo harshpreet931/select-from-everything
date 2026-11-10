@@ -1,0 +1,120 @@
+import { PlanPick } from "@/components/figures/indexes/PlanPick";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/keyset.pgtrace.json";
+
+{/* every number here reads traces/keyset.scenario.sql, captured on PGlite: pages of 20 events
+    fetched by OFFSET and by keyset at five positions, the row-comparison cursor written out as OR,
+    and the rows on either side of one page boundary. */}
+
+export const pg = (i) => trace.steps[i].explain.Plan["Shared Hit Blocks"] + trace.steps[i].explain.Plan["Shared Read Blocks"];
+export const scanned = (i) => trace.steps[i].explain.Plan.Plans[0]["Actual Rows"];
+export const fmt = (n) => Number(n).toLocaleString("en-US");
+export const PAGES = ["page 51", "page 251", "page 501", "page 1,001"];
+export const boundary = trace.steps[10].result;
+
+<InShort>
+`LIMIT 20 OFFSET 5000` makes postgres produce 5,020 rows and throw 5,000 of them away. the deeper the page, the slower it gets. **keyset pagination** remembers where the last page ended and asks for what comes after it: `WHERE (occurred_at, id) > (last_at, last_id)`. with an index on `(occurred_at, id)` that's one descent and 20 rows, on page 1 or page 1,001.
+</InShort>
+
+## the picture
+
+you know how a bookmark works? you don't count 251 pages from the front every time you pick the book up. you open it where you left off. OFFSET is counting from the front. keyset is the bookmark: the last row you saw.
+
+<Figure caption={<>pages read for one page of 20 events, at five depths, from the capture. OFFSET grows with the page number; keyset stays flat.</>}>
+<Bars data={[
+  { label: "page 1 (either way)", value: pg(0), tone: "live" },
+  ...PAGES.map((p, k) => ({ label: `${p}, OFFSET`, value: pg(k + 1), tone: "hot" })),
+  ...PAGES.map((p, k) => ({ label: `${p}, keyset`, value: pg(k + 5), tone: "live" })),
+]} unit="pages" />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+page 1,001 by OFFSET read {fmt(pg(4))} pages to return 20 rows. by keyset, {pg(8)}. and that's on a 25,000-row table in memory; on a big table on disk, deep OFFSET pages are the slow query in the log that only happens when a crawler walks your pagination.
+
+## why OFFSET is slow
+
+OFFSET isn't a seek. postgres has no way to jump to "the 5,001st row" of a result: rows are numbered only as they come out of the plan. so it runs the query, counts rows off one by one, discards the first 5,000, and keeps the next 20:
+
+```sql run db=events session=ks
+CREATE INDEX events_at_id ON events (occurred_at, id);
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, user_id, kind, occurred_at FROM events
+ORDER BY occurred_at, id
+LIMIT 20 OFFSET 5000;
+```
+
+the Index Scan says `actual rows={fmt(scanned(2))}`. every one of those was fetched, heap page and all, so the Limit node could skip it. the index made the order free, but not the skipping. ([LIMIT and OFFSET](/learn/basics/limit-and-offset) has the semantics.)
+
+## keyset: start after the last row
+
+the page before page 251 ended on this row (the first two of page 251 under it):
+
+<Figure caption={<>the rows on either side of the boundary between page 250 and page 251. the cursor is the last row of the page before: its occurred_at and its id.</>}>
+<ResultTable columns={boundary.columns} rows={boundary.data} rowTones={["hot", null, null]} />
+<Provenance trace={prov(trace)} />
+</Figure>
+
+so the next page is everything after `('2026-03-19 04:45:52+00', 5000)`, in order, 20 of it:
+
+```sql run session=ks
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, user_id, kind, occurred_at FROM events
+WHERE (occurred_at, id) > ('2026-03-19 04:45:52+00', 5000)
+ORDER BY occurred_at, id
+LIMIT 20;
+```
+
+`Index Cond: (ROW(occurred_at, id) > ROW(...))`: the whole comparison is an index search. one descent to the cursor, then 20 entries forward. the cost doesn't depend on how deep the page is, because nothing before the cursor is ever read.
+
+## the row comparison is the trick
+
+`(a, b) > (x, y)` is a row comparison, standard SQL: it means `a > x OR (a = x AND b > y)`, compared left to right like words in a dictionary. that's exactly the order of an index on `(a, b)`, so postgres can turn it into a single starting point in the index. write the same thing out longhand and it can't:
+
+<Figure wide caption={<>page 251 three ways. the row comparison is one <code>Index Cond</code>: {pg(6)} pages. the same condition written with OR becomes a <code>Filter</code> on a scan that starts at the very first entry: {fmt(trace.steps[9].explain.Plan.Plans[0]["Rows Removed by Filter"])} rows removed, {pg(9)} pages, no better than OFFSET.</>}>
+<PlanPick
+  trace={trace}
+  keyLabel="page 251 by"
+  pages
+  plans={[
+    { label: "OFFSET 5000", step: 2 },
+    { label: "(occurred_at, id) > (…)", step: 6 },
+    { label: "… OR (… AND …)", step: 9 },
+  ]}
+/>
+</Figure>
+
+<Predict question="the OR version is logically the same as the row comparison. why is it slow?" options={["OR can't use indexes", "the planner can't turn it into one index range", "it returns more rows"]} answer={1}>
+```sql
+WHERE occurred_at > '2026-03-19 04:45:52+00'
+   OR (occurred_at = '2026-03-19 04:45:52+00' AND id > 5000)
+```
+<Explain>
+the planner doesn't recognize that this OR is a row comparison in disguise, so it can't hand the index a starting point. it does use the index (for the ORDER BY), from the beginning, and filters each row. it returns the same 20 rows, after removing {fmt(trace.steps[9].explain.Plan.Plans[0]["Rows Removed by Filter"])}. write `(a, b) > (x, y)` and let postgres see it.
+</Explain>
+</Predict>
+
+## the rules
+
+- **the ORDER BY needs a tiebreaker that makes it unique.** `occurred_at` alone could have two events in the same second, and then "after the last one" would skip or repeat rows at the page boundary. ending on the primary key (`id`) fixes it, and the cursor carries both.
+- **the index matches the ORDER BY and the comparison**: `(occurred_at, id)` for `ORDER BY occurred_at, id` and `(occurred_at, id) > (…)`. for newest first, flip all three: `ORDER BY occurred_at DESC, id DESC` with `(occurred_at, id) < (…)`; the same index serves it backwards.
+- **mixed directions don't fit a row comparison.** `ORDER BY score DESC, id ASC` can't be written as one `(a, b) > (x, y)`. either use the OR form with an index declared `(score DESC, id)` and accept a filter, or put the columns in one direction.
+- **the cursor travels with the page.** the client sends back the last row's `occurred_at` and `id` (often encoded into an opaque "next" token), not a page number.
+
+## what you give up
+
+you can't jump to page 251 directly; you can only go forward (or backward, flipping the comparison) from where you are. that's why infinite scroll, "load more" buttons and API cursors use keyset, and numbered page links use OFFSET. for numbered pages deep in a big result, people usually cap the depth, or precompute the page boundaries.
+
+and a page can shift under you with OFFSET: if a row is inserted near the front between two requests, every later page moves by one, and you see a row twice. with keyset, page boundaries are values, not positions, so new rows before the cursor don't move what comes after it.
+
+<Interview q="how would you paginate an API over a large, growing table?">
+keyset (cursor) pagination: order by something unique, usually (created_at, id), and for the next page ask WHERE (created_at, id) > (last_created_at, last_id) ORDER BY created_at, id LIMIT n, with an index on (created_at, id). each page is one index descent plus n rows, no matter how deep. OFFSET reads and discards every earlier row, so it gets linearly slower, and rows inserted in between shift the pages. bonus points: the row comparison form is what lets postgres use the index as a range (the OR spelled out doesn't), and the cost is no random access to page k.
+</Interview>
+
+<Keylines>
+- OFFSET n reads n rows and throws them away. deep pages get linearly slower.
+- keyset: WHERE (a, id) > (last_a, last_id), with an index on (a, id).
+- one index descent and n rows, on any page.
+- write the row comparison, not the OR: only the row form becomes an index range.
+- keyset can't jump to page k. it goes forward from a cursor.
+</Keylines>

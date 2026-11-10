@@ -1,0 +1,157 @@
+{/* the runner's test page. never shipped: it isn't in the curriculum, and the chapter route only
+    serves content/_test/ under `next dev` (at /learn/_test/runner). checked by
+    `pnpm sql-check content/_test` like any chapter, so every block below has a golden. */}
+
+<InShort>
+every kind of block the runner has to get right, on one page. **press run** on each one and it should
+say the same as the golden above it, which came from `pnpm sql-check --update`.
+</InShort>
+
+## the engine
+
+the version string is the first thing to check. it comes from the browser engine itself.
+
+```sql run
+SELECT version();
+```
+
+## several statements
+
+one block, three statements, each run on its own like psql does. each gets its own result.
+
+```sql run title="three.sql"
+CREATE TABLE t (id int PRIMARY KEY, label text);
+INSERT INTO t VALUES (1, 'one'), (2, 'two'), (3, NULL), (4, '');
+SELECT id, label, label IS NULL AS is_null FROM t ORDER BY id;
+```
+
+## an error, with a caret
+
+the caret should sit under `nope`, on the second line of the statement.
+
+```sql run expect=error
+SELECT id,
+       nope
+FROM (VALUES (1)) AS v (id);
+```
+
+errors from inside a function come with their context:
+
+```sql run expect=error
+CREATE FUNCTION half(x int) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN x / 0;
+END $$;
+SELECT half(10);
+```
+
+## keep going after an error
+
+with `errors=continue` the block keeps running, so you see a transaction get stuck in the failed
+state (25P02) until the ROLLBACK.
+
+```sql run errors=continue
+BEGIN;
+SELECT 1 / 0;
+SELECT 'still here?';
+ROLLBACK;
+SELECT 'yes, after the rollback' AS answer;
+```
+
+## notices
+
+```sql run
+DROP TABLE IF EXISTS not_there;
+DO $$ BEGIN RAISE NOTICE 'hello from plpgsql, % rows', 42; END $$;
+```
+
+## EXPLAIN and VACUUM
+
+```sql run db=shop
+EXPLAIN SELECT name FROM customers WHERE id = 42;
+```
+
+```sql run db=shop
+EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
+SELECT status, count(*) FROM orders GROUP BY status;
+```
+
+VACUUM can't run inside a transaction block, which is why every statement runs on its own:
+
+```sql run db=lab ext=pageinspect setup=bloat
+VACUUM bloat;
+SELECT count(*) AS live_tuples FROM bloat;
+SELECT lp, lp_flags, t_xmin <> 0 AS has_xmin FROM heap_page_items(get_raw_page('bloat', 0)) ORDER BY lp LIMIT 5;
+```
+
+## a session
+
+these blocks share one database, in page order. a hidden block between them adds a row the page
+never shows.
+
+```sql run db=shop session=cart
+CREATE TABLE cart (customer_id int REFERENCES customers, product_id int REFERENCES products, qty int);
+INSERT INTO cart VALUES (42, 1, 2);
+```
+
+```sql hidden session=cart
+INSERT INTO cart VALUES (42, 200, 1);
+```
+
+```sql run session=cart
+SELECT c.name, p.name AS product, cart.qty
+FROM cart
+JOIN customers c ON c.id = cart.customer_id
+JOIN products p ON p.id = cart.product_id
+ORDER BY p.id;
+```
+
+## COPY TO STDOUT
+
+```sql run db=school
+COPY (SELECT code, title FROM courses WHERE dept = 'CS' ORDER BY code) TO STDOUT WITH (FORMAT csv, HEADER);
+```
+
+## the row cap
+
+a million rows come back from the server, but the page keeps the first 1,000.
+
+```sql run unordered
+SELECT g AS n FROM generate_series(1, 1000000) AS g;
+```
+
+## values that change
+
+```sql run volatile
+SELECT now() > '2026-01-01' AS after_new_year, random() < 2 AS less_than_two;
+```
+
+## out of time
+
+this one sleeps for 30 seconds. the page stops it after 10, starts a fresh engine, and the next run
+works straight away. sql-check skips it (nocheck), it would just wait.
+
+```sql run nocheck
+SELECT pg_sleep(30);
+```
+
+## only on a real server
+
+a `native` block is checked by `pnpm sql-check --engine=native` on a real postgres 18 and shows that
+output, with no run button. the browser engine would say `sync` here: it has no I/O workers.
+
+```sql native
+SHOW io_method;
+```
+
+## things the browser can't run
+
+```sql
+COPY customers FROM STDIN;
+```
+
+<Keylines>
+- one block, many statements, each on its own.
+- errors point at the exact character.
+- a session chain runs its earlier blocks first, hidden ones too.
+</Keylines>

@@ -1,0 +1,256 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "35f4107000f40a70": {
+      "db": "shop",
+      "sql": "UPDATE products SET price = round(price * 1.10, 2) WHERE category = 'books';\nSELECT id, name, price FROM products WHERE category = 'books' ORDER BY id LIMIT 4;",
+      "statements": [
+        {
+          "tag": "UPDATE 12",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 12,
+          "digest": "17b5c034adcdbeed"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["price", "numeric", 1700]
+          ],
+          "rowCount": 4,
+          "digest": "262668726d55af61",
+          "rows": [
+            ["3", "the art of sql", "35.20"],
+            ["28", "bamboo cookbook", "18.59"],
+            ["53", "mini notebook", "168.96"],
+            ["54", "compact novel", "81.14"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b940765366308a45": {
+      "db": "shop",
+      "sql": "UPDATE products SET name = sku, sku = name WHERE id = 3;\nSELECT id, sku, name FROM products WHERE id = 3;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "d4149e3cbcb8aced"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["sku", "text", 25],
+            ["name", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "5f65e48b419e559c",
+          "rows": [
+            ["3", "the art of sql", "BOO-0003"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "26676e76e24a5a94": {
+      "db": "shop",
+      "sql": "UPDATE products SET category = 'misc' WHERE category = NULL;\nUPDATE products SET category = 'misc' WHERE category IS NULL;",
+      "statements": [
+        {
+          "tag": "UPDATE 0",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 0,
+          "digest": "d4149d3cbcb8ab3a"
+        },
+        {
+          "tag": "UPDATE 3",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 3,
+          "digest": "0bc04ce54866a860"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "17854eb8e7261ede": {
+      "db": "shop",
+      "sql": "BEGIN;\nUPDATE customers SET city = 'Paris';\nROLLBACK;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "UPDATE 2000",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 2000,
+          "digest": "41fa56494a6d1941"
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "efebd36c5a6763a9"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9fcfcb86efdb29a6": {
+      "db": "shop",
+      "sql": "UPDATE products SET price = p2.price FROM products AS p2 WHERE p2.id = 3;",
+      "statements": [
+        {
+          "tag": "UPDATE 200",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 200,
+          "digest": "fdfdf9834639f454"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "570a4541ed796623": {
+      "db": "shop",
+      "sql": "SELECT count(*) AS items FROM order_items;\nDELETE FROM orders WHERE status = 'cancelled';\nSELECT count(*) AS items FROM order_items;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["items", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "4beb060c6874de19",
+          "rows": [
+            ["24942"]
+          ]
+        },
+        {
+          "tag": "DELETE 317",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 317,
+          "digest": "3c4e5d2edd51c856"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["items", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "6cbbbcc8c09a468e",
+          "rows": [
+            ["24228"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7da27d6176f27037": {
+      "db": "shop",
+      "sql": "DELETE FROM products WHERE discontinued;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "23503",
+            "message": "update or delete on table \"products\" violates foreign key constraint \"order_items_product_id_fkey\" on table \"order_items\"",
+            "detail": "Key (id)=(8) is still referenced from table \"order_items\".",
+            "schema": "public",
+            "table": "order_items",
+            "constraint": "order_items_product_id_fkey"
+          },
+          "digest": "56761c8feacf35ab"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "23503",
+        "message": "update or delete on table \"products\" violates foreign key constraint \"order_items_product_id_fkey\" on table \"order_items\"",
+        "detail": "Key (id)=(8) is still referenced from table \"order_items\".",
+        "schema": "public",
+        "table": "order_items",
+        "constraint": "order_items_product_id_fkey",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "8f47fd96000e514c": {
+      "db": "shop",
+      "sql": "DELETE FROM order_items AS oi\nUSING products AS p\nWHERE oi.product_id = p.id AND p.discontinued;\n\nDELETE FROM products WHERE discontinued;",
+      "statements": [
+        {
+          "tag": "DELETE 1444",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 1444,
+          "digest": "b2e23d9d477db91d"
+        },
+        {
+          "tag": "DELETE 12",
+          "command": "DELETE",
+          "columns": null,
+          "rowCount": 12,
+          "digest": "85fa0b183c83f786"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7d37d76a51aa7903": {
+      "db": "shop",
+      "sql": "TRUNCATE orders;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "0A000",
+            "message": "cannot truncate a table referenced in a foreign key constraint",
+            "detail": "Table \"order_items\" references \"orders\".",
+            "hint": "Truncate table \"order_items\" at the same time, or use TRUNCATE ... CASCADE."
+          },
+          "digest": "9e76592a19e5e261"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "0A000",
+        "message": "cannot truncate a table referenced in a foreign key constraint",
+        "detail": "Table \"order_items\" references \"orders\".",
+        "hint": "Truncate table \"order_items\" at the same time, or use TRUNCATE ... CASCADE.",
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

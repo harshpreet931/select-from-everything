@@ -1,0 +1,31 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "7766821919fc2939": {
+      "db": "empty",
+      "sql": "SELECT bits_per_key, k,\n       round((100 * (1 - exp(-k / bits_per_key)) ^ k)::numeric, 3) AS false_positive_pct\nFROM (SELECT b::numeric AS bits_per_key, round(b * ln(2)) AS k\n      FROM unnest(ARRAY[5, 10, 16, 20]) AS b) AS x\nORDER BY bits_per_key;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["bits_per_key", "numeric", 1700],
+            ["k", "float8", 701],
+            ["false_positive_pct", "numeric", 1700]
+          ],
+          "rowCount": 4,
+          "digest": "17487648b2275e5c",
+          "rows": [
+            ["5", "3", "9.185"],
+            ["10", "7", "0.819"],
+            ["16", "11", "0.046"],
+            ["20", "14", "0.007"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

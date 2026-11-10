@@ -1,0 +1,138 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f4232e374c5fe730": {
+      "db": "lab",
+      "sql": "CREATE TABLE full100 (id int PRIMARY KEY, n int, pad text) WITH (fillfactor = 100);\nCREATE TABLE room70 (id int PRIMARY KEY, n int, pad text) WITH (fillfactor = 70);\nINSERT INTO full100 SELECT g, 0, repeat('x', 100) FROM generate_series(1, 232) AS g ORDER BY g;\nINSERT INTO room70 SELECT g, 0, repeat('x', 100) FROM generate_series(1, 232) AS g ORDER BY g;\nSELECT relname, reloptions, pg_relation_size(oid) / 8192 AS pages\nFROM pg_class WHERE relname IN ('full100', 'room70') ORDER BY relname;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cb65c747af86ec80"
+        },
+        {
+          "tag": "INSERT 0 232",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 232,
+          "digest": "2475c7eb5bc2462b"
+        },
+        {
+          "tag": "INSERT 0 232",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 232,
+          "digest": "c2feb387bc96ebe8"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["reloptions", "text[]", 1009],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "572337fd9d6bba7e",
+          "rows": [
+            ["full100", "{fillfactor=100}", "4"],
+            ["room70", "{fillfactor=70}", "6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1e49f6464d5dd252": {
+      "db": "lab",
+      "sql": "UPDATE full100 SET n = n + 1 WHERE id % 4 = 0;\nUPDATE room70 SET n = n + 1 WHERE id % 4 = 0;\nSELECT relname, pg_relation_size(oid) / 8192 AS pages\nFROM pg_class WHERE relname IN ('full100', 'room70') ORDER BY relname;",
+      "statements": [
+        {
+          "tag": "UPDATE 58",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 58,
+          "digest": "17a82e34adc23c7b"
+        },
+        {
+          "tag": "UPDATE 58",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 58,
+          "digest": "5e7f859a068196de"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "95011b4d904d0da3",
+          "rows": [
+            ["full100", "5"],
+            ["room70", "6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "582b64cdf51a20ca": {
+      "db": "lab",
+      "sql": "SELECT 'full100_pkey' AS index, live_items FROM bt_page_stats('full100_pkey', 1)\nUNION ALL\nSELECT 'room70_pkey', live_items FROM bt_page_stats('room70_pkey', 1)\nORDER BY index;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["index", "text", 25],
+            ["live_items", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "f29f39896c2e9225",
+          "rows": [
+            ["full100_pkey", "290"],
+            ["room70_pkey", "232"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c13a0bc9aec4bd61": {
+      "db": "lab",
+      "sql": "SELECT rel,\n       count(*) FILTER (WHERE (t_infomask2 & 16384) <> 0) AS hot_updated,\n       count(*) FILTER (WHERE (t_infomask2 & 32768) <> 0) AS heap_only\nFROM (SELECT 'full100' AS rel, h.* FROM generate_series(0, 4) AS b,\n             heap_page_items(get_raw_page('full100', b)) AS h\n      UNION ALL\n      SELECT 'room70', h.* FROM generate_series(0, 5) AS b,\n             heap_page_items(get_raw_page('room70', b)) AS h) AS t\nGROUP BY rel ORDER BY rel;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["rel", "text", 25],
+            ["hot_updated", "int8", 20],
+            ["heap_only", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "c9642a488de97502",
+          "rows": [
+            ["full100", "0", "0"],
+            ["room70", "58", "58"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

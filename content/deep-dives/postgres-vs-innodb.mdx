@@ -1,0 +1,150 @@
+import ssi from "./traces/ssi-booking.pgtrace.json";
+
+{/* the postgres side is real: run blocks with goldens, and traces/ssi-booking captured on a
+    throwaway native postgres 18.6. no mysql is installed on the machine this was written on, so
+    the InnoDB side is the mysql 8.4 reference manual, cited by section, with no numbers of ours. */}
+
+<InShort>
+postgres keeps rows in a **heap** and every index, the primary key included, points at a row's physical address. InnoDB stores rows inside the primary key's b-tree (a **clustered index**), and secondary indexes point at the primary key value. that one choice decides how updates, old versions and range locks work in each.
+
+same SQL. different machine underneath.
+</InShort>
+
+## the picture
+
+you know how people say "mysql and postgres are basically the same, they both run SQL"? at the SQL level, mostly. one floor down, they made opposite choices at almost every fork, and you can feel it in production: why one wants short primary keys, why the other needs VACUUM, why one blocks an INSERT the other lets through.
+
+think of two libraries. one stacks books wherever there's shelf space and keeps card catalogues that say "row 4, shelf 2" (postgres: a heap, and indexes holding a ctid). the other keeps the books themselves in call-number order, and its other catalogues say "call number 813.54" so you walk to the main shelves to find it (InnoDB: rows in the primary key's b-tree, and secondary indexes holding the key).
+
+<Figure caption={<>where the row lives, in each engine. postgres from its own pages (see the run blocks below); InnoDB drawn after the mysql 8.4 manual's "clustered and secondary indexes" section.</>}>
+<Tabs>
+<Tab label="postgres">
+<Tree>{`
+heap: notes #live // rows in whatever page had room, in no key order
+    page 0: (0,1) id 3 · (0,2) id 1 · (0,3) id 2
+notes_pkey (btree) #ref // key → ctid
+    1 → (0,2) · 2 → (0,3) · 3 → (0,1)
+notes_body (btree) #ref // key → ctid, exactly the same kind of entry
+    'a' → (0,3) · 'b' → (0,2) · 'c' → (0,1)
+`}</Tree>
+</Tab>
+<Tab label="InnoDB">
+<Tree>{`
+clustered index: PRIMARY #live // the rows are the leaves, in key order
+    leaf: id 1 (whole row) · id 2 (whole row) · id 3 (whole row)
+secondary index: body #ref // key → primary key value, not an address
+    'a' → id 2 · 'b' → id 1 · 'c' → id 3
+no PRIMARY KEY? #meta // first UNIQUE NOT NULL index, else a hidden 6-byte row id (GEN_CLUST_INDEX)
+`}</Tree>
+</Tab>
+</Tabs>
+</Figure>
+
+## a heap vs a clustered index
+
+postgres first. insert three rows out of key order and ask where they went:
+
+```sql run session=heap ext=pageinspect
+CREATE TABLE notes (id int PRIMARY KEY, body text NOT NULL);
+CREATE INDEX notes_body ON notes (body);
+INSERT INTO notes VALUES (3, 'c'), (1, 'b'), (2, 'a');
+SELECT ctid, id, body FROM notes ORDER BY ctid;
+```
+
+the heap is in arrival order: id 3 is at (0,1). the primary key doesn't decide where a row lives, it's just another index ([the files behind a table](/learn/storage/files-and-forks), [what an index actually is](/learn/indexes/what-an-index-is)). and both indexes hold the same kind of thing, a physical address:
+
+```sql run session=heap
+SELECT 'notes_pkey' AS index, itemoffset, ctid FROM bt_page_items('notes_pkey', 1)
+UNION ALL
+SELECT 'notes_body', itemoffset, ctid FROM bt_page_items('notes_body', 1)
+ORDER BY index, itemoffset;
+```
+
+in InnoDB, by the manual's "clustered and secondary indexes" section, the table *is* the primary key's b-tree: the leaf pages hold the whole rows, in key order. with no primary key it uses the first UNIQUE index whose columns are all NOT NULL, and failing that a hidden, monotonically increasing 6-byte row id. every other index is a secondary index, and each of its records holds the indexed columns plus the row's primary key columns.
+
+<Figure caption={<>a lookup by a secondary index, step by step. postgres: one descent and one heap fetch by address. InnoDB: two descents, the second one by primary key. InnoDB after the mysql 8.4 manual; postgres from <a href="/learn/execution/scans">seq scans, index scans and bitmap scans</a>.</>}>
+<Tabs>
+<Tab label="postgres">
+<Flow stages={[
+  { label: "notes_body", sub: "descend to 'a'", note: "a normal btree descent: root, internal pages, leaf." },
+  { label: "ctid (0,3)", sub: "a physical address", note: "the entry says: page 0, line pointer 3." },
+  { label: "heap page 0", sub: "fetch slot 3", note: "one buffer lookup by page number, then check the tuple's xmin and xmax against the snapshot." },
+]} />
+</Tab>
+<Tab label="InnoDB">
+<Flow stages={[
+  { label: "body index", sub: "descend to 'a'", note: "a secondary index descent." },
+  { label: "id 2", sub: "the primary key value", note: "the secondary record holds the primary key, not an address." },
+  { label: "PRIMARY", sub: "descend to id 2", note: "a second full b-tree descent, through the clustered index, to the leaf that holds the row." },
+]} />
+</Tab>
+</Tabs>
+</Figure>
+
+each design wins somewhere. a primary key lookup or range scan in InnoDB lands on the row itself, with neighbouring keys on the same page; in postgres it's an index plus scattered heap pages (unless the table was [CLUSTERed](/learn/storage/files-and-forks) recently, and it doesn't stay that way). a secondary lookup in InnoDB costs two descents, and a long primary key makes every secondary index fatter, which is why the manual advises short ones. in postgres, any index gets you to the row in one hop.
+
+the bill comes due on UPDATE. when a postgres row moves to a new address, every index needs an entry for the new address (unless the update is [HOT](/learn/mvcc/hot-updates)):
+
+```sql run session=heap
+UPDATE notes SET body = 'd' WHERE id = 1;
+SELECT itemoffset, ctid, data FROM bt_page_items('notes_pkey', 1) ORDER BY itemoffset;
+```
+
+two entries for key 1 in the primary key, though id didn't change: one for the old version at (0,2), one for the new one at (0,4). that's [write amplification](/learn/indexes/index-costs), and it's the price of indexes holding addresses. in InnoDB the same UPDATE changes the row in place in the clustered index and touches only the index on `body`: the other secondary indexes store id, and id didn't change.
+
+## versions vs undo
+
+that new tuple at (0,4) is postgres's MVCC: the old version stays in the heap until VACUUM ([an UPDATE is an INSERT](/learn/mvcc/update-is-insert)). InnoDB updates the row in place and writes the old values to an **undo log**; a reader that needs the old version rebuilds it from there ([MVCC with undo logs](/learn/mvcc/undo-logs) has the whole comparison, with the manual's details). the short version:
+
+| | postgres | InnoDB |
+| --- | --- | --- |
+| row storage | heap, any order | clustered index, primary key order |
+| index entries point at | a ctid (page, slot) | the primary key value |
+| an UPDATE writes | a new tuple, plus an entry in every index (unless HOT) | the row in place, plus undo, plus entries only in indexes whose columns changed |
+| old versions live | in the table | in undo logs |
+| cleanup | VACUUM | purge |
+| ROLLBACK | nothing to undo: the xid is marked aborted | applies the undo |
+| default isolation | READ COMMITTED | REPEATABLE READ |
+| phantoms at REPEATABLE READ | prevented by the snapshot | prevented by next-key locks for locking reads; plain reads use the snapshot |
+
+## gap locks vs SSI
+
+the last fork is about ranges. "is room 7 free on christmas eve? if so, book it" is a read of a range followed by a write into it, and two transactions doing it at once is the classic [write skew](/learn/transactions/write-skew).
+
+InnoDB's answer is to lock the range. the manual's "InnoDB locking" section: at REPEATABLE READ (its default), locking reads and index scans take **next-key locks**, a record lock plus a **gap lock** on the gap before the record, so nobody can insert into the range you scanned. an INSERT first takes an *insert intention* lock on its gap, which waits if someone holds a gap lock there. at SERIALIZABLE, plain SELECTs are turned into `SELECT ... FOR SHARE` when autocommit is off ("transaction isolation levels"). so the second booking transaction **waits**, and if both took the gap first, one of them gets a deadlock error.
+
+postgres at SERIALIZABLE does something else: [serializable snapshot isolation](/learn/locking/ssi). reads leave SIRead locks, which block nothing. postgres watches for read-write dependencies, and when two of them line up in the dangerous pattern, it cancels a transaction with SQLSTATE 40001. captured on a real server:
+
+<Predict question="both transactions saw room 7 free and inserted a booking. nobody has committed. what happens at T2's INSERT?" options={["it waits for T1", "it fails with 40001", "it goes through"]} answer={2}>
+```sql
+-- T1 and T2: BEGIN ISOLATION LEVEL SERIALIZABLE;
+-- T1 and T2: SELECT count(*) FROM bookings WHERE room = 7 AND night = '2026-12-24';  -- 0
+/* T1 */ INSERT INTO bookings VALUES (5001, 7, '2026-12-24');
+/* T2 */ INSERT INTO bookings VALUES (5002, 7, '2026-12-24');  -- ?
+```
+<Explain>
+it goes through. SIRead locks never block anyone, so both INSERTs succeed at once. postgres has recorded the dependencies (each one wrote into a range the other read), and it acts at commit: T1 commits, and T2's COMMIT fails with 40001. in InnoDB, with locking reads, T2's insert would have waited on T1's gap lock instead.
+</Explain>
+</Predict>
+
+<Figure wide caption={<>two serializable transactions, captured on postgres 18.6. each read leaves an <C k="meta">SIReadLock</C> on page 5 of the index (the leaf where room 7, christmas eve would go), and nothing ever waits. T1's SIRead lock outlives its COMMIT, because T2 is still running. T2's COMMIT is the one that <C k="dead">fails</C>.</>}>
+<PgStepper trace={ssi} panels={["lanes", "locks"]} interval={2400} />
+</Figure>
+
+the error's detail line says "canceled on identification as a pivot, during commit attempt". retry T2 and its check sees T1's booking ([retrying serialization failures](/learn/transactions/retry-loops)). so the two engines trade the same thing in opposite directions: InnoDB makes you wait and sometimes deadlock, postgres lets you run and sometimes makes you retry. for the booking case specifically, both are beaten by a constraint that can't be raced: postgres's [exclusion constraint](/learn/design/temporal-keys), which [the schema interview](/learn/deep-dives/schema-interview) builds.
+
+<Gotcha title="REPEATABLE READ means different things">
+the standard's REPEATABLE READ allows phantoms. InnoDB's default REPEATABLE READ gives plain SELECTs a snapshot taken at the first read, but its locking reads and UPDATEs see the newest committed rows, and the manual warns against mixing the two in one transaction. postgres's REPEATABLE READ is snapshot isolation: every statement sees the snapshot, and an UPDATE of a row someone else changed fails with 40001 instead of quietly using the new value ([isolation levels](/learn/transactions/isolation-levels)). code that's correct on one can be wrong on the other.
+</Gotcha>
+
+<Interview q="how is a table stored in postgres vs mysql, and why does it matter?">
+postgres stores rows in a heap in no particular order, and every index, the primary key included, maps keys to a physical tuple address (ctid). InnoDB stores rows in the leaves of the primary key b-tree, a clustered index, and secondary indexes map keys to the primary key value. consequences: InnoDB primary key range scans are cheap and secondary lookups cost two descents, so keep the primary key short and preferably increasing; postgres lookups by any index are one descent plus a heap fetch, but an update that moves a row adds an entry to every index unless it's HOT, and old versions stay in the heap until VACUUM. bonus point: random uuid primary keys hurt InnoDB more, since they scatter inserts across the clustered index itself (that's the [uuidv7](/learn/types/identity-and-uuids) argument).
+</Interview>
+
+<Keylines>
+- postgres: heap plus indexes of addresses. InnoDB: the table is the primary key's b-tree, and secondary indexes hold the key.
+- InnoDB secondary lookups descend twice. postgres updates that move a row touch every index.
+- old versions: in the postgres heap (VACUUM) vs in InnoDB undo (purge).
+- ranges: InnoDB blocks inserts with gap and next-key locks; postgres SERIALIZABLE lets them run and cancels one at commit.
+- same isolation level name, different guarantees. read your engine's manual, not the standard.
+</Keylines>

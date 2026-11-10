@@ -1,0 +1,19 @@
+[
+  { "term": "selectivity", "short": "the fraction of a table's rows a condition matches. few rows favour an index, most rows a seq scan.", "chapter": "index-or-scan" },
+  { "term": "leftmost prefix", "short": "the leading columns of a multicolumn index. an index on (a, b) narrows scans on a, or on a and b.", "chapter": "composite-indexes", "aka": ["leftmost prefix rule"] },
+  { "term": "skip scan", "short": "postgres 18: using an index on (a, b) for a condition on b alone, with one search per value of a.", "chapter": "skip-scan" },
+  { "term": "Index Searches", "short": "the EXPLAIN ANALYZE line (postgres 18+) counting how many times an index scan went down the tree.", "chapter": "skip-scan", "aka": ["index search"] },
+  { "term": "index-only scan", "short": "a scan answered from the index alone, for pages the visibility map marks all-visible.", "chapter": "index-only-scans", "aka": ["Index Only Scan"] },
+  { "term": "heap fetch", "short": "a trip from an index-only scan to the table, for a page not marked all-visible. EXPLAIN counts them as Heap Fetches.", "chapter": "index-only-scans", "aka": ["Heap Fetches"] },
+  { "term": "covering index", "short": "an index that holds every column a query needs, so the query can be an index-only scan.", "chapter": "index-only-scans", "aka": ["INCLUDE", "included column"] },
+  { "term": "partial index", "short": "an index with a WHERE clause: it holds only the rows that match it.", "chapter": "partial-and-expression" },
+  { "term": "expression index", "short": "an index on a computed value like lower(email). the query has to use the same expression.", "chapter": "partial-and-expression", "aka": ["functional index", "index on an expression"] },
+  { "term": "keyset pagination", "short": "paging by remembering the last row seen: WHERE (a, id) > (last_a, last_id), instead of OFFSET.", "chapter": "keyset-pagination", "aka": ["cursor pagination", "seek method"] },
+  { "term": "row comparison", "short": "(a, b) > (x, y): compared column by column, like words in a dictionary. matches an index on (a, b).", "chapter": "keyset-pagination", "aka": ["row constructor comparison"] },
+  { "term": "write amplification", "short": "one logical write turning into many physical ones: the row, an entry per index, and WAL for each.", "chapter": "index-costs" },
+  { "term": "access method", "short": "an index type: btree, hash, GiST, SP-GiST, GIN or BRIN. listed in pg_am.", "chapter": "index-types", "aka": ["index type", "pg_am"] },
+  { "term": "operator class", "short": "which operators an index type can serve for a data type, like gin jsonb_path_ops or btree text_pattern_ops.", "chapter": "index-types", "aka": ["opclass", "pg_opclass"] },
+  { "term": "tsvector", "short": "text as a sorted list of normalized words (lexemes) with their positions, for full-text search.", "chapter": "text-search", "aka": ["lexeme", "to_tsvector"] },
+  { "term": "tsquery", "short": "a full-text search condition over lexemes, with & | ! and <->, matched against a tsvector with @@.", "chapter": "text-search", "aka": ["to_tsquery", "websearch_to_tsquery"] },
+  { "term": "trigram", "short": "a run of three characters. pg_trgm compares and indexes text by trigrams, for LIKE '%foo%' and similarity.", "chapter": "text-search", "aka": ["pg_trgm"] }
+]

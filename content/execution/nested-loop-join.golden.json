@@ -1,0 +1,107 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "bcd6225cf7a9af5f": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT o.id, c.name\nFROM orders AS o JOIN customers AS c ON c.id = o.customer_id\nORDER BY o.id\nLIMIT 1000;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "b9d7515460e2fd5d",
+          "rows": [
+            ["Limit (actual rows=1000.00 loops=1)"],
+            ["  Buffers: shared hit=2192 read=41"],
+            ["  ->  Nested Loop (actual rows=1000.00 loops=1)"],
+            ["        Buffers: shared hit=2192 read=41"],
+            ["        ->  Index Scan using orders_pkey on orders o (actual rows=1000.00 loops=1)"],
+            ["              Index Searches: 1"],
+            ["              Buffers: shared read=13"],
+            ["        ->  Memoize (actual rows=1.00 loops=1000)"],
+            ["              Cache Key: o.customer_id"],
+            ["              Cache Mode: logical"],
+            ["              Hits: 260  Misses: 740  Evictions: 0  Overflows: 0  Memory Usage: 65kB"],
+            ["              Buffers: shared hit=2192 read=28"],
+            ["              ->  Index Scan using customers_pkey on customers c (actual rows=1.00 loops=740)"],
+            ["                    Index Cond: (id = o.customer_id)"],
+            ["                    Index Searches: 740"],
+            ["                    Buffers: shared hit=2192 read=28"],
+            ["Planning:"],
+            ["  Buffers: shared hit=95 read=11 dirtied=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1839a126bf8573ef": {
+      "db": "shop",
+      "sql": "SET enable_hashjoin = off;\nSET enable_mergejoin = off;\n\nEXPLAIN (COSTS OFF)\nSELECT c.name, o.id\nFROM customers AS c FULL JOIN orders AS o ON o.customer_id = c.id;",
+      "statements": [
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fee0900b8809a409"
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "21f55c8cca856bf0"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "8d2f2adbd4dbf75e",
+          "rows": [
+            ["Hash Full Join"],
+            ["  Disabled: true"],
+            ["  Hash Cond: (o.customer_id = c.id)"],
+            ["  ->  Seq Scan on orders o"],
+            ["  ->  Hash"],
+            ["        ->  Seq Scan on customers c"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "fb6795f3e8836241": {
+      "db": "shop",
+      "sql": "SELECT c.name, o.id\nFROM customers AS c FULL JOIN orders AS o ON o.customer_id < c.id;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "0A000",
+            "message": "FULL JOIN is only supported with merge-joinable or hash-joinable join conditions"
+          },
+          "digest": "2c3f3e4a15d3fbda"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "0A000",
+        "message": "FULL JOIN is only supported with merge-joinable or hash-joinable join conditions",
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

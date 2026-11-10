@@ -1,0 +1,136 @@
+{
+ "v": 1,
+ "scenario": "content/design/traces/rls.scenario.sql",
+ "title": "one notes table with a tenant policy, read as six different roles",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "notes": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}]
+  },
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE ROLE rls_owner;\nCREATE ROLE rls_clerk;\nCREATE ROLE rls_auditor BYPASSRLS;\nCREATE TABLE notes (id int PRIMARY KEY, tenant text NOT NULL, body text NOT NULL);\nALTER TABLE notes OWNER TO rls_owner;\nINSERT INTO notes VALUES (1, 'acme', 'renew the lease'), (2, 'acme', 'order teapots'), (3, 'globex', 'quarterly numbers');\nGRANT SELECT, INSERT ON notes TO rls_clerk, rls_auditor;\nALTER TABLE notes ENABLE ROW LEVEL SECURITY;\nCREATE POLICY tenant_rows ON notes USING (tenant = current_setting('app.tenant', true))",
+   "note": "a notes table owned by an ordinary role, rows for two tenants, and a policy: you see your tenant's rows, named by app.tenant.",
+   "status": "ok",
+   "result": {"command":"CREATE POLICY","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SET app.tenant = 'acme';\nSET ROLE rls_clerk;\nSELECT id, tenant, body FROM notes ORDER BY id",
+   "note": "the clerk, working for acme. no WHERE in the query; the policy adds one.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}],
+    "data": [["1","acme","renew the lease"],["2","acme","order teapots"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "RESET ROLE;\nSET app.tenant = 'globex';\nSET ROLE rls_clerk;\nSELECT id, tenant, body FROM notes ORDER BY id",
+   "note": "the same clerk, same query, working for globex.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}],
+    "data": [["3","globex","quarterly numbers"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "RESET ROLE;\nRESET app.tenant;\nSET ROLE rls_clerk;\nSELECT id, tenant, body FROM notes ORDER BY id",
+   "note": "the clerk with no tenant set: current_setting returns NULL, the policy is never true, and the clerk sees nothing.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 0,
+    "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}],
+    "data": []
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "RESET ROLE;\nSET app.tenant = 'acme';\nSET ROLE rls_clerk;\nINSERT INTO notes VALUES (4, 'globex', 'sneaky')",
+   "note": "the acme clerk tries to write a note for globex. with only USING, the policy's expression is also the check for new rows, and this row fails it.",
+   "status": "error",
+   "error": {"sqlstate":"42501","message":"new row violates row-level security policy for table \"notes\""}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "RESET ROLE;\nSET app.tenant = 'acme';\nSET ROLE rls_owner;\nSELECT id, tenant, body FROM notes ORDER BY id",
+   "note": "the table's owner: policies don't apply to the owner, so it sees every row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}],
+    "data": [["1","acme","renew the lease"],["2","acme","order teapots"],["3","globex","quarterly numbers"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "RESET ROLE;\nALTER TABLE notes FORCE ROW LEVEL SECURITY;\nSET app.tenant = 'acme';\nSET ROLE rls_owner;\nSELECT id, tenant, body FROM notes ORDER BY id",
+   "note": "FORCE ROW LEVEL SECURITY makes the owner subject to the policy too.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}],
+    "data": [["1","acme","renew the lease"],["2","acme","order teapots"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "RESET ROLE;\nSET ROLE rls_auditor;\nSELECT id, tenant, body FROM notes ORDER BY id",
+   "note": "a role created with BYPASSRLS ignores policies, even forced ones.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}],
+    "data": [["1","acme","renew the lease"],["2","acme","order teapots"],["3","globex","quarterly numbers"]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "RESET ROLE;\nSELECT id, tenant, body FROM notes ORDER BY id",
+   "note": "and a superuser (postgres, who set all this up) always bypasses them.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [{"name":"id","type":"int4"},{"name":"tenant","type":"text"},{"name":"body","type":"text"}],
+    "data": [["1","acme","renew the lease"],["2","acme","order teapots"],["3","globex","quarterly numbers"]]
+   }
+  }
+ ]
+}

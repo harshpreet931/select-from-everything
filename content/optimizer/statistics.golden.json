@@ -1,0 +1,278 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "6fcbacb1041f76c1": {
+      "db": "events",
+      "sql": "SELECT attname, null_frac, avg_width, n_distinct, correlation\nFROM pg_stats\nWHERE tablename = 'events'\nORDER BY attname;",
+      "statements": [
+        {
+          "tag": "SELECT 6",
+          "command": "SELECT",
+          "columns": [
+            ["attname", "name", 19],
+            ["null_frac", "float4", 700],
+            ["avg_width", "int4", 23],
+            ["n_distinct", "float4", 700],
+            ["correlation", "float4", 700]
+          ],
+          "rowCount": 6,
+          "digest": "0cfd9f3aa16f0603",
+          "rows": [
+            ["amount", "0.9294", "6", "1695", "-0.037639484"],
+            ["id", "0", "8", "-1", "0.9999998"],
+            ["kind", "0", "6", "5", "0.43209264"],
+            ["occurred_at", "0", "8", "-1", "0.9999998"],
+            ["props", "0", "46", "2333", "-0.004074548"],
+            ["user_id", "0", "4", "500", "-0.0051777875"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7416594ba3d9641d": {
+      "db": "events",
+      "sql": "SELECT kind, count(*), round(count(*) / 25000.0, 5) AS share\nFROM events\nGROUP BY kind\nORDER BY count(*) DESC;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["kind", "text", 25],
+            ["count", "int8", 20],
+            ["share", "numeric", 1700]
+          ],
+          "rowCount": 5,
+          "digest": "6cd1c98b9b08e5b7",
+          "rows": [
+            ["view", "15112", "0.60448"],
+            ["click", "4884", "0.19536"],
+            ["add_to_cart", "2739", "0.10956"],
+            ["purchase", "1765", "0.07060"],
+            ["signup", "500", "0.02000"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "26d6258d4d0158b1": {
+      "db": "empty",
+      "sql": "CREATE TABLE big (id int, x int);\nINSERT INTO big\nSELECT g.i, CASE WHEN g.i % 2 = 0 THEN 0 ELSE g.i END\nFROM generate_series(1, 300000) AS g(i)\nORDER BY g.i;\nANALYZE big;\nSELECT n_distinct, most_common_freqs[1] AS zeros\nFROM pg_stats\nWHERE tablename = 'big' AND attname = 'x';\nSELECT count(DISTINCT x) FROM big;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "INSERT 0 300000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 300000,
+          "digest": "998f02cc6aac1c24"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_distinct", "float4", 700],
+            ["zeros", "float4", 700]
+          ],
+          "rowCount": 1,
+          "digest": "8e89a038a5a19076",
+          "rows": [
+            ["26923", "0.5035667"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "1695ca010bb2c441",
+          "rows": [
+            ["150001"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "877d69d4d0e9ac44": {
+      "db": "empty",
+      "sql": "ALTER TABLE big ALTER COLUMN x SET STATISTICS 1000;\nANALYZE big;\nSELECT n_distinct FROM pg_stats WHERE tablename = 'big' AND attname = 'x';\nEXPLAIN SELECT DISTINCT x FROM big;",
+      "statements": [
+        {
+          "tag": "ALTER TABLE",
+          "command": "ALTER TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "629b316cd6a106b5"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "65a974a9dfec9794"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_distinct", "float4", 700]
+          ],
+          "rowCount": 1,
+          "digest": "e364b68d635b188c",
+          "rows": [
+            ["-0.50000334"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "bc65494d1305b253",
+          "rows": [
+            ["HashAggregate  (cost=5078.00..6578.01 rows=150001 width=4)"],
+            ["  Group Key: x"],
+            ["  ->  Seq Scan on big  (cost=0.00..4328.00 rows=300000 width=4)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f08a2d9983cc1c0a": {
+      "db": "events",
+      "sql": "INSERT INTO events (user_id, kind, occurred_at)\nSELECT 1 + i % 500, 'signup', timestamptz '2026-06-01 00:00+00' + i * interval '1 minute'\nFROM generate_series(1, 4000) AS i\nORDER BY i;\nSELECT pg_stat_force_next_flush();\nSELECT n_mod_since_analyze FROM pg_stat_user_tables WHERE relname = 'events';\nEXPLAIN SELECT * FROM events WHERE kind = 'signup';\nSELECT count(*) FROM events WHERE kind = 'signup';",
+      "statements": [
+        {
+          "tag": "INSERT 0 4000",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 4000,
+          "digest": "6b99a1fb311e7a9a"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["pg_stat_force_next_flush", "void", 2278]
+          ],
+          "rowCount": 1,
+          "digest": "bdfab559805fd973",
+          "rows": [
+            [""]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n_mod_since_analyze", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c6498a63d31961a7",
+          "rows": [
+            ["4000"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "1fce85f559ecce9e",
+          "rows": [
+            ["Seq Scan on events  (cost=0.00..711.29 rows=549 width=78)"],
+            ["  Filter: (kind = 'signup'::text)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "06633954edd7e82a",
+          "rows": [
+            ["4500"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "25b463633e5ad656": {
+      "db": "events",
+      "sql": "ANALYZE events;\nEXPLAIN SELECT * FROM events WHERE kind = 'signup';",
+      "statements": [
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5921cb3fad394475"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "f66ce294eec7ef7e",
+          "rows": [
+            ["Seq Scan on events  (cost=0.00..730.50 rows=4500 width=72)"],
+            ["  Filter: (kind = 'signup'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "0885727daf9ec87f": {
+      "db": "empty",
+      "sql": "SELECT name, setting FROM pg_settings\nWHERE name IN ('autovacuum_analyze_threshold', 'autovacuum_analyze_scale_factor', 'default_statistics_target')\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["setting", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "d4f972058fff448b",
+          "rows": [
+            ["autovacuum_analyze_scale_factor", "0.1"],
+            ["autovacuum_analyze_threshold", "50"],
+            ["default_statistics_target", "100"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

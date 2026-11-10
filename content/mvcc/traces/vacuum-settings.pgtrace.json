@@ -1,0 +1,90 @@
+{
+ "v": 1,
+ "scenario": "content/mvcc/traces/vacuum-settings.scenario.sql",
+ "title": "the vacuum, autovacuum and freezing settings a fresh postgres 18.6 server starts with",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {},
+ "base": {"xid":757,"lsn":23121704},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT name, setting, unit\nFROM pg_settings\nWHERE name IN ('autovacuum_naptime', 'autovacuum_max_workers', 'autovacuum_worker_slots',\n               'autovacuum_vacuum_threshold', 'autovacuum_vacuum_scale_factor', 'autovacuum_vacuum_max_threshold',\n               'autovacuum_vacuum_insert_threshold', 'autovacuum_vacuum_insert_scale_factor',\n               'autovacuum_analyze_threshold', 'autovacuum_analyze_scale_factor',\n               'autovacuum_vacuum_cost_delay', 'autovacuum_vacuum_cost_limit',\n               'vacuum_cost_limit', 'vacuum_cost_delay', 'vacuum_cost_page_hit', 'vacuum_cost_page_miss', 'vacuum_cost_page_dirty')\nORDER BY name",
+   "note": "autovacuum's triggers and its cost budget, as pg_settings reports them. -1 means: use the plain vacuum_ setting.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 17,
+    "columns": [{"name":"name","type":"text"},{"name":"setting","type":"text"},{"name":"unit","type":"text"}],
+    "data": [
+     ["autovacuum_analyze_scale_factor","0.1",null],
+     ["autovacuum_analyze_threshold","50",null],
+     ["autovacuum_max_workers","3",null],
+     ["autovacuum_naptime","60","s"],
+     ["autovacuum_vacuum_cost_delay","2","ms"],
+     ["autovacuum_vacuum_cost_limit","-1",null],
+     ["autovacuum_vacuum_insert_scale_factor","0.2",null],
+     ["autovacuum_vacuum_insert_threshold","1000",null],
+     ["autovacuum_vacuum_max_threshold","100000000",null],
+     ["autovacuum_vacuum_scale_factor","0.2",null],
+     ["autovacuum_vacuum_threshold","50",null],
+     ["autovacuum_worker_slots","16",null],
+     ["vacuum_cost_delay","0","ms"],
+     ["vacuum_cost_limit","200",null],
+     ["vacuum_cost_page_dirty","20",null],
+     ["vacuum_cost_page_hit","1",null],
+     ["vacuum_cost_page_miss","2",null]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT name, setting\nFROM pg_settings\nWHERE name IN ('vacuum_freeze_min_age', 'vacuum_freeze_table_age', 'autovacuum_freeze_max_age', 'vacuum_failsafe_age',\n               'vacuum_multixact_freeze_min_age', 'vacuum_multixact_freeze_table_age',\n               'autovacuum_multixact_freeze_max_age', 'vacuum_multixact_failsafe_age')\nORDER BY name",
+   "note": "the freezing ages, for transaction ids and for MultiXacts.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [{"name":"name","type":"text"},{"name":"setting","type":"text"}],
+    "data": [
+     ["autovacuum_freeze_max_age","200000000"],
+     ["autovacuum_multixact_freeze_max_age","400000000"],
+     ["vacuum_failsafe_age","1600000000"],
+     ["vacuum_freeze_min_age","50000000"],
+     ["vacuum_freeze_table_age","150000000"],
+     ["vacuum_multixact_failsafe_age","1600000000"],
+     ["vacuum_multixact_freeze_min_age","5000000"],
+     ["vacuum_multixact_freeze_table_age","150000000"]
+    ]
+   }
+  }
+ ]
+}

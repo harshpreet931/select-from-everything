@@ -1,0 +1,124 @@
+import { LockLanes } from "@/components/figures/locking/LockLanes";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import createIndex from "./traces/create-index.pgtrace.json";
+import vacuumModes from "./traces/vacuum-modes.pgtrace.json";
+
+{/* the two-session figures are captured on a real postgres 18.6 server
+    (traces/create-index.scenario.sql, traces/vacuum-modes.scenario.sql). the matrix is
+    @/lib/db/locks, which was measured on 18.6 (each mode held, every mode requested with NOWAIT)
+    and matches table 13.2 of the manual cell for cell. */}
+
+<InShort>
+every statement takes a **table lock** before it touches a table, in one of **eight modes**, from ACCESS SHARE (a SELECT) to ACCESS EXCLUSIVE (most ALTER TABLEs, DROP, VACUUM FULL). a fixed **conflict matrix** decides which modes can be held at the same time. most of it exists so that reads and writes never block each other, and so that DDL blocks as little as it can get away with.
+</InShort>
+
+## the picture
+
+you know how a SELECT and an UPDATE on the same table run side by side without anyone waiting, but an `ALTER TABLE` can freeze everything? same lock manager, different modes.
+
+think of a library reading room. readers walk in and out freely (ACCESS SHARE). people writing notes in the margins can work together too, as long as nobody's rebinding the books (ROW EXCLUSIVE). the binder who takes every book apart (ACCESS EXCLUSIVE) needs the room empty. the eight modes are the house rules for who can be in the room with whom.
+
+<Figure caption={<>the table-level conflict matrix, as postgres 18.6 enforces it. a <C k="meta">×</C> means a session holding the row's mode makes a session asking for the column's mode wait. hover a mode to light up everything it blocks.</>}>
+<LockTable requests={[]} matrix />
+<Provenance trace={{ engine: { version: "18.6" }, scenario: "each mode held, every mode asked for with NOWAIT (src/lib/db/fixtures/locks.json)" }} />
+</Figure>
+
+read it along the diagonal first. ACCESS SHARE, ROW SHARE and ROW EXCLUSIVE don't conflict with themselves: many readers, many writers, all at once. from SHARE UPDATE EXCLUSIVE down, modes start conflicting with copies of themselves, which is how postgres says "only one of these at a time": one VACUUM per table, one CREATE INDEX CONCURRENTLY, one ALTER. SHARE is the odd one: it's compatible with itself but not with ROW EXCLUSIVE, so two plain CREATE INDEXes can run together, but no writes while either runs.
+
+the names are historical and misleading ("ROW EXCLUSIVE" is a table lock, not a row lock). ignore the words and learn the statements.
+
+## which statement takes which
+
+no need to memorize the manual's list: ask the lock manager. the function below runs a statement, reads its own locks on `accounts` out of [pg_locks](/learn/locking/pg-locks), and throws the statement's work away (a subtransaction that rolls back releases the locks it took, and undoes the change).
+
+```sql run title="lock_taken.sql"
+CREATE TABLE accounts (id int PRIMARY KEY, owner text NOT NULL, balance numeric(12,2) NOT NULL);
+ALTER TABLE accounts ADD CONSTRAINT nonneg CHECK (balance >= 0) NOT VALID;
+CREATE TABLE transfers (id int PRIMARY KEY, src int NOT NULL, amount numeric(12,2) NOT NULL);
+CREATE FUNCTION lock_taken(stmt text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE m text;
+BEGIN
+  BEGIN
+    EXECUTE stmt;
+    SELECT string_agg(mode, ', ' ORDER BY mode) INTO m FROM pg_locks
+    WHERE pid = pg_backend_pid() AND locktype = 'relation'
+      AND relation = 'accounts'::regclass;
+    RAISE EXCEPTION USING ERRCODE = 'P0001';     -- undo the statement
+  EXCEPTION WHEN raise_exception THEN NULL;
+  END;
+  RETURN m;
+END $$;
+SELECT stmt, lock_taken(stmt) AS lock FROM (VALUES
+  (1, 'SELECT * FROM accounts'),
+  (2, 'SELECT * FROM accounts FOR UPDATE'),
+  (3, 'UPDATE accounts SET balance = 0'),
+  (4, 'ANALYZE accounts'),
+  (5, 'ALTER TABLE accounts VALIDATE CONSTRAINT nonneg'),
+  (6, 'ALTER TABLE accounts SET (fillfactor = 70)'),
+  (7, 'CREATE INDEX ON accounts (owner)'),
+  (8, 'ALTER TABLE transfers ADD FOREIGN KEY (src) REFERENCES accounts'),
+  (9, 'LOCK TABLE accounts IN EXCLUSIVE MODE'),
+  (10, 'ALTER TABLE accounts ADD COLUMN note text'),
+  (11, 'ALTER TABLE accounts ADD CONSTRAINT pos CHECK (balance >= 0) NOT VALID')
+) AS s(n, stmt) ORDER BY n;
+```
+
+that's the ladder, weakest to strongest. a few things worth noticing:
+
+- `SELECT ... FOR UPDATE` takes ROW SHARE on the table. the row locks themselves are somewhere else entirely ([how row locks are stored](/learn/locking/row-lock-internals)).
+- ANALYZE, VALIDATE CONSTRAINT and `SET (fillfactor = ...)` take SHARE UPDATE EXCLUSIVE: reads and writes carry on. that's why `ADD CONSTRAINT ... NOT VALID` then `VALIDATE` is the polite way to add a constraint to a big table. the first step is ACCESS EXCLUSIVE (row 11) but instant; the slow scan happens in the second, under the weak lock.
+- a foreign key takes SHARE ROW EXCLUSIVE on the table it references (the ACCESS SHARE and ROW SHARE next to it come from the query that checks the existing rows). EXCLUSIVE is the one mode no common statement takes for you; you get it from `LOCK TABLE` (and, per the manual, from `REFRESH MATERIALIZED VIEW CONCURRENTLY`).
+- ADD COLUMN is ACCESS EXCLUSIVE even though it's instant. instant is fine. [waiting](/learn/locking/lock-queue) is the problem.
+
+## CREATE INDEX vs CONCURRENTLY
+
+plain `CREATE INDEX` takes SHARE: readers fine, writers wait for the whole build. `CREATE INDEX CONCURRENTLY` takes SHARE UPDATE EXCLUSIVE, which lets writes in, and pays for it with two table scans and some waiting of its own:
+
+<Figure wide caption={<>switch the build and step through. plain CREATE INDEX holds <C k="meta">SHARE</C>, and T2's UPDATE waits for it. the concurrent build holds SHARE UPDATE EXCLUSIVE, so T3's UPDATE goes straight through, but the build itself waits on T1's virtual xid: it can't finish while a transaction that might write without knowing about the index is still open.</>}>
+<LockLanes trace={createIndex} option="build" byRound={["CREATE INDEX", "CONCURRENTLY"]} locks={{ types: ["relation", "virtualxid"], objs: ["accounts"] }} sideTitle="locks (pg_locks)" />
+</Figure>
+
+<Predict question="a transaction has been idle in transaction for an hour after an UPDATE on accounts. you run CREATE INDEX CONCURRENTLY on accounts. what happens?" options={["it builds the index", "it fails at once", "it waits for that transaction"]} answer={2}>
+```sql
+/* T1 */ BEGIN; UPDATE accounts SET balance = balance - 1 WHERE id = 1;
+/* T1 */ -- ... goes to lunch
+/* T2 */ CREATE INDEX CONCURRENTLY accounts_owner ON accounts (owner);
+```
+<Explain>
+it waits. the concurrent build has to wait out every transaction that could still write to the table without maintaining the new index, and it does that by waiting on each one's virtual xid (that's the dashed ShareLock on a vxid in the figure). it doesn't block anyone else while it waits, which is the point, but it won't finish until T1 does. that's also why CONCURRENTLY can't run inside a transaction block.
+</Explain>
+</Predict>
+
+## VACUUM vs VACUUM FULL
+
+same keyword, opposite ends of the matrix:
+
+<Figure wide caption={<>step through. plain VACUUM takes SHARE UPDATE EXCLUSIVE and runs next to T1's read. VACUUM FULL wants ACCESS EXCLUSIVE, because it writes a whole new copy of the table, and <C k="mute">waits</C> for the reader.</>}>
+<LockLanes trace={vacuumModes} locks={{ types: ["relation"], objs: ["accounts"] }} sideTitle="table locks on accounts" />
+</Figure>
+
+plain VACUUM cleans pages in place and never blocks reads or writes ([VACUUM](/learn/mvcc/vacuum)). VACUUM FULL is a rewrite: while it runs, the table is gone for everyone.
+
+## upgrades
+
+a transaction keeps every lock it takes until it ends, and a stronger request on the same table doesn't replace the weaker one, it's added next to it. so `BEGIN; SELECT ...; ALTER TABLE ...` holds ACCESS SHARE *and* ACCESS EXCLUSIVE. that's fine alone and a deadlock when two transactions do it at once: each waits for the other's ACCESS SHARE. [the lock queue](/learn/locking/lock-queue) has the capture.
+
+it's also why SHARE ROW EXCLUSIVE exists. SHARE is self-compatible, so two transactions that take SHARE and later want something stronger deadlock the same way. SHARE ROW EXCLUSIVE is SHARE that conflicts with itself, so the second one waits up front instead.
+
+<Gotcha title="indexes get locks too">
+the lock list in the figures shows `accounts_pkey` next to `accounts`: a statement locks every index it might use, in the same family of modes (a SELECT that plans an index scan takes ACCESS SHARE on the index; an UPDATE takes ROW EXCLUSIVE on every index it must maintain). DROP INDEX takes ACCESS EXCLUSIVE on the *table*, so it queues like an ALTER. `DROP INDEX CONCURRENTLY` exists for the same reason CREATE does.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/explicit-locking.html#LOCKING-TABLES" title="table-level locks">the manual lists, for each of the eight modes, the statements that take it, plus table 13.2 (the matrix above).</Docs>
+
+<Interview q="does SELECT take a lock in postgres?">
+yes, a table lock: ACCESS SHARE on the table and the indexes it uses, held until the transaction ends. it conflicts only with ACCESS EXCLUSIVE (most ALTER TABLE forms, DROP, TRUNCATE, VACUUM FULL), so reads never block writes and writes never block reads. it takes no row locks at all: MVCC means a reader just picks the row version its snapshot can see. bonus point: that ACCESS SHARE is enough to make an ALTER TABLE queue, and a queued ALTER makes every later SELECT queue too.
+</Interview>
+
+<Keylines>
+- eight table lock modes. the matrix says which pairs can be held at once.
+- SELECT is ACCESS SHARE, DML is ROW EXCLUSIVE, they never conflict.
+- SHARE UPDATE EXCLUSIVE is the "maintenance that lets you keep working" mode: VACUUM, ANALYZE, CONCURRENTLY, VALIDATE.
+- ACCESS EXCLUSIVE conflicts with everything: ALTER, DROP, TRUNCATE, VACUUM FULL.
+- locks are held until the transaction ends, and a stronger one is added, not swapped. two upgraders deadlock.
+</Keylines>

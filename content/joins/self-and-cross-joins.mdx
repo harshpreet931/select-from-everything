@@ -1,0 +1,189 @@
+import { OnGrid } from "@/components/figures/joins/OnGrid";
+import { prov, resultOf, runsOf } from "@/components/figures/joins/captured";
+import trace from "./traces/self.pgtrace.json";
+
+{/* the JoinLab's two copies of employees and the pairs grid read traces/self.scenario.sql,
+    captured on PGlite against the org dataset. the org chart is typed from the first block's
+    golden. */}
+
+export const e = resultOf(trace, 0);
+export const m = resultOf(trace, 1);
+export const vps = resultOf(trace, 2);
+export const pairs = runsOf(trace, ["true | inner", "<> | inner", "< | inner", "salary | inner"], 3);
+export const source = prov(trace);
+
+<InShort>
+a **self join** is a table joined to itself under two aliases, so a row can meet another row of the same table: an employee and their manager, two people with the same name. nothing about it is special. it's an ordinary join where both sides happen to be one table.
+
+a **CROSS JOIN** pairs every row with every row, on purpose: grids, combinations, every department against every job title.
+</InShort>
+
+## the picture
+
+you know how `employees` has a `manager_id` column, and the manager it points at is... also in `employees`? the org dataset is one table that's a whole tree: Fatima Lopez at the top, three reports under every manager, six levels down to 300 people.
+
+<Figure caption={<>the top three levels of the org, from the block below. click a name to fold it. every arrow down is a <code>manager_id</code> pointing back up at an <code>id</code> in the same table.</>}>
+<Tree>{`
+Fatima Lopez        // ceo, id 1, manager_id NULL
+    Olivia Lopez        // vp, id 2
+        Rahul Singh         // director, id 5
+        Amelia Hansen       // director, id 6
+        Olivia Singh        // director, id 7
+    Mei Dubois          // vp, id 3
+        Noah Silva          // director, id 8
+        Valentina Haddad    // director, id 9
+        Kenji Larsen        // director, id 10
+    Chen Smith          // vp, id 4
+        Valentina Okafor    // director, id 11
+        Leila Larsen        // director, id 12
+        Chen Jensen         // director, id 13
+`}</Tree>
+</Figure>
+
+think of a printed staff list where every line ends with "reports to: line 2". to write the boss's name next to each person, you'd open a second copy of the same list and look the number up there. that's the whole trick: two copies, two names for them.
+
+## two copies of one table
+
+the two copies get two aliases, here `e` for the employee and `m` for the manager. after that, postgres treats them as two tables that happen to have the same rows:
+
+<Figure wide caption={<>the first five employees, twice: <code>e</code> down the side by their <code>manager_id</code>, <code>m</code> across the top by <code>id</code>. inner drops Fatima Lopez, who has no manager. left keeps her, <C k="ref">padded</C>.</>}>
+<JoinLab left={{ name: "e", columns: ["manager_id", "name"], rows: e.rows }} right={{ name: "m", columns: ["id", "name"], rows: m.rows }} on={["manager_id", "id"]} logical />
+</Figure>
+
+for real, the top of the org with each manager's name. a LEFT JOIN, so the CEO isn't lost:
+
+```sql run db=org
+SELECT e.id, e.name, e.title, m.name AS manager
+FROM employees AS e
+LEFT JOIN employees AS m ON m.id = e.manager_id
+WHERE e.id <= 13
+ORDER BY e.id;
+```
+
+the aliases aren't optional here. without them, postgres has two tables called `employees` in one FROM and no way to tell which `name` you mean, so it refuses:
+
+```sql run db=org expect=error
+SELECT employees.name
+FROM employees
+JOIN employees ON employees.id = employees.manager_id;
+```
+
+<Predict options={["300 rows", "299 rows", "an error"]} answer={1}>
+```sql
+SELECT count(*)
+FROM employees AS e
+JOIN employees AS m ON m.id = e.manager_id;
+```
+<Explain>
+an inner join keeps pairs, and Fatima Lopez is in none: her `manager_id` is NULL, which matches no `id`. the other 299 employees each find exactly one manager. it's the same "who disappears" as any inner join, just with one table playing both parts.
+</Explain>
+</Predict>
+
+```sql run db=org
+SELECT count(*) AS inner_join FROM employees AS e JOIN employees AS m ON m.id = e.manager_id;
+SELECT count(*) AS left_join FROM employees AS e LEFT JOIN employees AS m ON m.id = e.manager_id;
+```
+
+## up two levels
+
+every extra level up is one more copy. the manager's manager is a third alias:
+
+```sql run db=org
+SELECT e.id, e.name, m.name AS manager, gm.name AS managers_manager
+FROM employees AS e
+JOIN employees AS m ON m.id = e.manager_id
+JOIN employees AS gm ON gm.id = m.manager_id
+WHERE e.id BETWEEN 14 AND 19
+ORDER BY e.id;
+```
+
+this works for a fixed number of levels. "everyone above Ama Rossi, however many there are" can't be written as a fixed number of joins, because you don't know how many to write. that's a query that has to repeat itself until it runs out of rows, a [recursive CTE](/learn/analytics/recursive-ctes).
+
+## pairs within one table
+
+the other use of a self join: comparing rows of a table with each other. take the three vice presidents, and join them to themselves:
+
+<Figure wide caption={<>the three vps against themselves. pick an ON: <code>true</code> pairs everyone with everyone, themselves included. <code>&lt;&gt;</code> drops the diagonal. <code>&lt;</code> keeps one triangle: every pair once.</>}>
+<OnGrid
+  left={{ name: "a", columns: vps.columns, rows: vps.rows, key: 0, label: [1] }}
+  right={{ name: "b", columns: vps.columns, rows: vps.rows, key: 0, label: [1] }}
+  at={[0, 2]}
+  ons={[
+    { v: "true", label: "true" },
+    { v: "<>", label: "a.id <> b.id" },
+    { v: "<", label: "a.id < b.id" },
+    { v: "salary", label: "a.salary < b.salary" },
+  ]}
+  runs={pairs}
+  trace={source}
+/>
+</Figure>
+
+`a.id < b.id` is the move to remember. with `<>` every pair shows up twice, as (Olivia, Mei) and (Mei, Olivia). with `<` only the copy where the smaller id comes first survives, so n rows make n × (n − 1) / 2 pairs. it's how you find duplicates. 300 employees, and some names repeat:
+
+```sql run db=org
+CREATE TABLE vps AS SELECT id, name, salary FROM employees WHERE title = 'vp';
+
+SELECT count(*) AS same_name_pairs
+FROM employees AS a
+JOIN employees AS b ON b.name = a.name AND a.id < b.id;
+
+SELECT a.name, a.id AS first_id, b.id AS second_id
+FROM employees AS a
+JOIN employees AS b ON b.name = a.name AND a.id < b.id
+WHERE a.name IN ('Priya Shah', 'Clara Petrov')
+ORDER BY a.name, a.id, b.id;
+```
+
+(the first statement makes the `vps` table from the figure, if you want to play with it.) Clara Petrov is three people, so she makes three pairs: 3 × 2 / 2.
+
+## CROSS JOIN, on purpose
+
+a CROSS JOIN has no ON. it's the whole grid, every row of one side with every row of the other. by accident it's a disaster: forget a join condition in a comma join and 300 employees become 90,000 rows. on purpose, it's how you build the rows that *should* exist, so that the ones nobody filled in still show up.
+
+a headcount report: every department, for three job titles, even where the answer is 0. the CROSS JOIN builds the 8 × 3 grid, then a LEFT JOIN fills in the people:
+
+```sql run db=org
+SELECT d.name AS dept, t.title, count(e.id) AS people
+FROM departments AS d
+CROSS JOIN (VALUES ('manager'), ('lead'), ('associate')) AS t (title)
+LEFT JOIN employees AS e ON e.dept_id = d.id AND e.title = t.title
+GROUP BY d.id, d.name, t.title
+ORDER BY d.id, t.title;
+```
+
+24 rows, and research's three rows say 0: the department exists, nobody works in it. (finance and people have no associates either: the tree's last level runs out at employee 300 before it gets to them.) a plain join from employees could never show that, because there's no employee to start from. (`VALUES` is a table written inline. it can go anywhere a table can.)
+
+the org dataset itself was built this way: its on-call rota is a CROSS JOIN of seven days with two engineers. calendars, sizes × colours, every student × every course: whenever the question is "every combination", the answer starts with CROSS JOIN.
+
+<Gotcha title="the accidental cross join">
+the comma join (`FROM a, b WHERE ...`) is a CROSS JOIN until the WHERE says otherwise. leave out one condition and there's no error, just a result that's the size of both tables multiplied:
+
+```sql run db=org
+SELECT count(*) FROM employees AS a, employees AS b;
+```
+
+90,000 rows from a 300-row table. with real tables it's millions, and the first sign is a query that never finishes. `JOIN` without an `ON` is a syntax error, which is one more reason to write `JOIN ... ON`.
+</Gotcha>
+
+<Interview q="find every employee who earns more than their manager.">
+a self join: the table once as the employee, once as the manager, joined on `m.id = e.manager_id`, then compare the two salaries. the comparison can't go in a plain `WHERE salary > salary`, because it's two different rows, which is why the second copy is needed.
+
+```sql run db=org
+SELECT e.name, e.salary, m.name AS manager, m.salary AS manager_salary
+FROM employees AS e
+JOIN employees AS m ON m.id = e.manager_id
+WHERE e.salary > m.salary
+ORDER BY e.id;
+```
+
+0 rows. in this org, salaries are set by level, so nobody out-earns their boss. say that out loud too: an empty result is an answer, and you check it before you trust it. bonus point: the CEO never shows up in this query, and that's correct, because she has no manager to earn more than.
+</Interview>
+
+<Keylines>
+- a self join is a normal join with the same table on both sides, under two aliases.
+- employee → manager is a join on `m.id = e.manager_id`. the root of the tree needs a LEFT JOIN.
+- each level up is one more alias. any number of levels needs a recursive CTE.
+- `a.id < b.id` gives every pair once and nobody paired with themselves.
+- CROSS JOIN builds every combination. LEFT JOIN onto it shows the empty ones.
+</Keylines>

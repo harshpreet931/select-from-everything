@@ -1,0 +1,143 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import ckpt from "./traces/checkpoint-fpi.pgtrace.json";
+
+{/* the records and the first log lines read traces/checkpoint-fpi (a real postgres 18.6 server;
+    pgtrace replaces timings with <t>). the timed checkpoint and the "too frequently" warnings
+    are a recorded transcript from a throwaway 18.6 cluster on this mac. */}
+
+export const recs = ckpt.steps[0].wal.records;
+export const recRows = recs.map((r) => [r.rmgr, r.type, String(r.len), r.desc.length > 60 ? r.desc.slice(0, 60) + "…" : r.desc]);
+export const ckptLog = ckpt.steps[0].log.join("\n").replaceAll("<t>", "…");
+
+<InShort>
+a **checkpoint** writes every dirty buffer to its file, fsyncs the files, and records the **redo pointer**: the WAL position where it started. after that, crash recovery never needs WAL older than the redo pointer, so those segments can be recycled. checkpoints happen every `checkpoint_timeout` (5 min) or every `max_wal_size` (1 GB) of WAL, whichever comes first, and the writes are spread over `checkpoint_completion_target` (90%) of the gap. rarer checkpoints mean smoother I/O and less WAL, and a longer recovery.
+</InShort>
+
+## the picture
+
+you know how [crash recovery](/learn/wal/crash-recovery) replays the WAL "from the last checkpoint"? the checkpoint is the thing that makes that a short trip instead of a replay of everything since the cluster was created.
+
+think of a shop doing its month-end close. the day book has every sale (the WAL). at the close, the bookkeeper makes sure the ledgers match the day book up to today (writes every dirty page out), files them away (fsync), and writes "ledgers complete up to the 1st" at the top of a fresh page (the redo pointer). an auditor after a fire starts reading the day book from the 1st, not from the day the shop opened, and the old day books can go to the shredder (WAL recycling).
+
+<Figure caption={<>a checkpoint, start to finish (CreateCheckPoint in xlog.c). hover a stage. the long part is writing the dirty buffers, on purpose.</>}>
+<Flow
+  stages={[
+    { label: "redo pointer", sub: "XLOG CHECKPOINT_REDO", note: "a small record marks where this checkpoint starts. anything logged after it may or may not get written by this checkpoint, so recovery will start replaying here." },
+    { label: "write dirty buffers", sub: "spread out", note: "every buffer that was dirty when the checkpoint started is written to its file, paced to finish at checkpoint_completion_target of the interval." },
+    { label: "fsync", sub: "every file touched", note: "until this, the writes are only in the OS page cache." },
+    { label: "checkpoint record", sub: "XLOG CHECKPOINT_ONLINE", note: "says where the redo pointer is, plus next xid, next oid, and more." },
+    { label: "pg_control", sub: "global/pg_control", note: "rewritten to point at the new checkpoint. from now on recovery starts at its redo pointer." },
+    { label: "recycle WAL", sub: "pg_wal", note: "segments wholly before the redo pointer are renamed for reuse or removed (unless archiving or a replication slot still needs them)." },
+  ]}
+/>
+</Figure>
+
+## what a checkpoint writes in the WAL
+
+three records, captured on a real server:
+
+<Figure caption={<>the WAL records a CHECKPOINT wrote. the redo record comes first, the checkpoint record last, and its description names the redo pointer.</>}>
+<ResultTable columns={[{ name: "rmgr", type: "text" }, { name: "record_type", type: "text" }, { name: "len", type: "int4" }, { name: "description", type: "text" }]} rows={recRows} />
+<Provenance trace={prov(ckpt)} />
+</Figure>
+
+`CHECKPOINT_REDO` is the redo pointer, written first, before any buffer is written (postgres 17 added this record; before that the redo pointer was just the insert position at the start). `RUNNING_XACTS` tells replicas which transactions were open. `CHECKPOINT_ONLINE` at the end carries the redo pointer and the counters a restart needs. the redo pointer is earlier than the checkpoint record because the checkpoint takes time: a page changed while it was running might have been written before the change or after, and replaying from the start covers both.
+
+you can watch pg_control move. in the browser there's no checkpointer process: `CHECKPOINT` runs inside your own session, and the checkpointer's statistics stay at zero because nobody else exists to count them. pg_control still moves the same way:
+
+```sql run db=lab
+UPDATE notes SET body = 'edited' WHERE id <= 100;
+SELECT count(*) FILTER (WHERE isdirty) AS dirty_buffers FROM pg_buffercache;
+SELECT redo_lsn, checkpoint_lsn FROM pg_control_checkpoint();
+CHECKPOINT;
+SELECT count(*) FILTER (WHERE isdirty) AS dirty_buffers FROM pg_buffercache;
+SELECT redo_lsn, checkpoint_lsn FROM pg_control_checkpoint();
+SELECT num_timed, num_requested, num_done, buffers_written FROM pg_stat_checkpointer;
+```
+
+<Predict question="a checkpoint has just completed. which WAL does crash recovery still need?" options={["none", "from the checkpoint record on", "from the redo pointer on", "all of it, since initdb"]} answer={2}>
+```sql
+CHECKPOINT;
+SELECT redo_lsn, checkpoint_lsn FROM pg_control_checkpoint();
+-- redo_lsn < checkpoint_lsn
+```
+<Explain>
+from the redo pointer on. it's the position where the checkpoint started, and every change before it is in the data files now. changes made while the checkpoint was writing may or may not be, so replay starts at the redo pointer, a little before the checkpoint record. everything older than the redo pointer's segment can be recycled (unless an archive or a replication slot is still waiting for it).
+</Explain>
+</Predict>
+
+## log_checkpoints
+
+`log_checkpoints` is on by default since postgres 15. here's what it printed for that CHECKPOINT on the capture server (pgtrace blanks the timings, which change every run):
+
+<Figure caption={<>"immediate force wait": requested by CHECKPOINT, not spread out. wrote = buffers written, SLRU = commit log and friends, distance = WAL since the previous checkpoint.</>}>
+<SqlPanel code={ckptLog} lang="text" nolines file="server log" />
+<Provenance trace={prov(ckpt)} />
+</Figure>
+
+a CHECKPOINT you type is immediate: write everything as fast as possible. the ones the server starts by itself are not. this is a throwaway cluster on this mac with `checkpoint_timeout = 30s`, a freshly loaded 46 MB table, and nothing else to do:
+
+```text
+LOG:  checkpoint starting: time
+LOG:  checkpoint complete: wrote 5914 buffers (36.1%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 3 recycled; write=27.075 s, sync=0.002 s, total=27.078 s; sync files=29, longest=0.001 s, average=0.001 s; distance=51906 kB, estimate=51906 kB; lsn=0/4A39A18, redo lsn=0/4A39988
+```
+
+<Provenance recorded="the server log of a throwaway postgres 18.6 cluster on this mac, checkpoint_timeout = 30s, checkpoint_completion_target = 0.9" />
+
+5,914 buffers, about 46 MB, that the disk could have taken in well under a second, and the checkpointer took 27.075 s: 90% of the 30 s interval, exactly what `checkpoint_completion_target = 0.9` asks for. it writes a few buffers, checks whether it's ahead of schedule, and naps if it is. that's the point: a checkpoint competing with queries for the disk is a latency spike; one trickling along in the background is noise.
+
+## when they happen
+
+a checkpoint starts when the first of these happens:
+
+| trigger | default | log says |
+| --- | --- | --- |
+| `checkpoint_timeout` since the last one | 5 min | `checkpoint starting: time` |
+| `max_wal_size` of WAL since the last one (a soft limit, spread over the interval) | 1 GB | `checkpoint starting: wal` |
+| someone runs `CHECKPOINT` | | `immediate force wait` |
+| shutdown, end of recovery, start of a base backup | | `shutdown immediate`, `end-of-recovery`, ... |
+
+with the defaults, a quiet server checkpoints every 5 minutes, and a busy one every time it writes about a gigabyte of WAL. here's the same cluster with `max_wal_size` shrunk to 32 MB, and two UPDATEs of every row of that 46 MB table:
+
+```text
+LOG:  checkpoints are occurring too frequently (11 seconds apart)
+HINT:  Consider increasing the configuration parameter "max_wal_size".
+LOG:  checkpoint starting: wal
+LOG:  checkpoint complete: wrote 1040 buffers (6.3%), wrote 0 SLRU buffers; 0 WAL file(s) added, 1 removed, 0 recycled; write=0.151 s, sync=0.008 s, total=0.169 s; sync files=2, longest=0.008 s, average=0.004 s; distance=10013 kB, estimate=47717 kB; lsn=0/6414680, redo lsn=0/5400FD0
+LOG:  checkpoints are occurring too frequently (0 seconds apart)
+HINT:  Consider increasing the configuration parameter "max_wal_size".
+LOG:  checkpoint starting: wal
+```
+
+<Provenance recorded="the same cluster's log, max_wal_size = 32MB, checkpoint_warning at its default 30s. the run logged 13 of these back to back; pg_stat_checkpointer counted num_requested = 13" />
+
+thirteen checkpoints during two statements, each with no time to spread its writes (write=0.151 s), each resetting every page's "first change since a checkpoint" flag, so the next touch of every page logs a [full-page image](/learn/wal/full-page-writes), which fills max_wal_size sooner, which starts the next checkpoint. the warning fires whenever WAL-triggered checkpoints come closer together than `checkpoint_warning` (30 s). it's postgres asking for a bigger max_wal_size.
+
+## the trade
+
+| | frequent checkpoints | rare checkpoints |
+| --- | --- | --- |
+| crash recovery | short: little WAL since the redo pointer | longer: up to max_wal_size of WAL to replay |
+| steady-state writes | the same hot pages written again and again | a hot page is written once per checkpoint, however often it changed |
+| WAL volume | more full-page images | fewer |
+| disk space in pg_wal | less | up to about max_wal_size, plus what slots and archiving hold |
+
+most servers want the right column: a longer `checkpoint_timeout` (15 to 30 minutes is common), a `max_wal_size` large enough that checkpoints are triggered by time, not by WAL, and the default completion target. what you give up is recovery time after a crash, which is replay of at most that much WAL. the checkpointer is one of three processes that write pages, with the background writer and backends themselves: [writing pages back](/learn/storage/writing-pages-back) has all three.
+
+<Gotcha title="CHECKPOINT before a planned shutdown is a kindness, not a requirement">
+`pg_ctl stop` (fast or smart) always finishes with a shutdown checkpoint, so the next start does no recovery. but that checkpoint has to write every dirty buffer while you wait. running `CHECKPOINT` a moment before shrinks the shutdown checkpoint to whatever got dirty in between, so the actual downtime is short. `pg_ctl stop -m immediate` skips it entirely, and the next start runs crash recovery.
+</Gotcha>
+
+<Interview q="what does a checkpoint do in postgres, and how would you tune checkpoints?">
+it writes all dirty shared buffers to their data files, fsyncs them, writes a checkpoint WAL record, and updates pg_control with the checkpoint's redo pointer, the WAL position where it began. crash recovery starts from there, and older WAL segments can be recycled. checkpoints are triggered by checkpoint_timeout or by max_wal_size worth of WAL, and the writes are spread across checkpoint_completion_target of the interval. tuning: make max_wal_size big enough that checkpoints are time-driven (watch num_timed vs num_requested in pg_stat_checkpointer, and the "occurring too frequently" warning), lengthen checkpoint_timeout to cut repeated writes and full-page images, and accept longer crash recovery in exchange. bonus point: each checkpoint makes the next modification of every page write a full-page image, so too-frequent checkpoints inflate WAL.
+</Interview>
+
+<Keylines>
+- a checkpoint writes every dirty buffer, fsyncs, and records the redo pointer in pg_control.
+- recovery starts at the redo pointer. WAL before it can be recycled.
+- triggered by checkpoint_timeout (5 min) or max_wal_size (1 GB), whichever comes first.
+- the writes are spread over checkpoint_completion_target (0.9) of the interval: 27 s of a 30 s timeout.
+- "checkpoints are occurring too frequently" means raise max_wal_size.
+- rarer checkpoints: less I/O, less WAL, longer crash recovery.
+</Keylines>

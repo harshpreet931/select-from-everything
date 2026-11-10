@@ -1,0 +1,150 @@
+import { chainRun, goldenAt } from "@/components/figures/design/runs";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/email-key.pgtrace.json";
+import golden from "./keys.golden.json";
+
+{/* the RunPick reads traces/email-key.scenario.sql (PGlite): three rounds of the same email
+    change. the bars read this chapter's own golden (pg_column_size), so they match the run block. */}
+
+export const rounds = {
+  "email, no cascade": chainRun(trace, [1, 2]),
+  "email, ON UPDATE CASCADE": chainRun(trace, [4, 5]),
+  "surrogate id": chainRun(trace, [7, 8]),
+};
+export const source = prov(trace);
+export const sizes = goldenAt(golden, "pg_column_size(i)", 2).rows.map((r) => ({ label: r[0], value: Number(r[1]), tone: r[0].startsWith("text") ? "hot" : undefined }));
+
+<InShort>
+a **primary key** is the column (or columns) that makes a row itself: UNIQUE plus NOT NULL, one per table, and the thing every foreign key points at. a table can have several **candidate keys**; you pick one and put UNIQUE on the rest.
+
+a **natural key** comes from the world (an email, an ISBN), a **surrogate key** is a number the database makes up. natural keys change, and every reference has to change with them. so the usual answer is: a surrogate primary key, *and* a UNIQUE constraint on the natural one.
+</InShort>
+
+## the picture
+
+you know how every app has a users table keyed by an auto-increment id, and someone always asks "why not just use the email? it's unique already"? it is unique. it just isn't *permanent*: people change emails, and a key gets copied into every table that points at it.
+
+think of a library. a book's ISBN identifies it (a natural key), but the library also stamps its own accession number inside the cover (a surrogate). when a publisher reissues the book with a corrected ISBN, the catalogue changes one card. the loan records, which only ever wrote down the stamp, don't change at all.
+
+<Figure wide caption={<>Ada changes her email. pick the key. with email as the key and a plain foreign key, the update is <C k="dead">refused</C>, because orders still point at the old value. with ON UPDATE CASCADE it succeeds by rewriting every order. with a surrogate id, orders never held the email in the first place.</>}>
+<RunPick options={[{ key: "key", values: ["email, no cascade", "email, ON UPDATE CASCADE", "surrogate id"] }]} runs={rounds} file="ada.sql" hot={["customer_email", "customer_id"]} trace={source} />
+</Figure>
+
+cascade "works", and it's the honest version of the problem: one UPDATE in customers became three in orders, each a new row version with new index entries ([an UPDATE is an INSERT](/learn/mvcc/update-is-insert)). on a customer with ten thousand orders, in a table with five foreign keys pointing at it, changing an email is a big write holding row locks the whole time.
+
+## what a primary key promises
+
+`PRIMARY KEY` is exactly UNIQUE plus NOT NULL, and postgres builds a unique b-tree index to enforce it. both halves fail out loud:
+
+```sql run expect=error errors=continue
+CREATE TABLE products (sku text PRIMARY KEY, name text NOT NULL);
+INSERT INTO products VALUES ('TEA-01', 'assam tea');
+INSERT INTO products VALUES ('TEA-01', 'darjeeling');
+INSERT INTO products VALUES (NULL, 'mystery tea');
+```
+
+the first error names the index and the duplicate value; the second, the null column. there can be only one primary key per table. any other candidate key is spelled `UNIQUE` plus `NOT NULL` on its columns, and behaves the same way (foreign keys can point at it too).
+
+<Figure caption={<>the vocabulary, as a tree. every candidate key is a superkey with nothing to spare; the primary key is the one you chose.</>}>
+<Tree>{`
+superkey                 // any set of columns that's unique: (id, email, name) counts
+    candidate key        // a minimal superkey: drop any column and it stops being unique
+        primary key      #hot // the one candidate you pick. NOT NULL, one per table, what FKs point at
+        alternate key    // every other candidate: UNIQUE NOT NULL
+    composite key        // a key with more than one column, like (order_id, line_no)
+`}</Tree>
+</Figure>
+
+the candidate keys come from the meaning of the columns, via [functional dependencies](/learn/design/functional-dependencies): a set is a key when it determines every other column and no smaller set does.
+
+## composite keys
+
+when the thing a row describes is a pair, the key is the pair. shop's order_items has no id of its own; a line is "line 2 of order 5":
+
+```sql run db=shop
+SELECT conname, pg_get_constraintdef(oid) AS def
+FROM pg_constraint
+WHERE conrelid = 'order_items'::regclass AND contype IN ('p', 'f')
+ORDER BY conname;
+```
+
+the school's enrollments are keyed by (student_id, course_code, term), because the same student can retake a course in a later term. a composite key costs nothing extra to store (those columns are there anyway) and states a rule a surrogate wouldn't: the same student can't enroll twice in one course in one term.
+
+two things to know. the column order of a composite key is the column order of its index, so (student_id, course_code, term) serves "all of student 7's enrollments" and not "everyone in CS101" ([composite indexes](/learn/indexes/composite-indexes)). and anything referencing it has to carry all three columns. that's fine for a leaf table; for a table many others point at, it's the argument for a surrogate.
+
+<Predict options={["one row", "two rows", "an error"]} answer={1}>
+```sql
+CREATE TABLE people (
+  id    int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email text NOT NULL,
+  name  text NOT NULL
+);
+INSERT INTO people (email, name) VALUES ('ada@example.com', 'Ada Lovelace');
+INSERT INTO people (email, name) VALUES ('ada@example.com', 'Ada Lovelace');
+SELECT count(*) FROM people;
+```
+<Explain>
+two rows. each insert got a fresh id, so the primary key is happy, and nothing else says email is unique. a surrogate key identifies rows, not people: it will happily number the same customer twice.
+</Explain>
+</Predict>
+
+```sql run session=dupes
+CREATE TABLE people (
+  id    int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email text NOT NULL,
+  name  text NOT NULL
+);
+INSERT INTO people (email, name) VALUES ('ada@example.com', 'Ada Lovelace');
+INSERT INTO people (email, name) VALUES ('ada@example.com', 'Ada Lovelace');
+SELECT id, email, name FROM people ORDER BY id;
+```
+
+the surrogate is the row's name; the natural key still needs its constraint. trying to add it now finds the duplicate you already let in:
+
+```sql run session=dupes expect=error
+ALTER TABLE people ADD UNIQUE (email);
+```
+
+## natural or surrogate
+
+| | natural key (email, ISBN, sku) | surrogate key (identity, uuid) |
+| --- | --- | --- |
+| meaning | readable: an order line says `TEA-01` | opaque: you join to find out what 1 is |
+| change | the world changes it, and every reference follows (cascade, or a migration) | never changes, by construction |
+| size | whatever the value is; text keys are long and copied into every referencing row and index | 4 or 8 bytes for an integer, 16 for a uuid |
+| duplicates | the key itself stops them | needs a separate UNIQUE on the natural key, or duplicates go in |
+| when it fits | codes that really are stable: country codes, currency codes, a sku you control | almost every entity table people edit |
+
+the sizes, measured:
+
+```sql run
+CREATE TABLE k (i int, b bigint, u uuid, e text);
+INSERT INTO k VALUES (42, 42, '0195f0a6-7c3e-7b12-9d1e-3f5a2b1c4d5e', 'ada.lovelace@example.com');
+
+SELECT x.key, x.bytes
+FROM k, LATERAL (VALUES ('int', pg_column_size(i)), ('bigint', pg_column_size(b)),
+                        ('uuid', pg_column_size(u)), ('text, an email', pg_column_size(e))) AS x(key, bytes)
+ORDER BY x.bytes, x.key;
+```
+
+<Figure caption={<>bytes per key value, from the block above. every foreign key column and every index entry pointing at the table pays this per row. (the stored email is 24 characters plus a 1-byte length header.)</>}>
+<Bars data={sizes} unit="bytes" />
+</Figure>
+
+bigint or uuid for the surrogate is its own question, with real numbers: random uuids scatter inserts across the whole index, uuidv7 doesn't, and bigint is half the size of either. [identity columns and uuids](/learn/types/identity-and-uuids) measures it leaf by leaf. the short version: a bigint identity unless ids have to be generated outside the database or unguessable in a URL, then uuidv7.
+
+<Gotcha title="the email that changed">
+natural keys fail on the rare case, which is the case you didn't test: two customers who share a family email, a person who marries and changes their name, a product whose sku is reprinted, a country that changes its code. if a value is shown to humans or typed by them, assume it can change and keep it out of the primary key. keep it in a UNIQUE constraint, where a change is one row.
+</Gotcha>
+
+<Interview q="natural or surrogate primary key?">
+surrogate for entities people edit (customers, orders, products), with a UNIQUE NOT NULL constraint on the natural key so duplicates still fail. natural keys change and get copied into every referencing table and index, so a change becomes a cascade of writes and row locks. natural keys are fine when they're stable and you control them: ISO country and currency codes, or a junction table whose key is the pair of foreign keys it joins. bonus point: a surrogate doesn't prevent duplicate entities, only duplicate ids, which is the bug people actually ship.
+</Interview>
+
+<Keylines>
+- a primary key is UNIQUE plus NOT NULL, one per table, what foreign keys point at.
+- candidate keys come from the meaning of the columns; pick one, UNIQUE the rest.
+- natural keys change, and every reference changes with them.
+- a surrogate key needs a UNIQUE on the natural key, or duplicates walk in.
+- composite keys are right when the row is a pair; their column order is the index's.
+</Keylines>

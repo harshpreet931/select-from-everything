@@ -1,0 +1,173 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "02be1586620655dd": {
+      "db": "shop",
+      "sql": "WITH per_customer AS (\n  SELECT customer_id, count(*) AS n\n  FROM orders\n  GROUP BY customer_id\n)\nSELECT c.name, c.city, p.n\nFROM per_customer AS p\nJOIN customers AS c ON c.id = p.customer_id\nWHERE p.n > (SELECT avg(n) FROM per_customer)\nORDER BY p.n DESC, c.id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25],
+            ["n", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "c6172b5ed427d366",
+          "rows": [
+            ["Maya Chen", "San Francisco", "57"],
+            ["Mei Kowalski", "Hamburg", "36"],
+            ["Grace Okafor", "Lagos", "33"],
+            ["Zoe Martin", "Lyon", "31"],
+            ["Zoë Martin", "Paris", "30"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "b447d942ae6d6bd1": {
+      "db": "shop",
+      "sql": "SELECT c.name, c.city, p.n\nFROM customers AS c\nJOIN (SELECT customer_id, count(*) AS n\n      FROM orders\n      GROUP BY customer_id) AS p\n  ON p.customer_id = c.id\nWHERE p.n > (SELECT avg(n)\n             FROM (SELECT customer_id, count(*) AS n\n                   FROM orders\n                   GROUP BY customer_id) AS again)\nORDER BY p.n DESC, c.id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25],
+            ["n", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "c6172b5ed427d366",
+          "rows": [
+            ["Maya Chen", "San Francisco", "57"],
+            ["Mei Kowalski", "Hamburg", "36"],
+            ["Grace Okafor", "Lagos", "33"],
+            ["Zoe Martin", "Lyon", "31"],
+            ["Zoë Martin", "Paris", "30"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "41326cf9a90c4feb": {
+      "db": "shop",
+      "sql": "WITH per_customer AS (\n  SELECT customer_id, count(*) AS n\n  FROM orders\n  GROUP BY customer_id\n),\nregulars AS (\n  SELECT customer_id FROM per_customer WHERE n >= 20\n),\nby_country AS (\n  SELECT c.country, count(*) AS regulars\n  FROM regulars AS r\n  JOIN customers AS c ON c.id = r.customer_id\n  GROUP BY c.country\n)\nSELECT country, regulars\nFROM by_country\nORDER BY regulars DESC, country;",
+      "statements": [
+        {
+          "tag": "SELECT 9",
+          "command": "SELECT",
+          "columns": [
+            ["country", "bpchar", 1042],
+            ["regulars", "int8", 20]
+          ],
+          "rowCount": 9,
+          "digest": "51b2abd7d2862bc6",
+          "rows": [
+            ["DE", "3"],
+            ["FR", "2"],
+            ["IE", "2"],
+            ["PT", "2"],
+            ["BR", "1"],
+            ["CA", "1"],
+            ["GB", "1"],
+            ["NG", "1"],
+            ["US", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "60f77302f56e0ada": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nWITH c AS (SELECT * FROM customers)\nSELECT name, city FROM c WHERE id = 42;\n\nEXPLAIN (COSTS OFF)\nWITH c AS MATERIALIZED (SELECT * FROM customers)\nSELECT name, city FROM c WHERE id = 42;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "22e063f491ad3fc8",
+          "rows": [
+            ["Index Scan using customers_pkey on customers"],
+            ["  Index Cond: (id = 42)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "406258818fffb4b0",
+          "rows": [
+            ["CTE Scan on c"],
+            ["  Filter: (id = 42)"],
+            ["  CTE c"],
+            ["    ->  Seq Scan on customers"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "c5db990243dd97f8": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nWITH per_customer AS (\n  SELECT customer_id, count(*) AS n FROM orders GROUP BY customer_id\n)\nSELECT count(*) FROM per_customer\nWHERE n > (SELECT avg(n) FROM per_customer);",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "777c7764984dd507",
+          "rows": [
+            ["Aggregate"],
+            ["  CTE per_customer"],
+            ["    ->  HashAggregate"],
+            ["          Group Key: orders.customer_id"],
+            ["          ->  Seq Scan on orders"],
+            ["  InitPlan 2"],
+            ["    ->  Aggregate"],
+            ["          ->  CTE Scan on per_customer per_customer_1"],
+            ["  ->  CTE Scan on per_customer"],
+            ["        Filter: ((n)::numeric > (InitPlan 2).col1)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "ed6089d862441b62": {
+      "db": "shop",
+      "sql": "WITH per_customer AS (\n  SELECT customer_id, count(*) AS n FROM orders GROUP BY customer_id\n)\nSELECT count(*) AS above_average, (SELECT round(avg(n), 2) FROM per_customer) AS average_orders\nFROM per_customer\nWHERE n > (SELECT avg(n) FROM per_customer);",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["above_average", "int8", 20],
+            ["average_orders", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "65f39b672acf4a0a",
+          "rows": [
+            ["681", "5.10"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

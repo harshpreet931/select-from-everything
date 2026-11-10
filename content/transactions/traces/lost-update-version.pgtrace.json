@@ -1,0 +1,394 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/lost-update-version.scenario.sql",
+ "title": "lost update, prevented: a version column checked in the UPDATE (optimistic locking)",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"owner","type":"text"},
+    {"name":"balance","type":"numeric"},
+    {"name":"version","type":"int4"}
+   ]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23221520},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL,\n  version int NOT NULL DEFAULT 0\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00, 0), (2, 'bob', 100.00, 0);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT balance, version FROM accounts WHERE id = 1",
+   "note": "T1 reads alice's balance and version: 100.00, version 0. no transaction stays open while the app thinks.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"balance","type":"numeric"},{"name":"version","type":"int4"}],
+    "data": [["100.00","0"]]
+   },
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8096,
+      "special": 8192,
+      "lsn": 23066768,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00","version":"0"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "SELECT balance, version FROM accounts WHERE id = 1",
+   "note": "T2 reads the same: 100.00, version 0.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"balance","type":"numeric"},{"name":"version","type":"int4"}],
+    "data": [["100.00","0"]]
+   },
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 32,
+      "upper": 8096,
+      "special": 8192,
+      "lsn": 23066768,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00","version":"0"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = 110.00, version = version + 1 WHERE id = 1 AND version = 0",
+   "note": "T1 saves 110.00, only if the version is still 0, and bumps it to 1. UPDATE 1.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8048,
+      "special": 8192,
+      "lsn": 23221608,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 258,
+        "infomask2": 16388,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8048,
+        "len": 44,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10242,
+        "infomask2": 32772,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00","version":"1"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "UPDATE accounts SET balance = 120.00, version = version + 1 WHERE id = 1 AND version = 0",
+   "note": "T2 saves 120.00 under the same condition. the version is 1 now, so no row matches: UPDATE 0. the app sees the 0 and knows its read is stale.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":0,"columns":[],"data":[]},
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8048,
+      "special": 8192,
+      "lsn": 23221608,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16388,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8048,
+        "len": 44,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32772,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00","version":"1"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT balance, version FROM accounts WHERE id = 1",
+   "note": "alice has 110.00, version 1. T2's deposit isn't lost: T2 knows it didn't happen, and re-reads.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"balance","type":"numeric"},{"name":"version","type":"int4"}],
+    "data": [["110.00","1"]]
+   },
+   "xids": {
+    "T1": {"xid":null,"snap":null,"iso":"read committed","inTxn":false},
+    "T2": {"xid":null,"snap":null,"iso":"read committed","inTxn":false}
+   },
+   "locks": [],
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8048,
+      "special": 8192,
+      "lsn": 23221608,
+      "pruneXid": 759,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8144,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 759,
+        "ctid": [0,3],
+        "infomask": 1282,
+        "infomask2": 16388,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_COMMITTED","HEAP_HOT_UPDATED"],
+        "data": {"id":"1","owner":"alice","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8096,
+        "len": 44,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 4,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00","version":"0"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8048,
+        "len": 44,
+        "xmin": 759,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 10498,
+        "infomask2": 32772,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID","HEAP_UPDATED","HEAP_ONLY_TUPLE"],
+        "data": {"id":"1","owner":"alice","balance":"110.00","version":"1"}
+       }
+      ]
+     }
+    ]
+   },
+   "xact": {"758":"committed","759":"committed"}
+  }
+ ]
+}

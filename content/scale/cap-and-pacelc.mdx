@@ -1,0 +1,98 @@
+import { CapLab } from "@/components/figures/scale/CapLab";
+import { PacelcGrid } from "@/components/figures/scale/PacelcGrid";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+{/* everything here is textbook material, drawn by hand: Brewer's conjecture (PODC 2000), Gilbert
+    and Lynch's proof (SIGACT News, 2002), Abadi's PACELC (IEEE Computer, 2012). the postgres
+    settings named in the PACELC figure are placed by what the manual says they do. */}
+
+<InShort>
+**CAP**: when the network splits a replicated system in two (a **partition**), each side must either keep answering, and risk answering with stale data (available), or refuse until it can be sure (consistent). you don't get to opt out of partitions, so the real choice is C or A *during* one. **PACELC** adds the other 99.9% of the time: **else**, with no partition, you trade **latency** against **consistency** on every request.
+</InShort>
+
+## the picture
+
+you know how CAP gets quoted as "pick two of consistency, availability and partition tolerance", as if you could pick C and A and skip P? that's the misquote. partitions aren't a feature you decline. they're something the network does to you.
+
+think of two bank branches whose phone line goes dead. a customer at branch A deposits money; a customer at branch B asks for the balance. branch B can say "can't tell you right now" (consistent, not available) or read out the last balance it knows (available, maybe wrong). there's no third option while the line is dead. step through both:
+
+<Figure wide caption={<>two replicas, one value. cut the link and pick what a replica does with a request it can't check: <C k="dead">refuse</C> it, or answer from what it has and risk a stale read.</>}>
+<CapLab />
+</Figure>
+
+## what the letters mean
+
+the theorem is precise, and the precise version is narrower than the slogan.
+
+<Defs>
+<dt>C, consistency</dt>
+<dd><a href="/learn/scale/consistency-models">linearizability</a>: every operation appears to happen at one instant between its start and its end, so once a write has completed, every later read returns it or something newer. not the C of <a href="/learn/transactions/acid">ACID</a>, which is about constraints.</dd>
+<dt>A, availability</dt>
+<dd>every request to a node that hasn't failed gets a non-error answer, eventually. not "five nines", and not "most requests".</dd>
+<dt>P, partition tolerance</dt>
+<dd>the system keeps going while the network drops arbitrary messages between nodes.</dd>
+</Defs>
+
+Eric Brewer stated it as a conjecture in his PODC 2000 keynote. Seth Gilbert and Nancy Lynch proved a formal version in 2002 ("Brewer's conjecture and the feasibility of consistent, available, partition-tolerant web services"): in an asynchronous network that can lose messages, no read/write register can guarantee both linearizability and availability. Brewer's own retrospective in 2012 ("CAP twelve years later") makes the same point this chapter does: the "two of three" phrasing misleads, because partitions are rare and the choice only bites while one is happening.
+
+<Quiz question="a system's docs say it's CA: consistent and available, not partition tolerant. what does that actually mean?" options={["it never has partitions", "it's single-node, or it gives up C or A when a partition happens anyway", "it beat the theorem"]} answer={1}>
+<Explain>
+partitions happen to any system that spans a network; calling it CA doesn't stop them. either it's effectively one node (then "partition" means "the node is down", and it's simply unavailable), or when the network does split, it will in practice either stop answering or answer inconsistently. CA is a description of behaviour when nothing is going wrong, which is what PACELC's "else" branch is for.
+</Explain>
+</Quiz>
+
+## what the theorem doesn't say
+
+it's easy to make CAP say more than it does:
+
+- it's about **one register under a partition**, nothing more. it says nothing about latency, throughput, transactions or what happens without a partition.
+- "consistent" means linearizable. a system that gives up linearizability can still give strong guarantees ([causal consistency](/learn/scale/consistency-models), read-your-writes) and stay available.
+- "available" means every live node answers. a CP system usually stays up on the majority side of a partition; only the minority side refuses. most people would call that available.
+- the choice can be made per operation. a system can be CP for account balances and AP for the "last seen" timestamp.
+
+## PACELC: the normal day
+
+partitions are rare. what you pay every day is latency. Daniel Abadi's PACELC (IEEE Computer, 2012, "Consistency Tradeoffs in Modern Distributed Database System Design") puts it in one line: if there's a **P**artition, choose **A** or **C**; **E**lse, choose **L**atency or **C**onsistency. keeping replicas consistent means waiting for them before you answer, and waiting is latency, partition or not.
+
+<Figure wide caption={<>PACELC as a two-way choice, with postgres setups placed by what they do, and the system classes Abadi's paper uses as examples.</>}>
+<PacelcGrid
+  partition={[
+    { k: "PA", what: "keep answering, maybe stale", eg: ["async streaming replica serving reads", "dynamo-style stores: dynamo, cassandra, riak"] },
+    { k: "PC", what: "refuse until sure", eg: ["primary with a synchronous standby: commits wait", "consensus systems: the minority side stops"] },
+  ]}
+  normal={[
+    { k: "EL", what: "answer now, replicate later", eg: ["synchronous_commit = local, async standbys", "reading from any replica"] },
+    { k: "EC", what: "wait for the replicas", eg: ["synchronous_commit = remote_apply", "fully consistent systems such as VoltDB"] },
+  ]}
+/>
+</Figure>
+
+postgres makes this concrete. a primary with an asynchronous standby is EL: COMMIT returns as soon as the primary's own WAL is flushed, and the standby catches up later (which is why [read-your-writes](/learn/scale/read-replicas) needs care). a synchronous standby moves it toward EC: every commit waits for the standby, and with `remote_apply`, for the standby to replay. that wait is a network round trip on every commit:
+
+<Figure wide caption={<>the commit path with one synchronous standby, drawn. hover a stage. ship and flush or apply are the price of consistency: they run on every commit, partition or not.</>}>
+<Flow stages={[
+  { label: "write WAL", sub: "primary", note: "the commit record goes into the primary's WAL buffers." },
+  { label: "flush", sub: "primary's disk", note: "synchronous_commit = local stops here and returns. fast, and a standby may not have it yet." },
+  { label: "ship", sub: "to the standby", note: "the walsender streams it. this is the network round trip that PACELC's E is about." },
+  { label: "flush or apply", sub: "standby", note: "on (with a synchronous standby) waits for the standby's flush; remote_apply waits for replay too." },
+  { label: "COMMIT returns", sub: "to the client", note: "only now does the client see success. if the standby is unreachable, this never comes: that's the PC choice." },
+]} />
+</Figure>
+
+and during a partition, that synchronous standby is the PC choice: if it can't be reached, commits on the primary wait rather than succeed unreplicated. the manual describes exactly this, and the usual remedy is several standbys with a quorum (`ANY 1 (s1, s2)`), so one lost standby doesn't stop the primary. [streaming replication](/learn/wal/streaming-replication) has the settings.
+
+<Gotcha title="CAP is not a database label">
+"mongo is CP, cassandra is AP" style labels are about defaults, and most systems let you choose per request (read and write quorums, consistency levels, which replica you read from). the useful question isn't "which letter is it?", it's "what does this request do when the replicas disagree, and what does it cost when they don't?".
+</Gotcha>
+
+<Interview q="explain the CAP theorem.">
+for a replicated system, when a network partition separates the nodes, each node that receives a request must either answer without coordinating, staying available but possibly returning stale data, or refuse until it can coordinate, staying consistent (linearizable) but unavailable. partitions can't be opted out of, so it's C or A during one; it was conjectured by Brewer and proved by Gilbert and Lynch. bonus points: C means linearizability, not ACID's consistency; and PACELC adds that without a partition you still trade latency against consistency, which is the trade-off you pay on every request.
+</Interview>
+
+<Keylines>
+- partitions aren't optional, so CAP is a choice made during one: answer, or be sure.
+- C is linearizability. A is every live node answering.
+- the theorem is about one register under a partition, nothing more.
+- PACELC: else, with no partition, you still trade latency for consistency.
+- in postgres: async replicas lean EL/PA, synchronous standbys lean EC/PC.
+</Keylines>

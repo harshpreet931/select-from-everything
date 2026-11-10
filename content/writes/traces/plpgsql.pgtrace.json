@@ -1,0 +1,127 @@
+{
+ "v": 1,
+ "scenario": "content/writes/traces/plpgsql.scenario.sql",
+ "title": "errors inside a PL/pgSQL loop, with and without an exception block, and a batch job with and without COMMIT",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "stock": {"kind":"table","am":"heap","columns":[{"name":"sku","type":"text"},{"name":"qty","type":"int4"}]},
+  "stock_pkey": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"stock"},
+  "jobs": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"archived","type":"bool"}]},
+  "jobs_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"jobs"}
+ },
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE TABLE stock (sku text PRIMARY KEY, qty int NOT NULL CHECK (qty > 0))",
+   "note": "a table with a rule: qty must be positive.",
+   "status": "ok",
+   "result": {"command":"CREATE TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "DO $$\nBEGIN\n  FOR i IN 1..10 LOOP\n    INSERT INTO stock VALUES ('TEA-' || i, i % 7);\n  END LOOP;\nEND $$",
+   "note": "no exception block: the seventh insert breaks the CHECK, the error ends the DO block, and the six rows before it go with it.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23514",
+    "message": "new row for relation \"stock\" violates check constraint \"stock_qty_check\"",
+    "detail": "Failing row contains (TEA-7, 0)."
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT count(*) AS rows FROM stock",
+   "note": "nothing was kept.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"rows","type":"int8"}],"data":[["0"]]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "DO $$\nBEGIN\n  FOR i IN 1..10 LOOP\n    BEGIN\n      INSERT INTO stock VALUES ('TEA-' || i, i % 7);\n    EXCEPTION WHEN check_violation THEN\n      RAISE NOTICE 'skipped TEA-%', i;\n    END;\n  END LOOP;\nEND $$",
+   "note": "an exception block around each insert: the bad row is rolled back to the block's start and skipped, the loop goes on.",
+   "status": "ok",
+   "result": {"command":"DO","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT count(*) AS rows FROM stock",
+   "note": "nine rows kept, one skipped.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"rows","type":"int8"}],"data":[["9"]]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "CREATE TABLE jobs (id int PRIMARY KEY, archived boolean NOT NULL DEFAULT false);\nINSERT INTO jobs (id) SELECT g FROM generate_series(1, 5000) AS g",
+   "note": "a batch job: 5,000 orders to archive, one of which (3,500) is broken.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":5000,"columns":[],"data":[]}
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "CREATE PROCEDURE archive_all() LANGUAGE plpgsql AS $$\nBEGIN\n  FOR batch IN 0..4 LOOP\n    UPDATE jobs SET archived = true\n    WHERE id > batch * 1000 AND id <= (batch + 1) * 1000;\n    IF EXISTS (SELECT FROM jobs WHERE id = 3500 AND archived) THEN\n      RAISE EXCEPTION 'order 3500 is broken';\n    END IF;\n  END LOOP;\nEND $$",
+   "note": "a procedure that works in batches of 1,000, with no COMMIT.",
+   "status": "ok",
+   "result": {"command":"CREATE PROCEDURE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "CALL archive_all()",
+   "note": "it fails in the fourth batch, and the whole CALL is one transaction: everything rolls back.",
+   "status": "error",
+   "error": {"sqlstate":"P0001","message":"order 3500 is broken"}
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT count(*) FILTER (WHERE archived) AS archived FROM jobs",
+   "note": "archived after the failure.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"archived","type":"int8"}],"data":[["0"]]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "CREATE OR REPLACE PROCEDURE archive_all() LANGUAGE plpgsql AS $$\nBEGIN\n  FOR batch IN 0..4 LOOP\n    UPDATE jobs SET archived = true\n    WHERE id > batch * 1000 AND id <= (batch + 1) * 1000;\n    IF EXISTS (SELECT FROM jobs WHERE id = 3500 AND archived) THEN\n      RAISE EXCEPTION 'order 3500 is broken';\n    END IF;\n    COMMIT;\n  END LOOP;\nEND $$",
+   "note": "the same procedure with a COMMIT after every batch.",
+   "status": "ok",
+   "result": {"command":"CREATE PROCEDURE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "CALL archive_all()",
+   "note": "it fails in the same place. but the first three batches were committed as they finished, so they stay done.",
+   "status": "error",
+   "error": {"sqlstate":"P0001","message":"order 3500 is broken"}
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT count(*) FILTER (WHERE archived) AS archived FROM jobs",
+   "note": "archived after the failure.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"archived","type":"int8"}],"data":[["3000"]]}
+  }
+ ]
+}

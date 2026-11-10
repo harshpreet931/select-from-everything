@@ -1,0 +1,120 @@
+import { PageSteps } from "@/components/figures/mvcc/PageSteps";
+import hints from "./traces/hint-bits.pgtrace.json";
+
+export const fpi = hints.steps[2].wal.records[0];
+export const code = { committed: "01", aborted: "10", "in progress": "00" };
+export const clogXids = Object.keys(hints.steps[5].xact).map(Number).sort((a, b) => a - b);
+export const clogCells = [...clogXids, clogXids[clogXids.length - 1] + 1];
+
+<InShort>
+whether a transaction committed is stored in exactly one place: the **commit log**, `pg_xact`, **two bits per transaction**. tuples don't hear about it. the first reader that needs the answer looks it up and writes it into the tuple header as **hint bits**, so nobody has to look again. which means a plain SELECT can dirty a page, and even write WAL.
+</InShort>
+
+## the picture
+
+you know how [COMMIT](/learn/transactions/begin-commit-rollback) is supposed to be the moment a transaction's rows become real? postgres doesn't go back and touch them. a transaction might have written a million tuples on ten thousand pages, and visiting them all at commit would make COMMIT as slow as the work itself.
+
+think of a cloakroom. when you leave, the attendant doesn't walk the racks flipping every one of your tickets to "collected". they tick your number in one ledger at the desk (the commit log). the next person who wonders about one of your coats checks the ledger, and pencils "collected" on that ticket so the person after them doesn't have to walk to the desk again (a hint bit).
+
+<Figure caption={<>the commit log, as it stands at the end of the capture below: two bits per xid, packed four to a byte, indexed by xid. <C k="live">committed</C> is 01, <C k="dead">aborted</C> is 10, and an xid nobody has finished yet is 00.</>}>
+<ArrayViz values={clogCells.map((x) => code[hints.steps[5].xact[x] ?? "in progress"])} pointers={Object.fromEntries(clogCells.map((x, i) => [i, String(x)]))} tones={Object.fromEntries(clogCells.flatMap((x, i) => (hints.steps[5].xact[x] === "committed" ? [[i, "live"]] : hints.steps[5].xact[x] === "aborted" ? [[i, "dead"]] : [])))} indices={false} label="pg_xact, one page, by xid" />
+</Figure>
+
+(the fourth value, 11, means "sub-committed": a [subtransaction](/learn/mvcc/transaction-ids) whose parent hasn't finished. it gets resolved when the parent does.)
+
+## pg_xact
+
+`pg_xact_status()` reads it for you:
+
+```sql run db=lab session=clog
+BEGIN;
+UPDATE accounts SET balance = balance + 1 WHERE id = 1;
+COMMIT;
+BEGIN;
+UPDATE accounts SET balance = balance + 1 WHERE id = 2;
+ROLLBACK;
+SELECT x AS xid, pg_xact_status(x::text::xid8) AS status
+FROM generate_series(751, 754) AS x
+ORDER BY x;
+```
+
+752 loaded the dataset, 753 committed, 754 rolled back. COMMIT and ROLLBACK cost the same here: two bits flipped in a page of this log (plus, for a commit, a WAL record that has to reach disk first, see [the commit path](/learn/wal/commit-path)). on disk it's a directory of files in the data directory:
+
+```sql run session=clog
+SELECT pg_ls_dir('pg_xact') AS file, (pg_stat_file('pg_xact/0000')).size AS bytes;
+```
+
+one 8 KB page holds the status of 32,768 xids (8,192 bytes × 4 per byte), and a segment file grows to 32 pages before the next one starts. the browser's database has only ever used its first page. the log is read through its own small cache of pages in shared memory, and old segments are deleted once nothing in the database can still need them, which is one of the things [freezing](/learn/mvcc/freezing-and-wraparound) is for.
+
+## hint bits
+
+a lookup in that cache is cheap, but not free, and a seq scan asks once per tuple. so whoever learns the answer writes it into the tuple's `t_infomask`: four bits, `HEAP_XMIN_COMMITTED`, `HEAP_XMIN_INVALID` (aborted), `HEAP_XMAX_COMMITTED`, `HEAP_XMAX_INVALID`. from then on, the [visibility check](/learn/mvcc/visibility-rules) reads the bit and skips the log.
+
+the browser can show this on its own. lab's tables were loaded, checkpointed and never read, so no hint bits are set yet:
+
+```sql run db=lab session=hint
+SELECT lp, t_xmin, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags
+FROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;
+SELECT isdirty FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0
+  AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database());
+```
+
+clean page, no `HEAP_XMIN_COMMITTED`. now just read the table, and look again:
+
+```sql run session=hint
+SELECT owner, balance FROM accounts ORDER BY id;
+SELECT lp, t_xmin, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags
+FROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;
+SELECT isdirty FROM pg_buffercache
+WHERE relfilenode = pg_relation_filenode('accounts') AND relforknumber = 0
+  AND reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database());
+```
+
+a read-only query changed the page: every tuple now says `HEAP_XMIN_COMMITTED`, and the buffer is dirty. some day it gets written back to disk, by the [checkpointer or the background writer](/learn/storage/writing-pages-back). that's the "dirtied" you see in `EXPLAIN (BUFFERS)` on a SELECT, like the one in [why pages](/learn/storage/why-pages).
+
+<Predict question="a table was bulk loaded and checkpointed. you run SELECT count(*) on it twice. which run writes WAL?" options={["neither", "the first", "both"]} answer={1}>
+```sql
+SELECT count(*) FROM big_fresh_table;   -- first
+SELECT count(*) FROM big_fresh_table;   -- second
+```
+<Explain>
+the first, on a server with data checksums on (the default since postgres 18) or wal_log_hints. setting hint bits changes the page, and a page that changes for the first time after a checkpoint has to be WAL-logged in full ([full-page writes](/learn/wal/full-page-writes)), or a torn write could leave a page whose [checksum](/learn/wal/checksums) doesn't match. so the first read logs an FPI_FOR_HINT record per page. the second finds the bits set and writes nothing.
+</Explain>
+</Predict>
+
+## a SELECT that writes WAL
+
+this capture is from a real server with checksums on. T1 updates alice and commits; a CHECKPOINT writes everything out; then T2 just reads.
+
+<Figure wide caption={<>step through. at T2's first read the tuple headers gain their hint bits (<C k="hot">hot</C>), the page's buffer turns <C k="accent">dirty</C> again, and the WAL gets a record nobody asked for: FPI_FOR_HINT, the whole page. T2's second read changes nothing. the rolled-back update at the end gets its hints with no WAL at all, because the page has already been logged since the checkpoint.</>}>
+<PgStepper trace={hints} panels={["lanes", "page:accounts", "pool", "wal"]} />
+</Figure>
+
+the record is {fpi.len} bytes, {fpi.fpiLen} of them the page image (postgres leaves out the empty hole in the middle of the page, so a mostly empty page logs small). and it sits past the flush pointer: a read-only transaction has no commit record to wait for, so nothing forces it to disk right away.
+
+<Figure wide caption={<>one tuple header, before and after T2's read. pick the other slot to compare. alice's old version gains <C k="meta">HEAP_XMAX_COMMITTED</C>, the new one <C k="meta">HEAP_XMIN_COMMITTED</C>.</>}>
+<PageSteps trace={hints} rel="accounts" steps={[1, 2]} labels={["after the checkpoint", "after T2's read"]} focus={3} fields={["id", "balance"]} />
+</Figure>
+
+<Gotcha title="the first read after a bulk load is the slow one">
+load a big table, then run a report on it: the report sets hint bits on every page, dirties every page, and with checksums on writes a full image of every page to the WAL. the report pays for the load's bookkeeping. a `VACUUM` (or `VACUUM (ANALYZE)`) straight after the load does it once, on your schedule, and also sets the [visibility map](/learn/storage/fsm-and-vm). `COPY ... FREEZE` into a table created or truncated in the same transaction skips it altogether: the rows are written already frozen.
+</Gotcha>
+
+## why not set them at commit?
+
+because that's the work hint bits exist to avoid. commit would have to find and revisit every page the transaction touched, some of them long since written to disk and evicted. instead the cost is spread out and paid only for tuples someone actually reads: a tuple nobody reads before VACUUM gets its hint from VACUUM, and one that gets deleted unread never needs one at all.
+
+they're called hints because losing one is harmless. a crash that loses a dirty page full of hint bits loses nothing: the next reader asks pg_xact again. that's also why, without checksums, setting them isn't WAL-logged at all.
+
+<Interview q="what are hint bits, and why can a SELECT write to disk in postgres?">
+commit status lives in pg_xact, two bits per transaction id. tuples only hold xids. to avoid a commit log lookup for every tuple on every scan, the first reader that resolves a tuple's xmin or xmax status records it in the tuple header (HEAP_XMIN_COMMITTED, HEAP_XMIN_INVALID and the xmax pair). that modifies the page, so the buffer becomes dirty and is written out later. with data checksums or wal_log_hints, the first such change after a checkpoint also WAL-logs a full page image (FPI_FOR_HINT). bonus point: it's why the first query after a bulk load is slow and write-heavy, and why vacuuming right after a load helps.
+</Interview>
+
+<Keylines>
+- commit status lives in pg_xact: two bits per xid, 32,768 xids per 8 KB page.
+- COMMIT and ROLLBACK flip those bits. the tuples aren't touched.
+- the first reader to resolve a tuple writes hint bits into its header, and dirties the page.
+- with checksums on, that first change after a checkpoint logs the whole page: a SELECT that writes WAL.
+- hints are only hints: lose one and the next reader asks the commit log again.
+</Keylines>

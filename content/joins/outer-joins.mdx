@@ -1,0 +1,171 @@
+import { RunPick } from "@/components/figures/joins/RunPick";
+import { prov, resultOf, runsOf } from "@/components/figures/joins/captured";
+import trace from "./traces/outer.pgtrace.json";
+
+{/* the clause stepper, the switch and the JoinLab's two tables all read traces/outer.scenario.sql,
+    captured on PGlite against the school dataset. the JoinLab itself is the model in
+    src/lib/db/sim/join.ts, checked against postgres for every join kind. */}
+
+export const chains = runsOf(trace, ["JOIN", "LEFT JOIN"], 1);
+export const courses = resultOf(trace, 3);
+export const teachers = resultOf(trace, 4);
+export const source = prov(trace);
+
+<InShort>
+a **LEFT JOIN** returns every pair that matched, plus each left row that matched nothing, once, with **NULLs** in the right table's columns. RIGHT JOIN does the same for the right table, and FULL JOIN for both.
+
+a WHERE on the right table runs after the padding and throws it away. put that condition in **ON** instead.
+</InShort>
+
+## the picture
+
+you know how you ask for every instructor with their courses, and the list comes back one instructor short? Sofia Petrova teaches nothing this year, so an inner join has nothing to pair her with, and she's just not there.
+
+think of a class photo. everyone who showed up sits in their seat. a LEFT JOIN also keeps a seat for every kid who stayed home: an empty chair with their name card on it. the name card is the left row, the empty chair is the NULLs.
+
+<Figure wide caption={<>five courses down the side, four instructors across the top. switch the join type: CS499 has no instructor, Sofia Petrova has no course. a leftover row comes back <C k="ref">padded</C>, from the left side with LEFT, the right side with RIGHT, both with FULL.</>}>
+<JoinLab left={{ name: "courses", columns: ["code", "instructor_id"], rows: courses.rows }} right={{ name: "instructors", columns: ["id", "name"], rows: teachers.rows }} on={["instructor_id", "id"]} kind="left" logical />
+</Figure>
+
+the figure uses five of the 12 courses and four of the 8 instructors, so the grid fits. the full tables tell the same story, which is what the rest of this chapter runs.
+
+## LEFT JOIN
+
+every instructor, with their courses if they have any:
+
+```sql run db=school
+SELECT i.name, c.code, c.title
+FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id
+ORDER BY i.id, c.code;
+```
+
+12 rows: 11 matched pairs (Hannah Okoye teaches two courses, so she's in two rows), plus Sofia Petrova, once, with NULL for `code` and `title`. nobody stored those NULLs. they're the join's way of writing "no partner". (`LEFT OUTER JOIN` is the same thing. the `OUTER` is optional and almost nobody types it.)
+
+"left" just means the table written before the keyword. that's the one that keeps all its rows. a LEFT JOIN can't return fewer rows than its left table, and it can return more: one row per match, and at least one per left row.
+
+## RIGHT and FULL
+
+RIGHT JOIN keeps every row of the table written *after* the keyword. `a RIGHT JOIN b` is `b LEFT JOIN a` with the columns in a different order, so most people only ever write LEFT and put the table they care about first.
+
+FULL JOIN keeps the leftovers from both sides. every course with its instructor, and every instructor with their course, in one list:
+
+```sql run db=school
+SELECT c.code, i.name
+FROM courses AS c
+FULL JOIN instructors AS i ON i.id = c.instructor_id
+ORDER BY c.code NULLS LAST, i.name;
+```
+
+13 rows: the 11 pairs, CS499 with no instructor (the senior thesis has nobody assigned yet), and Sofia Petrova with no course. FULL JOIN is the one you reach for when you're comparing two lists and want to see what's missing on either side.
+
+## counting what isn't there
+
+padded rows are real rows, which matters the moment you count them:
+
+```sql run db=school
+SELECT i.name, count(*) AS rows, count(c.code) AS courses
+FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id
+GROUP BY i.id
+ORDER BY i.id;
+```
+
+`count(*)` counts rows, and Sofia has one: the padded one. `count(c.code)` counts values that aren't NULL, and she has none. so to count matches through a LEFT JOIN, count a column from the right table, ideally its primary key. ([aggregate functions](/learn/basics/aggregates) has the three counts side by side.) `sum` has the opposite problem: over nothing but NULLs it's NULL, not 0, so wrap it in `coalesce(sum(...), 0)` when a zero is what you mean.
+
+## the WHERE that undoes a LEFT JOIN
+
+now the classic. same LEFT JOIN, but only the 4-credit courses:
+
+<Predict options={["8 instructors", "5 instructors", "an error"]} answer={1}>
+```sql
+SELECT i.name, c.code, c.credits
+FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id
+WHERE c.credits >= 4;
+```
+<Explain>
+the LEFT JOIN keeps everyone, Sofia included, and only then does WHERE run. Sofia's padded row has `credits` NULL, and `NULL >= 4` is unknown, not true, so WHERE drops it. Yuki Tanaka and Oliver Grant only teach 3-credit courses, so all of their rows go too. 5 instructors are left, which is exactly what an inner join would have given you.
+</Explain>
+</Predict>
+
+step through it. the stepper's tables are the real intermediate results, captured from the same postgres the page runs:
+
+<Figure wide caption={<>FROM builds the LEFT JOIN, padded row and all. then WHERE strikes four rows, Sofia's padded one among them: <code>NULL &gt;= 4</code> isn't true.</>}>
+<ClauseStepper trace={trace} maxRows={14} />
+</Figure>
+
+the fix is to move the condition into ON. ON decides which pairs count as a match, *before* the padding. a course with 3 credits then simply isn't a match, and an instructor with no 4-credit course gets the padded row instead of disappearing:
+
+<Compare>
+<Bad label="in WHERE: 8 rows, 5 instructors">
+```sql run db=school
+SELECT i.name, c.code, c.credits
+FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id
+WHERE c.credits >= 4
+ORDER BY i.id, c.code;
+```
+</Bad>
+<Good label="in ON: 11 rows, all 8">
+```sql run db=school
+SELECT i.name, c.code, c.credits
+FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id AND c.credits >= 4
+ORDER BY i.id, c.code;
+```
+</Good>
+</Compare>
+
+postgres can tell that the WHERE undid the outer join. compare the two plans: the second one doesn't do an outer join at all.
+
+```sql run db=school
+EXPLAIN (COSTS OFF)
+SELECT i.name, c.code FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id;
+
+EXPLAIN (COSTS OFF)
+SELECT i.name, c.code FROM instructors AS i
+LEFT JOIN courses AS c ON c.instructor_id = i.id
+WHERE c.credits >= 4;
+```
+
+the first is your LEFT JOIN (`Hash Right Join` is the same join with its two inputs swapped: the planner chose to hash `instructors`). the second is a plain `Hash Join`. `c.credits >= 4` can never be true for a padded row, so postgres drops the padding step it would only throw away. it didn't change your answer. it just shows you what your query already meant.
+
+the rule of thumb: in a LEFT JOIN, conditions on the right table go in ON, conditions on the left table go in WHERE. a condition on the left table in ON doesn't filter anything, by the way: a left row that fails it just comes back padded.
+
+there's one WHERE on the right table that's on purpose: `WHERE c.code IS NULL`. it keeps only the padded rows, which is "instructors who teach nothing". that's an anti join, and [EXISTS, semi joins and anti joins](/learn/joins/exists-semi-anti) has the cleaner way to write it.
+
+## a LEFT JOIN, then an inner one
+
+the other way to lose your padded rows: join something else after them with a plain JOIN. "how many students does each instructor teach?" goes instructors → courses → enrollments:
+
+<Figure wide caption={<>switch the second join. a plain <code>JOIN</code> needs a course code to match an enrollment, and Sofia's padded row has NULL there, so she drops out. a second <code>LEFT JOIN</code> keeps her, with 0 students.</>}>
+<RunPick
+  options={[{ key: "then", values: ["JOIN", "LEFT JOIN"] }]}
+  runs={chains}
+  hot={["JOIN enrollments AS e"]}
+  tone="live"
+  trace={source}
+/>
+</Figure>
+
+the padded row reaches the second join like any other row, with NULL in `c.code`, and an inner join on `e.course_code = c.code` has nothing to match it with. once a table hangs off an outer join, every join after it on that path usually has to be outer too. (or nest them, `LEFT JOIN (courses AS c JOIN enrollments AS e ON e.course_code = c.code) ON c.instructor_id = i.id`, which says "instructors, and their courses that have students".)
+
+this is also why outer joins can't be reordered as freely as inner joins: `(a LEFT JOIN b) JOIN c` and `a LEFT JOIN (b JOIN c)` are different questions with different answers.
+
+<Gotcha title="LEFT JOIN returned more rows than the left table">
+that's not a bug. a LEFT JOIN guarantees *at least* one row per left row. Hannah Okoye teaches two courses, so she's in two rows. if what you wanted was one row per instructor, aggregate (`GROUP BY i.id`), or ask the yes-or-no question with EXISTS, or pick one course per instructor with a [LATERAL join](/learn/joins/lateral-joins). and if there's a SUM over those rows, read [join fan-out](/learn/joins/fan-out) first.
+</Gotcha>
+
+<Interview q="your LEFT JOIN returns fewer rows than the left table. what happened?">
+a LEFT JOIN on its own can't do that, so something after it did. the usual suspects: a WHERE condition on a right-table column (it's unknown for padded rows, so they're dropped, and the query is an inner join again), or a plain JOIN after it that the padded rows can't match. fix the first by moving the condition into ON, the second by making the later join a LEFT JOIN too. bonus point: the planner spots the first one too. when a WHERE can never be true for a padded row, EXPLAIN shows a plain join where you wrote LEFT.
+</Interview>
+
+<Keylines>
+- LEFT JOIN: every matched pair, plus each unmatched left row once, padded with NULLs.
+- RIGHT is LEFT with the tables swapped. FULL keeps leftovers from both sides.
+- count a right-table column, not `*`, to count matches through a LEFT JOIN.
+- conditions on the right table go in ON. in WHERE they drop the padded rows.
+- after an outer join, a plain JOIN on the padded side undoes it.
+</Keylines>

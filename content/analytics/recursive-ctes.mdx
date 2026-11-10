@@ -1,0 +1,232 @@
+import { RecursiveSteps } from "@/components/figures/analytics/RecursiveSteps";
+import { runsOf, stagesOf, prov } from "@/lib/db/captured";
+import trace from "./traces/recursive-ctes.pgtrace.json";
+
+{/* the iteration stepper reads the @stages step of traces/recursive-ctes.scenario.sql, captured
+    on PGlite against org: each stage is the whole recursive query, really run, filtered to one
+    depth (= one iteration's working table, since depth goes up by one per iteration). postgres
+    doesn't show its working table from outside, so this is the closest real view of it. the
+    SEARCH switch reads the two steps after it. */}
+
+export const walk = stagesOf(trace, 0);
+export const search = runsOf(trace, ["BREADTH FIRST", "DEPTH FIRST"], 1);
+
+<InShort>
+a **recursive CTE** is `WITH RECURSIVE name AS (anchor UNION ALL recursive part)`, where the recursive part refers to `name` itself. postgres runs the anchor once, then runs the recursive part over and over, each time against **only the rows the last round found** (the **working table**), and stops on the first round that finds nothing.
+
+that's how SQL walks trees and graphs: org charts, prerequisites, routes. SEARCH picks depth-first or breadth-first order; CYCLE stops loops.
+</InShort>
+
+## the picture
+
+you know how "everyone under this manager" is easy one level down (a join) and two levels down (two joins), and impossible for "any number of levels" with plain joins, because you'd have to know the depth before you write the query? a recursive CTE writes the join once and lets postgres repeat it until it runs dry.
+
+think of a phone tree. the manager calls her three leads. each lead calls their own reports. nobody calls back up, nobody calls twice, and when a round of calls reaches people with no one left to call, the tree is done. each round only involves the people who were just called (the working table), not everyone called so far.
+
+<Figure wide caption={<>step through the iterations. the <C k="hot">working table</C> is what the last round found, and the only thing the next round joins against. the result is every working table stacked up. the fourth round finds nobody, and that's the stop.</>}>
+<RecursiveSteps sql={walk.sql} stages={walk.stages} trace={prov(trace)} />
+</Figure>
+
+these are the leads from [window frames](/learn/analytics/window-frames), as it happens: Ama Rossi manages Olivia, Ananya and Lucas. the org dataset is a complete tree with three reports per manager, so the rounds go 1, 3, 9, and then nothing, because the associates manage nobody.
+
+## the shape
+
+```sql run db=org
+WITH RECURSIVE team AS (
+  SELECT id, name, title, 0 AS depth        -- the anchor: where to start
+  FROM employees
+  WHERE id = 14
+  UNION ALL
+  SELECT e.id, e.name, e.title, t.depth + 1 -- the recursive part: one step further
+  FROM employees AS e
+  JOIN team AS t ON e.manager_id = t.id
+)
+SELECT id, name, title, depth
+FROM team
+ORDER BY depth, id;
+```
+
+three parts, and each has a job:
+
+- **the anchor** (before UNION ALL) runs once. it can't mention `team`.
+- **the recursive part** (after it) mentions `team` exactly once, and that `team` means "the working table", the rows from the previous round, never the whole result so far.
+- **the outer query** reads `team` like any table, after the loop has finished.
+
+the `depth` column isn't required. it's just a counter you carry along, and it's handy: for ordering, for "only three levels down" (`WHERE t.depth < 3` in the recursive part), and as a seatbelt against loops.
+
+<Predict options={["4 rows", "6 rows", "it never ends"]} answer={0}>
+```sql
+-- walk *up* from Ama Rossi (14) to the top
+WITH RECURSIVE chain AS (
+  SELECT id, name, manager_id FROM employees WHERE id = 14
+  UNION ALL
+  SELECT e.id, e.name, e.manager_id
+  FROM employees AS e JOIN chain AS c ON e.id = c.manager_id
+)
+SELECT name FROM chain;
+-- 14 is a manager, level 3 of 6
+```
+<Explain>
+4. Ama is on level 3 (the CEO is level 0), so the walk up visits her, a director, a vp and the CEO. the CEO's manager_id is NULL, so the next round's join finds nobody, the working table is empty, and it stops. from an associate on the bottom level it would be 6.
+</Explain>
+</Predict>
+
+run it and count:
+
+```sql run db=org
+WITH RECURSIVE chain AS (
+  SELECT id, name, title, manager_id FROM employees WHERE id = 14
+  UNION ALL
+  SELECT e.id, e.name, e.title, e.manager_id
+  FROM employees AS e
+  JOIN chain AS c ON e.id = c.manager_id
+)
+SELECT id, name, title
+FROM chain
+ORDER BY id;
+```
+
+## depth first or breadth first
+
+the loop naturally produces rows a level at a time (breadth first), but nothing promises that order in the output. to get an order you can rely on, ask for one with `SEARCH` <Since v={14} />, which adds a sort-key column you then ORDER BY:
+
+<Figure wide caption={<>switch the search. <code>BREADTH FIRST</code> lists each level before the next, the way the iterations ran. <code>DEPTH FIRST</code> follows Olivia's branch to the bottom before Ananya's, which is the order an indented org chart is printed in.</>}>
+<RunPick options={[{ key: "SEARCH", values: ["BREADTH FIRST", "DEPTH FIRST"] }]} runs={search} hot={["SEARCH BREADTH FIRST BY id SET ord", "SEARCH DEPTH FIRST BY id SET ord"]} trace={prov(trace)} />
+</Figure>
+
+depth first is the one you want for drawing a tree, since every person comes right after their manager:
+
+<Figure caption={<>Ama Rossi's team, printed in the depth-first order above. click a name to fold it.</>}>
+<Tree>{`
+Ama Rossi           // manager, 14
+    Olivia Nguyen       // lead, 41
+        Diego Wong          // associate, 122
+        Jonas Petrov        // associate, 123
+        Emma Dubois         // associate, 124
+    Ananya Smith        // lead, 42
+        Mei Nguyen          // associate, 125
+        Clara Garcia        // associate, 126
+        Valentina Haddad    // associate, 127
+    Lucas Novak         // lead, 43
+        Ama Haddad          // associate, 128
+        Ivan Hansen         // associate, 129
+        Ivan Ahmed          // associate, 130
+`}</Tree>
+</Figure>
+
+under the hood, the depth-first `ord` is the array of ids from the top down to the row (`{(14),(41),(122)}`), and sorting arrays element by element walks the tree. before postgres 14 you built that array by hand, and the [release notes](https://www.postgresql.org/docs/release/14.0/) say as much: SEARCH and CYCLE do what existing syntax could, "much less conveniently".
+
+## UNION or UNION ALL
+
+UNION ALL keeps every row the recursive part produces. plain UNION drops rows that are already in the result, before they become the next working table. on a tree it makes no difference. on a graph where two paths meet, it does. the school's prerequisites are a graph: Database Internals (CS401) needs CS301 and MATH301, and both of those lead to Calculus I:
+
+```sql run db=school
+WITH RECURSIVE needs AS (
+  SELECT requires_code AS code FROM prerequisites WHERE course_code = 'CS401'
+  UNION ALL
+  SELECT p.requires_code FROM prerequisites AS p JOIN needs AS n ON p.course_code = n.code
+)
+SELECT code, count(*) AS reached FROM needs GROUP BY code ORDER BY code;
+```
+
+MATH101 is reached twice, once through MATH201 and once through MATH301. with UNION, the second arrival is a duplicate of a row already found, so it's dropped, and nothing downstream of it runs twice:
+
+```sql run db=school
+WITH RECURSIVE needs AS (
+  SELECT requires_code AS code FROM prerequisites WHERE course_code = 'CS401'
+  UNION
+  SELECT p.requires_code FROM prerequisites AS p JOIN needs AS n ON p.course_code = n.code
+)
+SELECT code FROM needs ORDER BY code;
+```
+
+six courses, each once. that dedup is also a loop breaker, but only while every column stays the same each time round. add a depth counter and no row is ever a duplicate again.
+
+## loops, and CYCLE
+
+real data has loops that shouldn't be there. make one on purpose: a copy of four people from the top of the org, and a typo that makes the CEO report to Ama Rossi:
+
+```sql run db=org session=loop
+CREATE TEMP TABLE chart AS
+SELECT id, name, manager_id FROM employees WHERE id IN (1, 2, 5, 14);
+UPDATE chart SET manager_id = 14 WHERE id = 1;
+
+SELECT id, name, manager_id FROM chart ORDER BY id;
+```
+
+walking up from Ama now goes 14 → 5 → 2 → 1 → 14 → ... forever. postgres has no built-in limit on recursion, so a query like that runs until something stops it (a `statement_timeout`, or you). a depth seatbelt shows the loop going round:
+
+```sql run session=loop
+WITH RECURSIVE up AS (
+  SELECT id, name, manager_id, 0 AS steps FROM chart WHERE id = 14
+  UNION ALL
+  SELECT c.id, c.name, c.manager_id, u.steps + 1
+  FROM chart AS c JOIN up AS u ON c.id = u.manager_id
+  WHERE u.steps < 9
+)
+SELECT id, name, steps FROM up ORDER BY steps;
+```
+
+`CYCLE` <Since v={14} /> does it properly. it tracks the path, and when a row would revisit a value already on its path, it marks that row and doesn't recurse from it:
+
+```sql run session=loop
+WITH RECURSIVE up AS (
+  SELECT id, name, manager_id FROM chart WHERE id = 14
+  UNION ALL
+  SELECT c.id, c.name, c.manager_id
+  FROM chart AS c JOIN up AS u ON c.id = u.manager_id
+) CYCLE id SET looped USING path
+SELECT id, name, looped, path FROM up ORDER BY path;
+```
+
+five rows. the fifth is Ama again, with `looped = true` and the path that got there: `{(14),(5),(2),(1),(14)}`. that's the row you want to find in a data-quality check, and the query ends on its own.
+
+<Gotcha title="the recursive part can't aggregate itself">
+the recursive part can refer to the CTE only once, and not inside an aggregate, a subquery, or the nullable side of an outer join. so "sum the salaries of the whole subtree" isn't done inside the recursion: collect the rows recursively, then aggregate in the outer query. postgres names the rule when you try:
+
+```sql run db=org expect=error
+WITH RECURSIVE team AS (
+  SELECT id, salary FROM employees WHERE id = 14
+  UNION ALL
+  SELECT e.id, sum(e.salary) FROM employees AS e JOIN team AS t ON e.manager_id = t.id GROUP BY e.id
+)
+SELECT * FROM team;
+```
+
+```sql run db=org
+WITH RECURSIVE team AS (
+  SELECT id, salary FROM employees WHERE id = 14
+  UNION ALL
+  SELECT e.id, e.salary FROM employees AS e JOIN team AS t ON e.manager_id = t.id
+)
+SELECT count(*) AS people, sum(salary) AS payroll FROM team;
+```
+</Gotcha>
+
+<Deep title="what the executor actually does">
+the plan has a `Recursive Union` node with the anchor as its first child and the recursive part as its second, and a `WorkTable Scan` inside the recursive part reading the working table. each round writes its output to a fresh intermediate table, which becomes the next WorkTable. it's a loop in the executor, not recursion on a call stack, so depth costs nothing but rows. the manual's [WITH queries](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-RECURSIVE) page describes the same evaluation as numbered steps: run the recursive term with the working table substituted for the self-reference, and repeat for as long as the working table isn't empty.
+
+```sql run db=org
+EXPLAIN (COSTS OFF)
+WITH RECURSIVE team AS (
+  SELECT id, 0 AS depth FROM employees WHERE id = 14
+  UNION ALL
+  SELECT e.id, t.depth + 1 FROM employees AS e JOIN team AS t ON e.manager_id = t.id
+)
+SELECT * FROM team;
+```
+</Deep>
+
+[WITH and CTEs](/learn/joins/ctes) covers the non-recursive kind: naming a subquery, and when postgres inlines it. a recursive CTE is never inlined; it has to run its loop. and hierarchies as a design question (adjacency lists like `manager_id`, closure tables, ltree paths) are in [hierarchies](/learn/design/hierarchies).
+
+<Interview q="how would you get every employee under a given manager, at any depth?">
+a recursive CTE: the anchor selects the manager, the recursive part joins employees whose manager_id is in the CTE, UNION ALL. postgres runs the recursive part repeatedly against the rows found in the previous round only, until a round finds nothing. carry a depth column for ordering and limits. bonus points: SEARCH DEPTH FIRST for tree order, CYCLE for data that might loop (or a depth limit, or UNION instead of UNION ALL when rows repeat exactly), and aggregating in the outer query, since the recursive part can't aggregate itself.
+</Interview>
+
+<Keylines>
+- WITH RECURSIVE: an anchor, UNION ALL, and a part that refers to the CTE itself.
+- each round sees only the previous round's rows (the working table). an empty round stops it.
+- the output order isn't promised: SEARCH BREADTH or DEPTH FIRST, then ORDER BY the column it sets.
+- UNION drops repeats, which also stops loops, but only while every column repeats exactly.
+- CYCLE marks the row that closes a loop and stops there. postgres has no recursion limit of its own.
+</Keylines>

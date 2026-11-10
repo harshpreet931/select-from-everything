@@ -1,0 +1,212 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/row-lock-matrix.scenario.sql",
+ "title": "the four row lock strengths: T1 holds one on each row, T2 asks for every strength with NOWAIT",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "t": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"note","type":"text"}]},
+  "t_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t"}
+ },
+ "base": {"xid":759,"lsn":23216952},
+ "setup": "CREATE TABLE t (\n  id   int PRIMARY KEY,\n  note text NOT NULL\n);\nINSERT INTO t VALUES (1, 'key share'), (2, 'share'), (3, 'no key update'), (4, 'update');\nVACUUM t;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "T1 opens a transaction.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT id FROM t WHERE id = 1 FOR KEY SHARE;\nSELECT id FROM t WHERE id = 2 FOR SHARE;\nSELECT id FROM t WHERE id = 3 FOR NO KEY UPDATE;\nSELECT id FROM t WHERE id = 4 FOR UPDATE",
+   "note": "T1 locks row 1 FOR KEY SHARE, row 2 FOR SHARE, row 3 FOR NO KEY UPDATE and row 4 FOR UPDATE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"id","type":"int4"}],"data":[["4"]]}
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 1 FOR KEY SHARE NOWAIT",
+   "note": "row 1 is held FOR KEY SHARE. T2 asks FOR KEY SHARE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"id","type":"int4"}],"data":[["1"]]}
+  },
+  {
+   "i": 3,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 1 FOR SHARE NOWAIT",
+   "note": "row 1, FOR SHARE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"id","type":"int4"}],"data":[["1"]]}
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 1 FOR NO KEY UPDATE NOWAIT",
+   "note": "row 1, FOR NO KEY UPDATE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"id","type":"int4"}],"data":[["1"]]}
+  },
+  {
+   "i": 5,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 1 FOR UPDATE NOWAIT",
+   "note": "row 1, FOR UPDATE: the one strength KEY SHARE blocks.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 6,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 2 FOR KEY SHARE NOWAIT",
+   "note": "row 2 is held FOR SHARE. T2 asks FOR KEY SHARE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"id","type":"int4"}],"data":[["2"]]}
+  },
+  {
+   "i": 7,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 2 FOR SHARE NOWAIT",
+   "note": "row 2, FOR SHARE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"id","type":"int4"}],"data":[["2"]]}
+  },
+  {
+   "i": 8,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 2 FOR NO KEY UPDATE NOWAIT",
+   "note": "row 2, FOR NO KEY UPDATE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 9,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 2 FOR UPDATE NOWAIT",
+   "note": "row 2, FOR UPDATE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 10,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 3 FOR KEY SHARE NOWAIT",
+   "note": "row 3 is held FOR NO KEY UPDATE. T2 asks FOR KEY SHARE.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"id","type":"int4"}],"data":[["3"]]}
+  },
+  {
+   "i": 11,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 3 FOR SHARE NOWAIT",
+   "note": "row 3, FOR SHARE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 12,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 3 FOR NO KEY UPDATE NOWAIT",
+   "note": "row 3, FOR NO KEY UPDATE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 13,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 3 FOR UPDATE NOWAIT",
+   "note": "row 3, FOR UPDATE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 14,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 4 FOR KEY SHARE NOWAIT",
+   "note": "row 4 is held FOR UPDATE. T2 asks FOR KEY SHARE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 15,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 4 FOR SHARE NOWAIT",
+   "note": "row 4, FOR SHARE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 16,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 4 FOR NO KEY UPDATE NOWAIT",
+   "note": "row 4, FOR NO KEY UPDATE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 17,
+   "session": "T2",
+   "sql": "SELECT id FROM t WHERE id = 4 FOR UPDATE NOWAIT",
+   "note": "row 4, FOR UPDATE.",
+   "status": "error",
+   "error": {"sqlstate":"55P03","message":"could not obtain lock on row in relation \"t\""}
+  },
+  {
+   "i": 18,
+   "session": "T2",
+   "sql": "UPDATE t SET note = 'changed' WHERE id = 1",
+   "note": "a plain UPDATE of a non-key column on row 1 goes straight through T1's FOR KEY SHARE.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 19,
+   "session": "T2",
+   "sql": "UPDATE t SET note = 'changed' WHERE id = 2",
+   "note": "the same UPDATE on row 2 waits for T1's FOR SHARE: a plain UPDATE takes FOR NO KEY UPDATE.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   }
+  },
+  {
+   "i": 20,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 ends its transaction, and T2's update of row 2 goes through.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [{"session":"T2","step":19,"result":{"command":"UPDATE","rows":1,"columns":[],"data":[]}}]
+  }
+ ]
+}

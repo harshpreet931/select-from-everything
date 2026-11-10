@@ -1,0 +1,68 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "1c59c34779ecf908": {
+      "db": "shop",
+      "sql": "CREATE VIEW order_summary AS\nSELECT o.id, o.status, o.ordered_at, c.name AS customer, c.city\nFROM orders AS o\nLEFT JOIN customers AS c ON c.id = o.customer_id;\n\nSELECT id, status, customer FROM order_summary WHERE id = 5;",
+      "statements": [
+        {
+          "tag": "CREATE VIEW",
+          "command": "CREATE VIEW",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9b07abe7a60de54c"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["status", "text", 25],
+            ["customer", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "1b4bd05c5231c1d3",
+          "rows": [
+            ["5", "delivered", "Amelia Sato"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "58fba72f600fc570": {
+      "db": "shop",
+      "sql": "SELECT id, status FROM order_summary WHERE id = 5;\n\nEXPLAIN (FORMAT JSON) SELECT id, status FROM order_summary WHERE id = 5;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["status", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "58c955efe2ed2939",
+          "rows": [
+            ["5", "delivered"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "json", 114]
+          ],
+          "rowCount": null,
+          "digest": "1719bbabd8739c54",
+          "rows": [
+            ["[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Index Scan\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Scan Direction\": \"Forward\",\n      \"Index Name\": \"orders_pkey\",\n      \"Relation Name\": \"orders\",\n      \"Alias\": \"o\",\n      \"Startup Cost\": 0.29,\n      \"Total Cost\": 8.30,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 13,\n      \"Disabled\": false,\n      \"Index Cond\": \"(id = 5)\"\n    }\n  }\n]"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

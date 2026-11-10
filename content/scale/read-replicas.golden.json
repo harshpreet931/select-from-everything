@@ -1,0 +1,48 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "f4da00a7421d5962": {
+      "db": "empty",
+      "sql": "SELECT pg_is_in_recovery() AS is_standby, pg_last_wal_replay_lsn() AS replayed;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["is_standby", "bool", 16],
+            ["replayed", "pg_lsn", 3220]
+          ],
+          "rowCount": 1,
+          "digest": "85fe0d434b81c457",
+          "rows": [
+            ["f", "0/16EFAA0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "e1c4fd11a46eaa23": {
+      "db": "empty",
+      "sql": "SELECT '0/302FCB0'::pg_lsn >= '0/302FC88'::pg_lsn AS caught_up,\n       pg_wal_lsn_diff('0/302FCB0', '0/302FC88') AS bytes_behind;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["caught_up", "bool", 16],
+            ["bytes_behind", "numeric", 1700]
+          ],
+          "rowCount": 1,
+          "digest": "8cc84405eebaf7ec",
+          "rows": [
+            ["t", "40"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

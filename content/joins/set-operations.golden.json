@@ -1,0 +1,104 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "86aff22cd26d38be": {
+      "db": "shop",
+      "sql": "SELECT count(*) FROM (\n  SELECT customer_id FROM orders\n  UNION\n  SELECT customer_id FROM orders\n) AS x;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "c4df31d288297507",
+          "rows": [
+            ["1962"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bbc83eb0528ad4c6": {
+      "db": "shop",
+      "sql": "SELECT name, city FROM customers WHERE id = 42\nUNION ALL\nSELECT city, name FROM customers WHERE id = 8\nORDER BY name;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["name", "text", 25],
+            ["city", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "3e7d8e4bf1d53b8c",
+          "rows": [
+            ["Ada Lovelace", "London"],
+            ["Dublin", "Sean O'Neil"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "f8ec873b1c4c19a5": {
+      "db": "shop",
+      "sql": "SELECT id FROM customers\nUNION\nSELECT name FROM customers;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42804",
+            "message": "UNION types integer and text cannot be matched",
+            "position": 39
+          },
+          "digest": "674e40f78e39e023"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42804",
+        "message": "UNION types integer and text cannot be matched",
+        "position": 39,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "11d72e28ffe4f065": {
+      "db": "empty",
+      "sql": "SELECT 1 AS a\nUNION\nSELECT 2 AS b\nORDER BY b;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42703",
+            "message": "column \"b\" does not exist",
+            "detail": "There is a column named \"b\" in table \"*SELECT* 2\", but it cannot be referenced from this part of the query.",
+            "position": 44
+          },
+          "digest": "19b71e7adf58be0b"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42703",
+        "message": "column \"b\" does not exist",
+        "detail": "There is a column named \"b\" in table \"*SELECT* 2\", but it cannot be referenced from this part of the query.",
+        "position": 44,
+        "statement": 0
+      },
+      "txn": "I"
+    }
+  }
+}

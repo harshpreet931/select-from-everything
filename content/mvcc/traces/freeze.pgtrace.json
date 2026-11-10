@@ -1,0 +1,260 @@
+{
+ "v": 1,
+ "scenario": "content/mvcc/traces/freeze.scenario.sql",
+ "title": "a small table from load to frozen: a VACUUM that sets all-visible, then VACUUM (FREEZE) that marks every tuple frozen",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23201224},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00), (3, 'carol', 50.00);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT relfrozenxid, age(relfrozenxid) FROM pg_class WHERE relname = 'accounts'",
+   "note": "freshly loaded. every tuple carries the loading transaction's xid in xmin, and the table's relfrozenxid is that same horizon.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"relfrozenxid","type":"xid"},{"name":"age","type":"int4"}],
+    "data": [["757","2"]]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23064544,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2050,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","owner":"carol","balance":"50.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "vm": {"accounts":[{"block":0,"allVisible":false,"allFrozen":false}]},
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "VACUUM accounts;\nSELECT relfrozenxid, age(relfrozenxid) FROM pg_class WHERE relname = 'accounts'",
+   "note": "a plain VACUUM. the page becomes all-visible, but these tuples are young, so nothing is frozen.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"relfrozenxid","type":"xid"},{"name":"age","type":"int4"}],
+    "data": [["758","1"]]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23064544,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2306,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMAX_INVALID"],
+        "data": {"id":"3","owner":"carol","balance":"50.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "vm": {"accounts":[{"block":0,"allVisible":true,"allFrozen":false}]},
+   "xact": {"758":"committed"}
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "VACUUM (FREEZE) accounts;\nSELECT relfrozenxid, age(relfrozenxid) FROM pg_class WHERE relname = 'accounts'",
+   "note": "VACUUM (FREEZE). every tuple gets the frozen bits, xmin stays as it was, the page is all-frozen, and relfrozenxid jumps to the present.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"relfrozenxid","type":"xid"},{"name":"age","type":"int4"}],
+    "data": [["759","0"]]
+   },
+   "heap": {
+    "accounts": [
+     {
+      "rel": "accounts",
+      "block": 0,
+      "size": 8192,
+      "lower": 36,
+      "upper": 8072,
+      "special": 8192,
+      "lsn": 23210304,
+      "tuples": [
+       {
+        "lp": 1,
+        "lpFlags": "normal",
+        "off": 8152,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,1],
+        "infomask": 2818,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMIN_INVALID","HEAP_XMAX_INVALID","HEAP_XMIN_FROZEN"],
+        "data": {"id":"1","owner":"alice","balance":"100.00"}
+       },
+       {
+        "lp": 2,
+        "lpFlags": "normal",
+        "off": 8112,
+        "len": 37,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,2],
+        "infomask": 2818,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMIN_INVALID","HEAP_XMAX_INVALID","HEAP_XMIN_FROZEN"],
+        "data": {"id":"2","owner":"bob","balance":"100.00"}
+       },
+       {
+        "lp": 3,
+        "lpFlags": "normal",
+        "off": 8072,
+        "len": 39,
+        "xmin": 758,
+        "xmax": 0,
+        "ctid": [0,3],
+        "infomask": 2818,
+        "infomask2": 3,
+        "hoff": 24,
+        "flags": ["HEAP_HASVARWIDTH","HEAP_XMIN_COMMITTED","HEAP_XMIN_INVALID","HEAP_XMAX_INVALID","HEAP_XMIN_FROZEN"],
+        "data": {"id":"3","owner":"carol","balance":"50.00"}
+       }
+      ]
+     }
+    ]
+   },
+   "vm": {"accounts":[{"block":0,"allVisible":true,"allFrozen":true}]},
+   "xact": {"758":"committed"}
+  }
+ ]
+}

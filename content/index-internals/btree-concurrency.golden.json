@@ -1,0 +1,102 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0bef813262efb1f2": {
+      "db": "empty",
+      "sql": "CREATE TABLE c (id int);\nCREATE INDEX c_id ON c (id);\nBEGIN;\nINSERT INTO c VALUES (55);\nSELECT locktype, relation::regclass AS rel, mode\nFROM pg_locks\nWHERE pid = pg_backend_pid() AND relation IS DISTINCT FROM 'pg_locks'::regclass\nORDER BY locktype, rel;\nSET LOCAL enable_seqscan = off;\nSELECT count(*) FROM c WHERE id = 55;\nSELECT locktype, relation::regclass AS rel, mode\nFROM pg_locks\nWHERE pid = pg_backend_pid() AND relation IS DISTINCT FROM 'pg_locks'::regclass\nORDER BY locktype, rel;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7fba8127da15c882"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["rel", "regclass", 2205],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "cba6a98d907aa0b3",
+          "rows": [
+            ["relation", "c", "RowExclusiveLock"],
+            ["transactionid", null, "ExclusiveLock"],
+            ["virtualxid", null, "ExclusiveLock"]
+          ]
+        },
+        {
+          "tag": "SET",
+          "command": "SET",
+          "columns": null,
+          "rowCount": null,
+          "digest": "a7a021393239946c"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["count", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "7ef7d0d215e1c776",
+          "rows": [
+            ["1"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["rel", "regclass", 2205],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "68cdff2b1cc6a678",
+          "rows": [
+            ["relation", "c", "AccessShareLock"],
+            ["relation", "c", "RowExclusiveLock"],
+            ["relation", "c_id", "AccessShareLock"],
+            ["transactionid", null, "ExclusiveLock"],
+            ["virtualxid", null, "ExclusiveLock"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "fc9d9243895d559a"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

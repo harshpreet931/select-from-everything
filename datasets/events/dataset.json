@@ -1,0 +1,10 @@
+{
+  "name": "events",
+  "title": "events",
+  "blurb": "25,000 product events from 500 users, march to may 2026, in time order. one day is missing.",
+  "files": ["schema.sql", "data.sql"],
+  "analyze": true,
+  "extensions": [],
+  "setups": [],
+  "maxRowsPerTable": 30000
+}

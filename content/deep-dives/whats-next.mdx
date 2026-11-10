@@ -1,0 +1,143 @@
+{/* every postgres 19 fact on this page is from the postgres 19 release notes
+    (https://www.postgresql.org/docs/19/release-19.html, the rc1 version, "as of 2026-10-09"), the
+    19 docs pages for REPACK and pg_plan_advice, the rc1 announcement, and the revert commits in
+    the postgres repository, linked where they're used. the one run block is postgres 18.6. */}
+
+<InShort>
+postgres 19 is at release candidate 1, with general availability planned for **november 19, 2026**. its headline features are **REPACK**, which rewrites a bloated table and can do it without blocking writes, and **plan advice**, a supported way to pin the planner's choices. several features that were committed for 19 were **pulled** again before the release.
+
+nothing on this page runs in the browser, which is postgres 18.6. here's what changes, and how to watch it happen.
+</InShort>
+
+## the picture
+
+you know how a postgres feature seems to appear out of nowhere in a release announcement? it didn't. it was a patch on the pgsql-hackers mailing list, reviewed through several commitfests, committed, tested in betas, and sometimes taken back out. the whole process is public, and you can watch it.
+
+think of a ship being fitted out in a public dry dock. you can walk past every day: parts arrive (patches), inspectors sign them off (review), they're welded in (commits), and every so often one is cut out again because it didn't pass sea trials (a revert). the launch date (the release) is announced when the hull is done.
+
+<Figure caption={<>postgres 19's last stretch, from the release notes, the rc1 announcement and the revert commits linked below.</>}>
+<Flow stages={[
+  { label: "development", sub: "commitfests", note: "patches are proposed on pgsql-hackers and reviewed in commitfests until feature freeze." },
+  { label: "betas", sub: "testing", note: "the betas are for finding bugs. post-commit review during the 19 betas found enough that several features were reverted." },
+  { label: "reverts", sub: "jul to sep 2026", note: "GROUP BY ALL (jul 17), MERGE/SPLIT PARTITION (aug 26), SQL/PGQ (sep 7), UPDATE/DELETE FOR PORTION OF (sep 15), among others." },
+  { label: "rc1", sub: "2026-10-15", note: "the first release candidate. the announcement plans rc2 for november 12." },
+  { label: "19.0", sub: "planned 2026-11-19", note: "general availability, unless an issue needs a delay or another release candidate." },
+]} />
+</Figure>
+
+## REPACK <Since v={19} preview />
+
+on postgres 18, a bloated table doesn't shrink on its own: VACUUM frees space *inside* the file for reuse, and only trims empty pages off the end ([VACUUM](/learn/mvcc/vacuum)). to give space back you rewrite the table with `VACUUM FULL` (or `CLUSTER`, which also sorts it), and both hold an ACCESS EXCLUSIVE lock the whole time, so nobody can even read the table. here's the 18 way, on the lab's `bloat` table (half its rows deleted, a tenth updated):
+
+```sql run db=lab setup=bloat
+SELECT pg_size_pretty(pg_relation_size('bloat')) AS before;
+VACUUM bloat;
+SELECT pg_size_pretty(pg_relation_size('bloat')) AS after_vacuum;
+VACUUM FULL bloat;
+SELECT pg_size_pretty(pg_relation_size('bloat')) AS after_vacuum_full;
+```
+
+plain VACUUM leaves the file at 232 kB. VACUUM FULL rewrites it to 120 kB, and for that whole rewrite, nothing else could touch the table.
+
+postgres 19 adds `REPACK`, which the release notes describe as replacing VACUUM FULL and CLUSTER (both are kept). the [REPACK docs](https://www.postgresql.org/docs/19/sql-repack.html) give its shape:
+
+```sql
+REPACK bloat;                                    -- rewrite, like VACUUM FULL
+REPACK bloat USING INDEX bloat_pkey;             -- rewrite in index order, like CLUSTER
+REPACK (CONCURRENTLY) bloat;                     -- rewrite while others keep reading and writing
+```
+
+<Figure caption={<>the locks each form takes, from the REPACK docs. CONCURRENTLY is the new part: it holds SHARE UPDATE EXCLUSIVE (which doesn't conflict with reads or writes) for the copy, and takes ACCESS EXCLUSIVE only to swap the files at the end.</>}>
+<Tree>{`
+VACUUM FULL / CLUSTER (18) #dead // ACCESS EXCLUSIVE for the whole rewrite: no reads, no writes
+REPACK (19) #dead // the same: ACCESS EXCLUSIVE throughout
+REPACK (CONCURRENTLY) (19) #live // SHARE UPDATE EXCLUSIVE while copying
+    copy the table into a new file #meta // changes made meanwhile are captured with logical decoding
+    apply the captured changes #meta // a replication slot, limited by max_repack_replication_slots
+    ACCESS EXCLUSIVE, briefly #hot // apply the last changes, swap the files
+`}</Tree>
+</Figure>
+
+the docs list what CONCURRENTLY needs: a plain heap table with a primary key or another index-based replica identity, not partitioned or unlogged, outside a transaction block, and a free repack replication slot. and one warning worth repeating: it isn't MVCC-safe, so a transaction whose snapshot predates the repack can see the table as empty afterwards. ([table lock modes](/learn/locking/table-lock-modes), [logical replication and decoding](/learn/wal/logical-replication)).
+
+## plan advice <Since v={19} preview />
+
+postgres 18 has no query hints in core ([steering the planner](/learn/optimizer/steering-the-planner) covers what 18 offers: statistics, `enable_*` settings, and the pg_hint_plan extension). postgres 19 ships two contrib modules: **pg_plan_advice**, "to stabilize and control planner decisions" in the release notes' words, and **pg_stash_advice**, which applies advice automatically per query id.
+
+per the [pg_plan_advice docs](https://www.postgresql.org/docs/19/pgplanadvice.html), you load the module, ask EXPLAIN for the advice that describes the plan it chose, and feed advice back in through a setting:
+
+```sql
+LOAD 'pg_plan_advice';
+EXPLAIN (COSTS OFF, PLAN_ADVICE)
+SELECT * FROM orders AS o JOIN customers AS c ON c.id = o.customer_id;
+--   Generated Plan Advice:  JOIN_ORDER(...)  HASH_JOIN(...)  SEQ_SCAN(...)  ...
+SET pg_plan_advice.advice = 'JOIN_ORDER(c o) NESTED_LOOP_PLAIN(o)';
+```
+
+<Figure caption={<>the advice language's tags, grouped, from the pg_plan_advice docs. targets are table aliases.</>}>
+<Tree>{`
+scans #ref // SEQ_SCAN(t), INDEX_SCAN(t idx), INDEX_ONLY_SCAN(t idx), BITMAP_HEAP_SCAN(t), TID_SCAN(t), DO_NOT_SCAN(t)
+join order #hot // JOIN_ORDER(a b c), with (b c) or {b c} for sub-joins
+join methods // HASH_JOIN, MERGE_JOIN_PLAIN, MERGE_JOIN_MATERIALIZE, NESTED_LOOP_PLAIN, NESTED_LOOP_MATERIALIZE, NESTED_LOOP_MEMOIZE
+parallelism and the rest #meta // GATHER, GATHER_MERGE, NO_GATHER, PARTITIONWISE, SEMIJOIN_UNIQUE
+`}</Tree>
+</Figure>
+
+the design choices are telling. advice never makes planning fail: it only narrows the plans the planner already considers, and EXPLAIN marks each piece of advice `matched`, `not matched`, `conflicting` and so on. impossible advice shows up as nodes marked `Disabled: true`, the same marker 18 prints for `enable_*` settings. and it can't control aggregation strategy or set operations. the docs are blunt that pinning a plan can backfire when the data changes, which is the same lesson as the [casebook](/learn/deep-dives/tuning-casebook): fix the estimate first.
+
+<Quiz question="on postgres 19, which shrinks a bloated table while the app keeps writing to it?" options={["VACUUM FULL", "REPACK (CONCURRENTLY)", "plain VACUUM"]} answer={1}>
+<Explain>
+REPACK (CONCURRENTLY). VACUUM FULL rewrites the table under an ACCESS EXCLUSIVE lock, so writes (and reads) wait. plain VACUUM doesn't block anyone, but it only makes space reusable inside the file; it gives back nothing except empty pages at the end. CONCURRENTLY copies under a lock that allows reads and writes, catches up with logical decoding, and locks exclusively only for the final swap.
+</Explain>
+</Quiz>
+
+## the rest of 19, as it touches this book
+
+from the release notes' overview and the sections behind it, the changes that land on earlier chapters:
+
+<Figure caption={<>a selection from the postgres 19 release notes, each next to the chapter it changes. not the full list.</>}>
+<Tree>{`
+I/O #hot // io_method = worker now scales its own worker processes; EXPLAIN ANALYZE gets an IO option
+autovacuum // parallel index vacuuming; a scoring system picks which table goes first (pg_stat_autovacuum_scores)
+visibility map #meta // ordinary table scans can now mark pages all-visible
+foreign keys // faster foreign-key checks
+replication #ref // logical replication of sequences; logical decoding without a restart when wal_level = replica
+read your writes #ref // a WAIT command makes a standby wait until it has replayed a given LSN
+SQL #live // INSERT ... ON CONFLICT DO SELECT ... RETURNING; IGNORE NULLS for lag, lead, first_value, last_value, nth_value
+defaults #dead // jit off; default_toast_compression lz4; max_locks_per_transaction 128; standard_conforming_strings always on
+`}</Tree>
+</Figure>
+
+so on 19: [async I/O](/learn/storage/async-io) tunes itself, [autovacuum](/learn/mvcc/autovacuum) can use parallel workers, the [visibility map](/learn/storage/fsm-and-vm) gets set by reads too (good news for [index-only scans](/learn/indexes/index-only-scans)), [read replicas](/learn/scale/read-replicas) get a built-in way to read your own writes, [upserts](/learn/writes/upsert) can return the existing row, and [window functions](/learn/analytics/lag-and-lead) can skip NULLs. JIT, which the [column store chapter](/learn/deep-dives/columnar-and-vectorized) turned off by hand for its measurements, is off by default. read the incompatibilities section before upgrading: RADIUS authentication is removed, and dumps made with `standard_conforming_strings = off` won't load.
+
+## what got pulled
+
+a commit isn't a release. during the 19 betas, post-commit review turned up enough problems that several features were reverted, each with the reason in the commit message. the four biggest, from the postgres repository:
+
+| feature | reverted | why, from the commit |
+| --- | --- | --- |
+| `GROUP BY ALL` | [2026-07-17](https://github.com/postgres/postgres/commit/a32733d8f10f) | wrong results with ORDER BY entries that use non-default equality; "we'll revert and try again in v20" |
+| `ALTER TABLE ... MERGE/SPLIT PARTITION(S)` | [2026-08-26](https://github.com/postgres/postgres/commit/7612ae8ed8c9) | "multiple design issues which are too late to address in this release cycle" |
+| SQL property graph queries (SQL/PGQ, `GRAPH_TABLE`) | [2026-09-07](https://github.com/postgres/postgres/commit/b1f106c80cbe) | the feature and the fixes built on it, all reverted |
+| `UPDATE/DELETE ... FOR PORTION OF` | [2026-09-15](https://github.com/postgres/postgres/commit/a4b26b8f7cd0) | the feature and its follow-up fixes, all reverted |
+
+the beta 4 announcement draft on pgsql-hackers put it as the community choosing to defer some features to a future major release. for this book, FOR PORTION OF is the one that hurts: it was the other half of the [temporal keys](/learn/design/temporal-keys) story (WITHOUT OVERLAPS keys shipped in 18, temporal updates were meant to follow). it's a good reminder of the rule this book has followed throughout: a feature is real when it's in a release, not when it's committed.
+
+## how to follow along
+
+- **pgsql-hackers**, the [development mailing list](https://www.postgresql.org/list/pgsql-hackers/): every patch, review and design argument, including the threads behind the reverts above. the archives are public and searchable.
+- **the [commitfest app](https://commitfest.postgresql.org/)**: patches waiting for review, organized into month-long commitfests. reviewing one (apply it, test it, report back on the list) is the most useful way for a newcomer to help.
+- **[planet postgresql](https://planet.postgresql.org/)**: an aggregator of blogs by postgres developers and users, where new features usually get their first long explanations.
+- **the [release notes](https://www.postgresql.org/docs/release/)** and the beta and release candidate announcements: the betas exist so people test their own workloads before the release, and say so on the list when something breaks.
+
+<Gotcha title="beta docs change">
+everything above is from the release candidate's documentation. until 19.0 ships, a feature can still change or go (that's what the table above is). check the final release notes before you plan an upgrade around any of it.
+</Gotcha>
+
+<Keylines>
+- postgres 19: rc1 on 2026-10-15, general availability planned for 2026-11-19.
+- REPACK replaces VACUUM FULL and CLUSTER; REPACK (CONCURRENTLY) rewrites without blocking writes.
+- pg_plan_advice: EXPLAIN (PLAN_ADVICE) prints advice, pg_plan_advice.advice applies it. it narrows choices, never fails planning.
+- GROUP BY ALL, MERGE/SPLIT PARTITION, SQL/PGQ and FOR PORTION OF were committed and then reverted.
+- follow pgsql-hackers, the commitfest app and planet postgresql. a feature is real when it's released :)
+</Keylines>

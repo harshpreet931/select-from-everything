@@ -1,0 +1,167 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "0329dc860efceee9": {
+      "db": "school",
+      "sql": "SELECT id, name, year\nFROM students\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["year", "int2", 21]
+          ],
+          "rowCount": 3,
+          "digest": "3c7a4a099f624fba",
+          "rows": [
+            ["1", "Maya Chen", "4"],
+            ["2", "Liam Walsh", "3"],
+            ["3", "Aisha Bello", "2"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3357f3b0a8b49eff": {
+      "db": "school",
+      "sql": "UPDATE students SET year = year WHERE id = 1;\nSELECT id, name, year\nFROM students\nLIMIT 3;",
+      "statements": [
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "d4149e3cbcb8aced"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25],
+            ["year", "int2", 21]
+          ],
+          "rowCount": 3,
+          "digest": "4768ed2fff1a09f7",
+          "rows": [
+            ["2", "Liam Walsh", "3"],
+            ["3", "Aisha Bello", "2"],
+            ["4", "Noah Schmidt", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "bf4784d9f3f81871": {
+      "db": "school",
+      "sql": "SELECT code FROM courses ORDER BY code LIMIT 3;\nSELECT code FROM courses ORDER BY code FETCH FIRST 3 ROWS ONLY;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "9b88639495876f70",
+          "rows": [
+            ["CS101"],
+            ["CS201"],
+            ["CS301"]
+          ]
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "112a65b945d2cb7f",
+          "rows": [
+            ["CS101"],
+            ["CS201"],
+            ["CS301"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "009b5c83419b387a": {
+      "db": "school",
+      "sql": "SELECT code FROM courses FETCH FIRST 3 ROWS WITH TIES;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42601",
+            "message": "WITH TIES cannot be specified without ORDER BY clause",
+            "position": 45
+          },
+          "digest": "3bfa3a417a6050e0"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42601",
+        "message": "WITH TIES cannot be specified without ORDER BY clause",
+        "position": 45,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "175137bb7d75d8c5": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, BUFFERS OFF, TIMING OFF, SUMMARY OFF)\nSELECT id, customer_id, status FROM orders ORDER BY id LIMIT 10 OFFSET 9990;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "fe0aa7423de2ecf0",
+          "rows": [
+            ["Limit (actual rows=10.00 loops=1)"],
+            ["  ->  Index Scan using orders_pkey on orders (actual rows=10000.00 loops=1)"],
+            ["        Index Searches: 1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "470c341bf1e04981": {
+      "db": "school",
+      "sql": "SELECT code FROM courses ORDER BY code LIMIT NULL OFFSET 10;",
+      "statements": [
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["code", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "0d40422fa5c9575d",
+          "rows": [
+            ["PHYS101"],
+            ["PHYS201"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

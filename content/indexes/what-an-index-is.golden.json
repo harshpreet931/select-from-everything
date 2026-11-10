@@ -1,0 +1,152 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "419589b07535b2fd": {
+      "db": "shop",
+      "sql": "CREATE TABLE few AS SELECT id, name, city FROM customers WHERE id <= 12 ORDER BY id;\nCREATE INDEX few_name ON few (name);\nSELECT itemoffset, ctid, htid, tids, left(data, 23) AS data_start\nFROM bt_page_items('few_name', 1)\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "SELECT 12",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 12,
+          "digest": "ba94ea5f98d1f386"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "SELECT 11",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["htid", "tid", 27],
+            ["tids", "tid[]", 1010],
+            ["data_start", "text", 25]
+          ],
+          "rowCount": 11,
+          "digest": "cce79fe0201c0c15",
+          "rows": [
+            ["1", "(0,11)", "(0,11)", null, "13 41 6e 61 20 4c 69 6d"],
+            ["2", "(0,2)", "(0,2)", null, "1b 47 72 61 63 65 20 4f"],
+            ["3", "(0,6)", "(0,6)", null, "19 4a 6f 73 c3 a9 20 53"],
+            ["4", "(0,1)", "(0,1)", null, "15 4d 61 79 61 20 43 68"],
+            ["5", "(0,7)", "(0,7)", null, "11 4d 69 6e 67 20 4c 69"],
+            ["6", "(0,10)", "(0,10)", null, "0b 4e 75 6c 6c 00 00 00"],
+            ["7", "(0,12)", "(0,12)", null, "17 52 61 76 69 20 4b 75"],
+            ["8", "(16,8194)", "(0,3)", "{\"(0,3)\",\"(0,9)\"}", "11 53 61 6d 20 4c 65 65"],
+            ["9", "(0,8)", "(0,8)", null, "19 53 65 61 6e 20 4f 27"],
+            ["10", "(0,5)", "(0,5)", null, "17 5a 6f 65 20 4d 61 72"],
+            ["11", "(0,4)", "(0,4)", null, "19 5a 6f c3 ab 20 4d 61"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "be96c3306069b141": {
+      "db": "shop",
+      "sql": "CREATE INDEX customers_name ON customers (name);\nSELECT id, name FROM customers LIMIT 3;\nSELECT relname, relkind, pg_relation_size(oid) / 8192 AS pages\nFROM pg_class\nWHERE relname IN ('customers', 'customers_name')\nORDER BY relname;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "ee0e89e1aea0d2f3",
+          "rows": [
+            ["1", "Maya Chen"],
+            ["2", "Grace Okafor"],
+            ["3", "Sam Lee"]
+          ]
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["relkind", "char", 18],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 2,
+          "digest": "5ccb0642820a98bc",
+          "rows": [
+            ["customers", "r", "24"],
+            ["customers_name", "i", "8"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "9260e10bb70f4481": {
+      "db": "shop",
+      "sql": "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM customers WHERE name = 'Ada Lovelace';\nCREATE INDEX customers_name ON customers (name);\nEXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)\nSELECT * FROM customers WHERE name = 'Ada Lovelace';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "6b0cc622870c6b8f",
+          "rows": [
+            ["Seq Scan on customers (actual rows=1.00 loops=1)"],
+            ["  Filter: (name = 'Ada Lovelace'::text)"],
+            ["  Rows Removed by Filter: 1999"],
+            ["  Buffers: shared read=24"],
+            ["Planning:"],
+            ["  Buffers: shared hit=51 read=4 dirtied=1"]
+          ]
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "5f5513f1862d3a73",
+          "rows": [
+            ["Bitmap Heap Scan on customers (actual rows=1.00 loops=1)"],
+            ["  Recheck Cond: (name = 'Ada Lovelace'::text)"],
+            ["  Heap Blocks: exact=1"],
+            ["  Buffers: shared hit=1 read=2"],
+            ["  ->  Bitmap Index Scan on customers_name (actual rows=1.00 loops=1)"],
+            ["        Index Cond: (name = 'Ada Lovelace'::text)"],
+            ["        Index Searches: 1"],
+            ["        Buffers: shared read=2"],
+            ["Planning:"],
+            ["  Buffers: shared hit=20 read=1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

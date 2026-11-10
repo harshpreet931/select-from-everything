@@ -1,0 +1,155 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "fb30276da0c4fe3b": {
+      "db": "shop",
+      "sql": "EXPLAIN\nSELECT c.name, count(*) AS orders\nFROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'Paris'\nGROUP BY c.id\nORDER BY orders DESC, c.id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "796721587ab956af",
+          "rows": [
+            ["Limit  (cost=262.54..262.55 rows=5 width=24)"],
+            ["  ->  Sort  (cost=262.54..262.70 rows=66 width=24)"],
+            ["        Sort Key: (count(*)) DESC, c.id"],
+            ["        ->  HashAggregate  (cost=260.78..261.44 rows=66 width=24)"],
+            ["              Group Key: c.id"],
+            ["              ->  Hash Join  (cost=49.83..259.13 rows=330 width=16)"],
+            ["                    Hash Cond: (o.customer_id = c.id)"],
+            ["                    ->  Seq Scan on orders o  (cost=0.00..183.00 rows=10000 width=4)"],
+            ["                    ->  Hash  (cost=49.00..49.00 rows=66 width=16)"],
+            ["                          ->  Seq Scan on customers c  (cost=0.00..49.00 rows=66 width=16)"],
+            ["                                Filter: (city = 'Paris'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "699b9a7ccfe34c55": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT * FROM customers WHERE city = 'Paris';\n\nSELECT relpages, reltuples,\n       relpages * current_setting('seq_page_cost')::float8 AS page_cost,\n       reltuples * current_setting('cpu_tuple_cost')::float8 AS row_cost,\n       reltuples * current_setting('cpu_operator_cost')::float8 AS filter_cost\nFROM pg_class\nWHERE relname = 'customers';",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "8c40f642a95ffa58",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..49.00 rows=66 width=61)"],
+            ["  Filter: (city = 'Paris'::text)"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["relpages", "int4", 23],
+            ["reltuples", "float4", 700],
+            ["page_cost", "float8", 701],
+            ["row_cost", "float8", 701],
+            ["filter_cost", "float8", 701]
+          ],
+          "rowCount": 1,
+          "digest": "a8fed00d994cd6f8",
+          "rows": [
+            ["24", "2000", "24", "20", "5"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "688a7ec06f3f5b77": {
+      "db": "shop",
+      "sql": "SELECT most_common_freqs[array_position(most_common_vals::text::text[], 'Paris')] AS paris\nFROM pg_stats\nWHERE tablename = 'customers' AND attname = 'city';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["paris", "float4", 700]
+          ],
+          "rowCount": 1,
+          "digest": "c50d36ec676f8a26",
+          "rows": [
+            ["0.033"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "51f079496b61d666": {
+      "db": "shop",
+      "sql": "EXPLAIN SELECT * FROM customers;\nEXPLAIN SELECT id FROM customers;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "7bde7c67e4238d66",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..44.00 rows=2000 width=61)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "df1cb120df3b48bc",
+          "rows": [
+            ["Seq Scan on customers  (cost=0.00..44.00 rows=2000 width=4)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "3649120c7f04c11d": {
+      "db": "shop",
+      "sql": "EXPLAIN (COSTS OFF)\nSELECT c.name, count(*) AS orders\nFROM customers AS c\nJOIN orders AS o ON o.customer_id = c.id\nWHERE c.city = 'Paris'\nGROUP BY c.id\nORDER BY orders DESC, c.id\nLIMIT 5;",
+      "statements": [
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "1f3c1d8bd4332f90",
+          "rows": [
+            ["Limit"],
+            ["  ->  Sort"],
+            ["        Sort Key: (count(*)) DESC, c.id"],
+            ["        ->  HashAggregate"],
+            ["              Group Key: c.id"],
+            ["              ->  Hash Join"],
+            ["                    Hash Cond: (o.customer_id = c.id)"],
+            ["                    ->  Seq Scan on orders o"],
+            ["                    ->  Hash"],
+            ["                          ->  Seq Scan on customers c"],
+            ["                                Filter: (city = 'Paris'::text)"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

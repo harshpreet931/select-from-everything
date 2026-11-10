@@ -1,0 +1,125 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/read-stream.scenario.sql",
+ "title": "a seq scan of events from an empty pool, with reads combined and then one block at a time",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "events": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int8"},
+    {"name":"user_id","type":"int4"},
+    {"name":"kind","type":"text"},
+    {"name":"occurred_at","type":"timestamptz"},
+    {"name":"amount","type":"numeric"},
+    {"name":"props","type":"jsonb"}
+   ]
+  },
+  "events_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int8"}],"on":"events"}
+ },
+ "base": {"xid":799,"lsn":29144048},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT count(*) FROM events",
+   "note": "warm up the catalogs, so the reads below are events' own.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"count","type":"int8"}],"data":[["25000"]]}
+  },
+  {
+   "i": 1,
+   "session": "obs",
+   "sql": "SELECT pg_buffercache_evict_relation('events'), pg_stat_reset_shared('io')",
+   "note": "evict events and zero the I/O counters.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"pg_buffercache_evict_relation","type":"record"},{"name":"pg_stat_reset_shared","type":"void"}],
+    "data": [["(339,0,0)",""]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT sum(length(kind)) FROM events;\nSELECT pg_stat_force_next_flush()",
+   "note": "scan it cold, with the default io_combine_limit of 128 kB, and send the counters in.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_stat_force_next_flush","type":"void"}],"data":[[""]]}
+  },
+  {
+   "i": 3,
+   "session": "obs",
+   "sql": "SELECT backend_type, reads, read_bytes, round(read_bytes / reads / 1024.0, 1) AS kb_per_read\nFROM pg_stat_io WHERE object = 'relation' AND reads > 0\nORDER BY backend_type",
+   "note": "335 pages came in. how many read operations did that take?",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"backend_type","type":"text"},
+     {"name":"reads","type":"int8"},
+     {"name":"read_bytes","type":"numeric"},
+     {"name":"kb_per_read","type":"numeric"}
+    ],
+    "data": [["client backend","24","2744320","111.7"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SET io_combine_limit = 1;\nSELECT pg_buffercache_evict_relation('events'), pg_stat_reset_shared('io');\nSELECT sum(length(kind)) FROM events;\nSELECT pg_stat_force_next_flush()",
+   "note": "again, but one block per read.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_stat_force_next_flush","type":"void"}],"data":[[""]]}
+  },
+  {
+   "i": 5,
+   "session": "obs",
+   "sql": "SELECT backend_type, reads, read_bytes, round(read_bytes / reads / 1024.0, 1) AS kb_per_read\nFROM pg_stat_io WHERE object = 'relation' AND reads > 0\nORDER BY backend_type",
+   "note": "the same 335 pages, now one read each.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"backend_type","type":"text"},
+     {"name":"reads","type":"int8"},
+     {"name":"read_bytes","type":"numeric"},
+     {"name":"kb_per_read","type":"numeric"}
+    ],
+    "data": [["client backend","335","2744320","8.0"]]
+   }
+  }
+ ],
+ "db": "events"
+}

@@ -1,0 +1,144 @@
+import { PointBoxes, parseBox } from "@/components/figures/index-internals/PointBoxes";
+import gold from "./gist-and-spgist.golden.json";
+
+{/* the dots are the table's 1,000 rows, recomputed with the tested hashint4 port. the boxes
+    and the five nearest rows come from this chapter's golden (the run blocks below, PGlite).
+    the quadtree is a model: SP-GiST has no pageinspect functions. */}
+
+export const stmts = (needle) => Object.values(gold.blocks).find((b) => b.sql.includes(needle)).statements;
+export const boxes = stmts("get_raw_page('pts_gist', 0)")[0].rows.map((r) => parseBox(r[2]));
+export const near = stmts("round((p <-> point(50, 50))")[1].rows.map((r) => Number(r[0]));
+export const src = { engine: { version: "18.6", build: "PGlite 0.5.12" }, scenario: "the run blocks below" };
+
+<InShort>
+**GiST** is a balanced tree where each inner entry is a **bounding box** (more generally, a predicate) that covers everything below it. boxes can **overlap**, so a search may go down several branches. three functions decide everything: **consistent** (could this subtree match?), **penalty** (which subtree grows least if this goes in?) and **picksplit** (how to cut a full page in two). **SP-GiST** partitions space instead, into pieces that never overlap: quadtrees, k-d trees, tries. both can walk the tree in distance order, which is how `ORDER BY p <-> point` finds nearest neighbours without sorting.
+</InShort>
+
+## the picture
+
+you know [what GiST and SP-GiST serve](/learn/indexes/index-types): overlap, containment and distance on ranges, geometry, and text prefixes. a [b-tree](/learn/index-internals/b-plus-trees) can't, because points on a plane don't have one sort order that keeps neighbours together. so instead of separator keys, GiST's inner pages hold shapes.
+
+think of a map with boxes drawn on it: "everything in this rectangle is on page 3". to find what's near you, check which boxes could contain it, and only open those pages. the boxes are allowed to overlap, which makes inserting easy (put it in the box that grows least) and searching a bit harder (maybe open two).
+
+here's a real GiST index on 1,000 points, and the boxes its root keeps for its eight leaf pages:
+
+<Figure caption={<>1,000 points (the table's rows) and the <C k="ref">bounding boxes</C> on the GiST root page, read with gist_page_items. each box covers one leaf page. the boxes tile the square roughly, with gaps and a little overlap. the <C k="hot">five nearest points</C> to (50, 50) are hot.</>}>
+<PointBoxes boxes={boxes} near={near} query={[50, 50]} source={src} />
+</Figure>
+
+## read it yourself
+
+pageinspect reads GiST pages <Since v={14} />:
+
+```sql run ext=pageinspect session=gs
+CREATE TABLE pts AS
+SELECT g AS id, point(abs(hashint4(g)) % 100, abs(hashint4(-g)) % 100) AS p
+FROM generate_series(1, 1000) AS g;
+CREATE INDEX pts_gist ON pts USING gist (p);
+SELECT b AS blkno, o.flags, o.rightlink,
+       (SELECT count(*) FROM gist_page_items(get_raw_page('pts_gist', b), 'pts_gist')) AS items
+FROM generate_series(0, pg_relation_size('pts_gist') / 8192 - 1) AS b,
+     gist_page_opaque_info(get_raw_page('pts_gist', b)) AS o
+ORDER BY b;
+```
+
+nine pages: the root (page 0, no flags) and eight leaves, linked right to left by `rightlink` the way they were split off. the leaves hold between 79 and 184 points each: GiST doesn't aim for even pages, it aims for tight boxes.
+
+```sql run session=gs
+SELECT itemoffset, ctid, keys
+FROM gist_page_items(get_raw_page('pts_gist', 0), 'pts_gist')
+ORDER BY itemoffset;
+```
+
+<Figure caption={<>the whole index as a tree, from the two blocks above: one root page of eight <C k="ref">boxes</C>, each the bounding box of one leaf page of points.</>}>
+<Tree>{`
+page 0: root, 8 entries
+    (0,0)–(37,42) → page 1 // 176 points
+    (0,44)–(37,72) → page 2 // 113 points
+    (0,74)–(31,99) → page 3 // 79 points
+    (38,0)–(67,29) → page 4 // 85 points
+    (69,0)–(99,29) → page 5 // 103 points
+    (38,30)–(99,63) → page 6 // 184 points
+    (32,64)–(69,99) → page 7 // 145 points
+    (71,54)–(99,99) → page 8 // 115 points
+`}</Tree>
+</Figure>
+
+each root item is a box, written as (upper right), (lower left), and a downlink in `ctid` (the 65535 offset marks a downlink, not a row). leaf 7, `(69,99),(32,64)`, and leaf 2, `(37,72),(0,44)`, overlap in a small rectangle around (34, 68): a search there has to read both.
+
+```sql run session=gs
+SELECT itemoffset, ctid, keys
+FROM gist_page_items(get_raw_page('pts_gist', 1), 'pts_gist')
+ORDER BY itemoffset
+LIMIT 4;
+```
+
+on a leaf the key is the point itself (a box with both corners equal) and `ctid` is the row. that's a degenerate box, which is how GiST's point support works: a point is stored as a zero-size box, and every inner key is the box around a page of them.
+
+## consistent, penalty, picksplit
+
+GiST is a framework: the tree machinery is generic, and an operator class supplies the geometry. the important methods:
+
+<Defs>
+<dt>consistent(entry, query)</dt><dd>could anything under this entry match? for a box and the query "contained in (40,40)–(45,45)", that's "do they overlap". it may say yes when the answer is no (the box is bigger than its contents), never the reverse; the rows are rechecked at the end.</dd>
+<dt>union(entries)</dt><dd>the box around a set of boxes: what the parent stores.</dd>
+<dt>penalty(entry, new)</dt><dd>how much a subtree's box would grow to take a new key. an insert goes down the path of least penalty, one page per level, like a b-tree descent.</dd>
+<dt>picksplit(entries)</dt><dd>how to divide a full page into two groups with small, little-overlapping boxes. for boxes and points postgres uses a double-sorting split (Korotkov's algorithm, the comment in the source says).</dd>
+<dt>distance(entry, query)</dt><dd>the smallest possible distance from the query to anything under the entry. what makes nearest-neighbour search work.</dd>
+</Defs>
+
+those few functions are why GiST indexes ranges, geometry, PostGIS shapes, `ltree` paths, trigrams and full-text vectors with the same code. a [range](/learn/types/ranges) index stores the union range of each subtree, and that's what an exclusion constraint ([no double booking](/learn/design/temporal-keys)) searches when it checks a new row for overlaps.
+
+## nearest neighbours
+
+<Predict question="ORDER BY p <-> point(50, 50) LIMIT 5 on 1,000 points with a GiST index. how many pages does the index scan read?" options={["all 9", "a few, in distance order", "1"]} answer={1}>
+```sql
+SELECT id, p FROM pts ORDER BY p <-> point(50, 50) LIMIT 5;
+```
+<Explain>
+a few. the scan keeps a priority queue ordered by distance: it opens the root, queues each leaf box by its distance from (50, 50), and opens the closest box first. once the next thing in the queue is farther away than the fifth point already found, it stops. no sort, and the far pages are never read.
+</Explain>
+</Predict>
+
+```sql run session=gs
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, p FROM pts ORDER BY p <-> point(50, 50) LIMIT 5;
+SELECT id, p, round((p <-> point(50, 50))::numeric, 2) AS dist
+FROM pts ORDER BY p <-> point(50, 50), id LIMIT 5;
+```
+
+`Order By: (p <-> '(50,50)'::point)` is the sign: the index returns rows already in distance order, and the Limit stops after five. 7 buffers in all, for an index of 9 pages plus the table's: the root, the leaves whose boxes come close to (50, 50), and the heap pages of five rows. this is the same "best first" search that [vector indexes](/learn/index-internals/vector-indexes) do approximately on embeddings; here it's exact.
+
+## SP-GiST: partitions that don't overlap
+
+GiST's boxes can overlap, so a search can go down several paths. SP-GiST ("space-partitioned") splits space so that pieces never overlap: each inner node divides its region into fixed parts, a quadtree into four quadrants around a centre point, a k-d tree into two halves along alternating axes, a radix tree by the next characters of a string. a node's children can have different depths, so the tree is unbalanced, and postgres packs several nodes into each page to keep lookups few pages deep.
+
+<Figure caption={<>the same 1,000 rows partitioned the way a point quadtree does it: each square split into four at its centre until it holds at most 64 points. squares never overlap, so a point belongs to exactly one, and dense areas get deeper. this is a model of the idea, not the index's real nodes: SP-GiST's quad_point_ops picks its own centres, and pageinspect can't read SP-GiST.</>}>
+<PointBoxes mode="quad" cap={64} />
+</Figure>
+
+```sql run session=gs
+CREATE INDEX pts_spgist ON pts USING spgist (p);
+DROP INDEX pts_gist;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF)
+SELECT id, p FROM pts ORDER BY p <-> point(50, 50) LIMIT 5;
+EXPLAIN (COSTS OFF) SELECT id FROM pts WHERE p <@ box '((40,40),(45,45))';
+```
+
+the same nearest-neighbour plan works on SP-GiST <Since v={12} />, and so does containment. it read 14 buffers to GiST's 7 here, on a tiny table; which one wins depends on the data. SP-GiST shines when the data partitions cleanly: text prefixes (`LIKE 'abc%'` with `text_ops`, and `^@`), IP addresses (`inet_ops`), points spread unevenly. GiST is the general one, and the only one of the two that handles overlapping shapes (boxes, polygons, ranges that overlap) without duplicating them.
+
+<Gotcha title="a GiST index can get worse with time">
+the quality of a GiST index is how tight and how separate its boxes are, and that depends on the order rows arrived in: each insert picks the subtree whose box grows least, and early choices stick. an index built by CREATE INDEX on loaded data is usually better than the same one grown by inserts. postgres 14 lets CREATE INDEX build some GiST indexes by presorting the data, which the release notes say gives faster builds and smaller indexes. if GiST searches read more and more pages over time, a REINDEX can tighten the boxes.
+</Gotcha>
+
+<Interview q="how does postgres find the 10 nearest points to a location quickly?">
+with a GiST or SP-GiST index and `ORDER BY location <-> point LIMIT 10`. the index scan does a best-first search: a priority queue of tree entries ordered by their minimum possible distance to the query (each inner entry is a bounding box, so that's the distance to the box). it pops the closest entry, expands it, and emits rows as soon as they're closer than anything left in the queue. it stops after 10, without reading or sorting the rest. bonus point: `EXPLAIN` shows it as an Index Scan with an `Order By` line and no Sort node.
+</Interview>
+
+<Keylines>
+- GiST inner entries are bounding boxes (predicates) covering their subtree; boxes may overlap.
+- consistent, union, penalty, picksplit and distance are all an operator class has to supply.
+- searching visits every subtree whose box is consistent with the query, maybe several per level.
+- SP-GiST partitions space into non-overlapping parts: quadtrees, k-d trees, radix trees.
+- both serve `ORDER BY … <-> … LIMIT` as a best-first scan: no sort, far pages never read.
+</Keylines>

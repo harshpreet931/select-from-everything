@@ -1,0 +1,132 @@
+import { SyncVsAsync } from "@/components/figures/storage/SyncVsAsync";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import readStream from "./traces/read-stream.pgtrace.json";
+
+export const combined = readStream.steps[3].result.data[0];
+export const single = readStream.steps[5].result.data[0];
+
+<InShort>
+until postgres 17, a backend that needed a page asked for it, waited, and then asked for the next one. postgres 18 adds an **asynchronous I/O** subsystem. code that knows what it will read next, a **read stream**, asks for pages ahead of time, several at once, merged into bigger reads, and works on each page the moment it arrives.
+
+**io_method** picks who actually does the reading: `worker` (the default: a few io worker processes), `io_uring` (linux, straight to the kernel), or `sync` (the backend itself, the old way). the browser engine runs `sync`.
+</InShort>
+
+## the picture
+
+you know how a seq scan of a table that isn't cached can be slow even on a fast SSD? the SSD isn't slow at reading. the backend is slow at asking: one page, wait, one page, wait.
+
+think of a waiter in a restaurant. the old way, they walk to the kitchen for one dish, wait while it's plated, carry it out, walk back for the next. the new way, they hand the kitchen the whole order (the read stream knows the next pages), the kitchen works on several dishes at once (the io workers), and the waiter serves each dish the moment it's ready. the walk doesn't get shorter. there's just a lot less standing around.
+
+here's that as a toy schedule, eight pages, with made-up units of time:
+
+<Figure wide caption={<>switch io_method, then make the reads cheaper. with a slow read, sync spends most of its time <C k="mute">waiting</C> and worker hides most of it behind <C k="hot">reads in flight</C>. when a read costs almost nothing (the page is in the OS cache), there's nothing to hide, and the two finish together.</>}>
+<SyncVsAsync />
+</Figure>
+
+the point of the last setting is real, and measured below: asynchronous I/O makes waiting overlap with working. if there's no waiting, there's nothing to gain.
+
+## read streams: fewer, bigger reads
+
+the part of this you can see in every engine, even the browser's, is the read stream merging neighbouring blocks into one read. postgres 17 added that (`io_combine_limit`, 128 kB by default <Since v={17} />), and postgres 18 runs it through the new I/O subsystem. here's a cold seq scan of events, all 335 pages, on a native postgres 18.6:
+
+<Figure caption={<>read operations to scan all of events from an empty pool, from pg_stat_io. same pages, same bytes.</>}>
+<Bars unit="reads" data={[
+  { label: "io_combine_limit = 128 kB", value: Number(combined[1]), note: `${combined[3]} KB each` },
+  { label: "io_combine_limit = 8 kB", value: Number(single[1]), note: `${single[3]} KB each` },
+]} />
+<Provenance trace={{ engine: readStream.engine, scenario: readStream.scenario }} />
+</Figure>
+
+{combined[1]} reads of about {Math.round(Number(combined[3]))} KB, against {single[1]} reads of 8 KB. on a disk where every request has a fixed cost, that's most of the cost gone. ([why pages exist](/learn/storage/why-pages) measured that fixed cost on one SSD: a 64 KB read took about 1.6 times as long as an 8 KB one, not 8 times.) the browser engine does the same merging with `io_method = sync`:
+
+```sql run db=events ext=pg_buffercache
+SELECT count(*) FROM events;
+SELECT buffers_evicted FROM pg_buffercache_evict_relation('events');
+SELECT pg_stat_force_next_flush();
+SELECT pg_stat_reset_shared('io');
+SELECT sum(length(kind)) FROM events;
+SELECT pg_stat_force_next_flush();
+SELECT reads, read_bytes, round(read_bytes / reads / 1024.0, 1) AS kb_per_read
+FROM pg_stat_io
+WHERE backend_type = 'client backend' AND object = 'relation' AND context = 'normal';
+```
+
+the first count warms up the catalog, the evict empties events out of the pool, and the rest counts the reads of one scan: 38 reads, 73.5 KB each on average, for events' 335 pages and a few catalog pages that came along. far fewer reads than pages, with no io workers anywhere.
+
+## io_method
+
+the read stream decides what to read and when. `io_method` decides who does the reading:
+
+- **worker**, the default. the backend puts its read requests in shared memory and carries on; one of `io_workers` (3) background processes performs each read and marks it done. works everywhere.
+- **io_uring**, linux only. the backend hands its reads straight to the kernel through an io_uring queue and collects the results, no extra processes in between. needs a postgres built with liburing.
+- **sync**. each read is performed right there in the backend, when it's issued: postgres 17 behaviour, read combining and all, without the overlap.
+
+it's a server start setting. on this mac, Postgres.app 18 offers two of the three:
+
+```sql native
+SELECT name, setting, unit, enumvals FROM pg_settings
+WHERE name IN ('io_method', 'io_workers', 'io_combine_limit', 'io_max_combine_limit',
+               'effective_io_concurrency', 'maintenance_io_concurrency')
+ORDER BY name;
+```
+
+no io_uring on macOS: it's a linux kernel interface. and `effective_io_concurrency` is now 16 by default (it was 1), which is how many reads a stream may keep in flight at once. the browser engine:
+
+```sql run db=lab
+SHOW io_method;
+SHOW effective_io_concurrency;
+```
+
+`sync`, because PGlite is one process: there's nobody to hand a read to.
+
+<Predict question="io_method = worker: an io worker performs a seq scan's reads. whose row in pg_stat_io counts them?" options={["the io worker's", "the client backend's", "both rows"]} answer={1}>
+```sql
+SELECT backend_type, reads, read_bytes
+FROM pg_stat_io WHERE object = 'relation' AND reads > 0;
+```
+<Explain>
+the client backend's. the worker only executes the read; the I/O is counted for the backend that issued it, because that's whose query needed it. in the capture above, with io_method = worker, the only row with reads is `client backend`. the io workers' rows stay at zero.
+</Explain>
+</Predict>
+
+## what uses it
+
+the postgres 18 release notes name sequential scans, bitmap heap scans and vacuums, "etc.": the operations that read through read streams, where the next blocks are known in advance. and they describe it as backends queueing multiple **read** requests. writing dirty pages back, by the checkpointer, the background writer or a backend, still goes the old way, one `write()` at a time ([writing dirty pages back](/learn/storage/writing-pages-back)).
+
+the new `pg_aios` view lists the I/O handles in flight at the moment you look, and is empty the rest of the time. `pg_stat_io` gained `read_bytes`, `write_bytes` and `extend_bytes` in 18, which is what made the KB-per-read column above possible.
+
+## does it make things faster?
+
+where reads are slow, yes: network storage, cloud volumes with per-request latency, a cold SSD, a big seq scan or VACUUM that mostly waits. where reads are already fast, there's little to win. measured on this mac (an M4 Pro, Postgres.app 18.6): a 184 MB table, evicted from shared buffers but still in the OS page cache, `SELECT count(*)`, median of 9 runs, on two fresh servers per setting:
+
+<Figure caption={<>milliseconds, warm OS cache. the spread between runs is bigger than the difference between methods.</>}>
+<Bars unit="ms" data={[
+  { label: "sync, server 1", value: 28.1 },
+  { label: "sync, server 2", value: 28.7 },
+  { label: "worker, server 1", value: 28.2 },
+  { label: "worker, server 2", value: 26.2 },
+]} />
+<div className="text-right text-[10px] leading-4 text-faint">measured on this mac: node and pg, hrtime around each query, pg_buffercache_evict_relation() before each run</div>
+</Figure>
+
+no difference worth the name, because every "read" was a memory copy from the OS cache. the cold case is the one that matters, and it needs the OS cache dropped between runs, which macOS only allows as root. so there's no cold number here: the toy schedule above is the honest picture of why it helps, and the release notes are the honest source for that it does.
+
+<Gotcha title="io_method = worker and very small servers">
+three io workers are three more processes, and every read goes through shared memory to one of them and back. on a tiny server, or one whose data always fits in memory, `sync` can be just as good. it's also the setting to try first when you're chasing a strange I/O problem after upgrading to 18: it takes the new machinery out of the picture.
+</Gotcha>
+
+<Docs href="https://www.postgresql.org/docs/18/runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-IO" title="asynchronous I/O settings">
+io_method, io_workers, io_combine_limit, io_max_combine_limit, io_max_concurrency and effective_io_concurrency, with their defaults.
+</Docs>
+
+<Interview q="what did postgres 18 change about I/O?">
+it added an asynchronous I/O subsystem. operations that know what they'll read next (seq scans, bitmap heap scans, vacuum, through read streams) can queue several read requests and keep working while they complete, instead of read, wait, read. io_method chooses the mechanism: worker (default, a pool of io worker processes, io_workers = 3), io_uring on linux, or sync for the old behaviour. read combining (io_combine_limit, 128 kB) merges adjacent blocks into one larger read, and effective_io_concurrency now defaults to 16. bonus point: it's reads only in 18, writes still go through the old path, and the gain shows up when storage latency is high; with everything in the OS cache there's little to win.
+</Interview>
+
+<Keylines>
+- read streams know what's next, so they ask for it early, several reads at a time.
+- neighbouring blocks are merged into reads of up to 128 kB (io_combine_limit).
+- io_method: worker (default, 3 io workers), io_uring (linux), sync (the old way, and the browser's).
+- I/O is counted for the backend that asked for it, whoever performed it.
+- it hides waiting. no waiting, no gain.
+</Keylines>

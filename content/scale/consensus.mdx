@@ -1,0 +1,80 @@
+import { RaftLab } from "@/components/figures/scale/RaftLab";
+import { Quorum } from "@/components/figures/scale/Quorum";
+
+{/* textbook material: raft from Ongaro and Ousterhout, "In Search of an Understandable Consensus
+    Algorithm" (USENIX ATC 2014); quorums as in Dynamo (DeCandia et al., SOSP 2007). the raft lab is
+    a simplified model, the quorum figure is arithmetic, and the failover flow is drawn by hand. */}
+
+<InShort>
+**consensus** gets a group of servers to agree on one sequence of commands even when some of them crash. **raft** does it with a **leader** elected for a numbered **term**, a replicated **log**, and one rule underneath everything: nothing counts without a **majority**. any two majorities share a server, so two leaders can't both win the same term, and a committed entry is never lost. postgres itself doesn't run consensus; high-availability tools around it do.
+</InShort>
+
+## the picture
+
+you know how [streaming replication](/learn/wal/streaming-replication) gives you a standby, but someone still has to decide when the primary is dead and which standby takes over? get that decision wrong and you have two primaries both taking writes (split brain). consensus is how a group makes that kind of decision safely.
+
+think of a committee that keeps minutes (the log). one member chairs each meeting (the leader for a term). the chair proposes each line of the minutes, and a line is official once a majority has written it into their own copy. if the chair vanishes, anyone can call a new meeting with a higher number, and becomes chair if a majority agrees. a member who missed a meeting copies the minutes from the chair.
+
+<Figure wide caption={<>five servers running a simplified raft. time a server out to start an election, send writes, replicate, crash the leader, split the network. entries turn <C k="live">committed</C> only once a majority stores them.</>}>
+<RaftLab />
+</Figure>
+
+things to try: elect S1, write twice, replicate (committed). crash S1 and time out S3: it wins term 2 without S1. partition 2 | 3 and try electing S1 on the small side: two votes out of five isn't enough, ever.
+
+## raft, in three rules
+
+Diego Ongaro and John Ousterhout designed raft (USENIX ATC 2014) to be easier to understand than Paxos, and split it into three parts.
+
+**leader election.** every server is a follower, a candidate or the leader. a follower that hears nothing from a leader for a random timeout becomes a candidate: it increments the term, votes for itself and asks the others. each server gives at most one vote per term, and only to a candidate whose log is at least as up to date as its own. a candidate with votes from a majority becomes the leader for that term. the random timeouts make split votes rare; when they happen, someone times out again with a higher term.
+
+**log replication.** clients send commands to the leader. it appends each one to its log and sends it to the followers. once a majority store an entry from the current term, it's **committed**: the leader applies it to its state machine, answers the client, and tells the followers, who apply it too. a follower whose log disagrees is overwritten with the leader's.
+
+**safety.** the voting rule is what keeps committed entries alive: a committed entry is on a majority, a winner needs votes from a majority, the two overlap, and a voter refuses a candidate with an older log. so every new leader already has every committed entry.
+
+<Quiz question="a 5-server raft cluster splits into 2 servers and 3 servers. the old leader is on the side with 2. what happens?" options={["both sides keep accepting writes", "the side with 3 elects a leader and commits; the old leader can't commit anything", "nothing works until the network heals"]} answer={1}>
+<Explain>
+the old leader can still append entries, but it can only reach 2 of 5 servers, so nothing it accepts can commit, and its clients never get a success. the side with 3 times out, elects a leader in a higher term and keeps committing. when the network heals, the old leader sees the higher term, steps down, and its uncommitted entries are overwritten. a majority is what makes this safe: there's only ever one side with one.
+</Explain>
+</Quiz>
+
+## quorums
+
+"a majority" is a special case of a **quorum**: a set of replicas big enough that any two of them overlap. with n replicas, if every write waits for w acknowledgements and every read asks r replicas, then w + r > n guarantees that every read reaches at least one replica that has the latest acknowledged write. dynamo-style stores (DeCandia et al., SOSP 2007) expose n, w and r as knobs:
+
+<Figure caption={<>n replicas, a write that waits for w of them, a read that asks r of them, placed as far apart as possible. when w + r is greater than n, they <C k="live">must overlap</C>.</>}>
+<Quorum />
+</Figure>
+
+overlap is necessary, not sufficient. with concurrent writers, a failed write that reached fewer than w replicas, or replicas that disagree, a quorum read alone isn't [linearizable](/learn/scale/consistency-models): you also need versions to tell which value is newest, and usually a repair step. raft avoids that by funnelling everything through one leader and one ordered log.
+
+## postgres doesn't do this, its tools do
+
+a postgres primary and its standbys are not a consensus group. there's no election: a standby becomes a primary when something runs `pg_ctl promote` (or `pg_promote()`), and postgres trusts that something to be right. synchronous replication with `synchronous_standby_names = 'ANY 2 (a, b, c)'` gives quorum *commit* (a commit waits for two of three standbys), but it doesn't pick a new primary.
+
+so high-availability setups put a consensus system next to postgres. patroni, the common choice, keeps the cluster's state and a leader lock in a distributed configuration store (etcd, consul, zookeeper, or the kubernetes API), which run raft or a similar protocol themselves. only the node holding the lock may run as primary:
+
+<Figure wide caption={<>failover with patroni and etcd, drawn by hand. hover a stage.</>}>
+<Flow stages={[
+  { label: "hold the lock", sub: "primary renews it", note: "the primary's patroni renews a leader key in etcd with a time to live. etcd commits each renewal through raft, on a majority." },
+  { label: "primary dies", sub: "renewals stop", note: "the key expires after its TTL. no human, no guess: the majority of etcd agrees the lock is free." },
+  { label: "race for the lock", sub: "standbys", note: "each standby's patroni tries to take the key. etcd's atomic compare-and-set lets exactly one win. the most caught-up standby is preferred." },
+  { label: "promote", sub: "pg_promote()", note: "the winner promotes its postgres. the others follow it, re-pointing their replication." },
+  { label: "fence the old one", sub: "demote on return", note: "if the old primary comes back without the lock, its patroni demotes it instead of letting it take writes." },
+]} />
+</Figure>
+
+<Gotcha title="an even number of voters buys nothing">
+a majority of 4 is 3, so a 4-node group survives one failure, exactly like a 3-node group, and has more ways to split evenly. a majority of 5 is 3: five survive two failures. consensus groups are 3 or 5 (rarely 7) for that reason, and two data centres can't tolerate losing either one without a third site holding a tie-breaking member.
+</Gotcha>
+
+<Interview q="why does raft need a majority, and not just any two servers?">
+because any two majorities of the same group overlap in at least one server. that overlap is what prevents two leaders in one term (each server votes once per term, so two candidates can't both collect a majority) and what keeps committed entries (they're on a majority, and every future leader needs votes from a majority that includes someone with the entry, who won't vote for a candidate with an older log). bonus point: that's why a cluster of 2f + 1 servers tolerates f failures, and why a minority side of a partition can never make progress.
+</Interview>
+
+<Keylines>
+- consensus: a group agrees on one log, despite crashes.
+- raft: a leader per term, a replicated log, and majorities for everything.
+- an entry is committed once a majority stores it, from the leader's current term.
+- quorums overlap when w + r > n; that alone isn't linearizability.
+- postgres doesn't elect anyone. patroni and friends use etcd, consul or zookeeper to decide.
+</Keylines>

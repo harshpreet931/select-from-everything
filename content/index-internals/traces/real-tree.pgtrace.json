@@ -1,0 +1,289 @@
+{
+ "v": 1,
+ "scenario": "content/index-internals/traces/real-tree.scenario.sql",
+ "title": "a real nbtree: 200 keys, packed 10% full so a small index has several leaves",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "t": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"}]},
+  "t_id": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"t"}
+ },
+ "base": {"xid":755,"lsn":25786528},
+ "setup": "CREATE TABLE t (id int);\nINSERT INTO t SELECT generate_series(1, 200);",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "CREATE INDEX t_id ON t (id) WITH (fillfactor = 10)",
+   "note": "CREATE INDEX sorts the 200 keys and writes the leaves left to right, then the root above them.",
+   "status": "ok",
+   "result": {"command":"CREATE INDEX","rows":null,"columns":[],"data":[]},
+   "btree": {
+    "t_id": {
+     "root": 3,
+     "levels": 2,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 2,
+       "high": "39",
+       "items": [
+        {"off":2,"key":"1","tid":[0,1],"dead":false},
+        {"off":3,"key":"2","tid":[0,2],"dead":false},
+        {"off":4,"key":"3","tid":[0,3],"dead":false},
+        {"off":37,"key":"36","tid":[0,36],"dead":false},
+        {"off":38,"key":"37","tid":[0,37],"dead":false},
+        {"off":39,"key":"38","tid":[0,38],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 2,
+       "type": "l",
+       "level": 0,
+       "prev": 1,
+       "next": 4,
+       "high": "77",
+       "items": [
+        {"off":2,"key":"39","tid":[0,39],"dead":false},
+        {"off":3,"key":"40","tid":[0,40],"dead":false},
+        {"off":4,"key":"41","tid":[0,41],"dead":false},
+        {"off":37,"key":"74","tid":[0,74],"dead":false},
+        {"off":38,"key":"75","tid":[0,75],"dead":false},
+        {"off":39,"key":"76","tid":[0,76],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 3,
+       "type": "r",
+       "level": 1,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"","tid":[1,0],"dead":false},
+        {"off":2,"key":"39","tid":[2,1],"dead":false},
+        {"off":3,"key":"77","tid":[4,1],"dead":false},
+        {"off":4,"key":"115","tid":[5,1],"dead":false},
+        {"off":5,"key":"153","tid":[6,1],"dead":false},
+        {"off":6,"key":"191","tid":[7,1],"dead":false}
+       ]
+      },
+      {
+       "blk": 4,
+       "type": "l",
+       "level": 0,
+       "prev": 2,
+       "next": 5,
+       "high": "115",
+       "items": [
+        {"off":2,"key":"77","tid":[0,77],"dead":false},
+        {"off":3,"key":"78","tid":[0,78],"dead":false},
+        {"off":4,"key":"79","tid":[0,79],"dead":false},
+        {"off":37,"key":"112","tid":[0,112],"dead":false},
+        {"off":38,"key":"113","tid":[0,113],"dead":false},
+        {"off":39,"key":"114","tid":[0,114],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 5,
+       "type": "l",
+       "level": 0,
+       "prev": 4,
+       "next": 6,
+       "high": "153",
+       "items": [
+        {"off":2,"key":"115","tid":[0,115],"dead":false},
+        {"off":3,"key":"116","tid":[0,116],"dead":false},
+        {"off":4,"key":"117","tid":[0,117],"dead":false},
+        {"off":37,"key":"150","tid":[0,150],"dead":false},
+        {"off":38,"key":"151","tid":[0,151],"dead":false},
+        {"off":39,"key":"152","tid":[0,152],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 6,
+       "type": "l",
+       "level": 0,
+       "prev": 5,
+       "next": 7,
+       "high": "191",
+       "items": [
+        {"off":2,"key":"153","tid":[0,153],"dead":false},
+        {"off":3,"key":"154","tid":[0,154],"dead":false},
+        {"off":4,"key":"155","tid":[0,155],"dead":false},
+        {"off":37,"key":"188","tid":[0,188],"dead":false},
+        {"off":38,"key":"189","tid":[0,189],"dead":false},
+        {"off":39,"key":"190","tid":[0,190],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 7,
+       "type": "l",
+       "level": 0,
+       "prev": 6,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"191","tid":[0,191],"dead":false},
+        {"off":2,"key":"192","tid":[0,192],"dead":false},
+        {"off":3,"key":"193","tid":[0,193],"dead":false},
+        {"off":8,"key":"198","tid":[0,198],"dead":false},
+        {"off":9,"key":"199","tid":[0,199],"dead":false},
+        {"off":10,"key":"200","tid":[0,200],"dead":false}
+       ],
+       "n": 10
+      }
+     ]
+    }
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "INSERT INTO t SELECT generate_series(201, 205)",
+   "note": "five more keys on the end: the rightmost leaf takes them, nothing splits.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":5,"columns":[],"data":[]},
+   "btree": {
+    "t_id": {
+     "root": 3,
+     "levels": 2,
+     "pages": [
+      {
+       "blk": 1,
+       "type": "l",
+       "level": 0,
+       "prev": 0,
+       "next": 2,
+       "high": "39",
+       "items": [
+        {"off":2,"key":"1","tid":[0,1],"dead":false},
+        {"off":3,"key":"2","tid":[0,2],"dead":false},
+        {"off":4,"key":"3","tid":[0,3],"dead":false},
+        {"off":37,"key":"36","tid":[0,36],"dead":false},
+        {"off":38,"key":"37","tid":[0,37],"dead":false},
+        {"off":39,"key":"38","tid":[0,38],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 2,
+       "type": "l",
+       "level": 0,
+       "prev": 1,
+       "next": 4,
+       "high": "77",
+       "items": [
+        {"off":2,"key":"39","tid":[0,39],"dead":false},
+        {"off":3,"key":"40","tid":[0,40],"dead":false},
+        {"off":4,"key":"41","tid":[0,41],"dead":false},
+        {"off":37,"key":"74","tid":[0,74],"dead":false},
+        {"off":38,"key":"75","tid":[0,75],"dead":false},
+        {"off":39,"key":"76","tid":[0,76],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 3,
+       "type": "r",
+       "level": 1,
+       "prev": 0,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"","tid":[1,0],"dead":false},
+        {"off":2,"key":"39","tid":[2,1],"dead":false},
+        {"off":3,"key":"77","tid":[4,1],"dead":false},
+        {"off":4,"key":"115","tid":[5,1],"dead":false},
+        {"off":5,"key":"153","tid":[6,1],"dead":false},
+        {"off":6,"key":"191","tid":[7,1],"dead":false}
+       ]
+      },
+      {
+       "blk": 4,
+       "type": "l",
+       "level": 0,
+       "prev": 2,
+       "next": 5,
+       "high": "115",
+       "items": [
+        {"off":2,"key":"77","tid":[0,77],"dead":false},
+        {"off":3,"key":"78","tid":[0,78],"dead":false},
+        {"off":4,"key":"79","tid":[0,79],"dead":false},
+        {"off":37,"key":"112","tid":[0,112],"dead":false},
+        {"off":38,"key":"113","tid":[0,113],"dead":false},
+        {"off":39,"key":"114","tid":[0,114],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 5,
+       "type": "l",
+       "level": 0,
+       "prev": 4,
+       "next": 6,
+       "high": "153",
+       "items": [
+        {"off":2,"key":"115","tid":[0,115],"dead":false},
+        {"off":3,"key":"116","tid":[0,116],"dead":false},
+        {"off":4,"key":"117","tid":[0,117],"dead":false},
+        {"off":37,"key":"150","tid":[0,150],"dead":false},
+        {"off":38,"key":"151","tid":[0,151],"dead":false},
+        {"off":39,"key":"152","tid":[0,152],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 6,
+       "type": "l",
+       "level": 0,
+       "prev": 5,
+       "next": 7,
+       "high": "191",
+       "items": [
+        {"off":2,"key":"153","tid":[0,153],"dead":false},
+        {"off":3,"key":"154","tid":[0,154],"dead":false},
+        {"off":4,"key":"155","tid":[0,155],"dead":false},
+        {"off":37,"key":"188","tid":[0,188],"dead":false},
+        {"off":38,"key":"189","tid":[0,189],"dead":false},
+        {"off":39,"key":"190","tid":[0,190],"dead":false}
+       ],
+       "n": 38
+      },
+      {
+       "blk": 7,
+       "type": "l",
+       "level": 0,
+       "prev": 6,
+       "next": 0,
+       "items": [
+        {"off":1,"key":"191","tid":[0,191],"dead":false},
+        {"off":2,"key":"192","tid":[0,192],"dead":false},
+        {"off":3,"key":"193","tid":[0,193],"dead":false},
+        {"off":13,"key":"203","tid":[0,203],"dead":false},
+        {"off":14,"key":"204","tid":[0,204],"dead":false},
+        {"off":15,"key":"205","tid":[0,205],"dead":false}
+       ],
+       "n": 15
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

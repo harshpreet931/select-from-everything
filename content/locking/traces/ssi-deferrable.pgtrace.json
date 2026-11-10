@@ -1,0 +1,131 @@
+{
+ "v": 1,
+ "scenario": "content/locking/traces/ssi-deferrable.scenario.sql",
+ "title": "READ ONLY DEFERRABLE: a report waits for a safe snapshot, then runs with no tracking",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "doctors": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"name","type":"text"},{"name":"on_call","type":"bool"}]
+  },
+  "doctors_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"doctors"}
+ },
+ "base": {"xid":760,"lsn":23244144},
+ "setup": "CREATE TABLE doctors (\n  id      int PRIMARY KEY,\n  name    text NOT NULL,\n  on_call boolean NOT NULL\n);\nINSERT INTO doctors VALUES (1, 'asha', true), (2, 'ben', true);\nVACUUM ANALYZE doctors;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT count(*) FROM doctors WHERE on_call;\nUPDATE doctors SET on_call = false WHERE id = 1",
+   "note": "T1 is a serializable read-write transaction: it reads, then writes.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "BEGIN ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE",
+   "note": "T2 is a report: SERIALIZABLE, READ ONLY, DEFERRABLE.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "SELECT name, on_call FROM doctors ORDER BY id",
+   "note": "its first query waits. a read-write serializable transaction is still running, so no snapshot taken now is guaranteed safe.",
+   "status": "blocked",
+   "blocked": {"by":[],"lock":null},
+   "locks": [
+    {"session":"T1","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors","mode":"SIReadLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"doctors_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "T1 commits without any rw-antidependency pointing out of it, so the snapshot T2 took when it asked turns out safe. the query returns what was committed before T1, and T2 holds no SIRead locks at all.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [
+    {
+     "session": "T2",
+     "step": 2,
+     "result": {
+      "command": "SELECT",
+      "rows": 2,
+      "columns": [{"name":"name","type":"text"},{"name":"on_call","type":"bool"}],
+      "data": [["asha","t"],["ben","t"]]
+     }
+    }
+   ],
+   "locks": [
+    {"session":"T2","type":"relation","target":"doctors","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"relation","target":"doctors_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "T2",
+   "sql": "COMMIT",
+   "note": "T2 commits. a deferrable read-only transaction can never get 40001.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": []
+  }
+ ]
+}

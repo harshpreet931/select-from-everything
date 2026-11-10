@@ -1,0 +1,282 @@
+import { IndexPage } from "@/components/figures/index-internals/IndexPage";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import held from "./traces/churn-held.pgtrace.json";
+
+{/* the numbers are the run blocks' golden (PGlite). the held-snapshot comparison is
+    traces/churn-held.scenario.sql, two sessions on a native postgres 18.6: it needs a
+    second session holding a snapshot, which the browser can't have. */}
+
+export const heldAt = (i) => held.steps[i].result.data[0].map(Number);
+
+<InShort>
+two ways a b-tree avoids splitting. **deduplication** <Since v={13} /> stores a key that repeats once, followed by a **posting list** of row addresses, instead of once per row. **bottom-up deletion** <Since v={14} /> handles the other kind of duplicate: the stale entries an UPDATE leaves behind in indexes whose key it didn't change. before a leaf splits, postgres checks the heap, finds the versions nobody can see anymore, and deletes their entries instead.
+</InShort>
+
+## the picture
+
+you know how [a split](/learn/index-internals/page-splits) is the only way a full leaf gets more room? it's also permanent: pages are never merged back. so before it splits a leaf, postgres tries two cheaper ways to free space on it, and both are about duplicates.
+
+think of a guest list for a hotel. a family of six all named Patel: you could write "Patel, room 12" six times, or "Patel: rooms 12, 12, 14, 14, 15, 15" once (deduplication). and when guests check out and new ones check in to the same room, the old lines are crossed out in pen but still take space. before buying a new page for the list, you go round and erase every line for a guest who's already gone (bottom-up deletion).
+
+<Figure caption={<>the first items of leaf 1 of two indexes on the same column, ten distinct values over 100,000 rows. with deduplication, one tuple holds a key and <C k="ref">132 row addresses</C>; without it, every row gets its own 16-byte tuple. both pages start with their <C k="meta">high key</C>.</>}>
+<IndexPage
+  items={[
+    { text: "0 (52,128)", kind: "high" },
+    { text: "0", kind: "posting", n: 132 },
+    { text: "0", kind: "posting", n: 132 },
+    { text: "0", kind: "posting", n: 132 },
+    { text: "…", kind: "more" },
+  ]}
+  itemsLabel="d_dedup, leaf 1: 808-byte posting tuples"
+/>
+<div className="h-5" />
+<IndexPage
+  items={[
+    { text: "0 (16,44)", kind: "high" },
+    { text: "0 → (0,10)" },
+    { text: "0 → (0,20)" },
+    { text: "0 → (0,30)" },
+    { text: "…", kind: "more" },
+  ]}
+  itemsLabel="d_plain, leaf 1: one 16-byte tuple per row"
+  provenance="real output, postgres 18.6 (PGlite 0.5.12) · the run blocks below"
+/>
+</Figure>
+
+## deduplication
+
+ten values over 100,000 rows, indexed twice, with deduplication (the default) and without:
+
+```sql run ext=pageinspect session=dd
+CREATE TABLE d AS SELECT g AS id, g % 10 AS k FROM generate_series(1, 100000) AS g;
+CREATE INDEX d_dedup ON d (k);
+CREATE INDEX d_plain ON d (k) WITH (deduplicate_items = off);
+SELECT i AS index, pg_relation_size(i) / 8192 AS pages
+FROM unnest(ARRAY['d_dedup', 'd_plain']) AS i
+ORDER BY pages;
+```
+
+87 pages against 278: a third of the size. here's what's in them:
+
+```sql run session=dd
+SELECT itemoffset, itemlen, cardinality(tids) AS rows, htid, data
+FROM bt_page_items('d_dedup', 1)
+WHERE itemoffset <= 4
+ORDER BY itemoffset;
+SELECT itemoffset, itemlen, htid, data
+FROM bt_page_items('d_plain', 1)
+WHERE itemoffset <= 4
+ORDER BY itemoffset;
+```
+
+with deduplication, item 2 is one key followed by 132 heap addresses, sorted, in one 808-byte tuple: 16 bytes for the key and header, then 6 bytes per address. the same 132 rows cost 132 × 16 = 2,112 bytes the plain way, plus 132 line pointers. and look at the high keys: both carry a heap address. the key `0` spans several pages, so the boundary between two leaves is a (key, address) pair, and the address is part of the key ([a real b-tree, page by page](/learn/index-internals/nbtree-pages) has more on that).
+
+<Predict question="the same experiment on a unique column: 100,000 distinct ids, with and without deduplication. how big is the deduplicated index?" options={["about a third", "about half", "the same size"]} answer={2}>
+```sql
+CREATE INDEX u_dedup ON u (id);
+CREATE INDEX u_plain ON u (id) WITH (deduplicate_items = off);
+```
+<Explain>
+the same size. deduplication only helps when a key repeats, and here none do. it also costs nothing: postgres only tries it when a leaf is about to split, and a pass that finds no duplicates is cheap.
+</Explain>
+</Predict>
+
+```sql run session=dd
+CREATE TABLE u AS SELECT g AS id FROM generate_series(1, 100000) AS g;
+CREATE INDEX u_dedup ON u (id);
+CREATE INDEX u_plain ON u (id) WITH (deduplicate_items = off);
+SELECT i AS index, pg_relation_size(i) / 8192 AS pages
+FROM unnest(ARRAY['u_dedup', 'u_plain']) AS i
+ORDER BY i;
+```
+
+276 and 276. two more things to know:
+
+- **it's lazy.** an insert adds a plain tuple. only when the leaf is full does postgres run a deduplication pass over it, merging runs of equal keys into posting lists, and split only if that didn't free enough. CREATE INDEX deduplicates as it builds.
+- **some types can't.** merging two entries is only safe when "equal" means "the same bytes". `numeric` isn't (1.0 and 1.00 are equal and stored differently), and neither are `float`, `jsonb`, or text under a nondeterministic collation. the metapage says whether an index qualifies, in `allequalimage`:
+
+```sql run session=dd
+CREATE TABLE n AS SELECT g AS id, (g % 10)::numeric AS k FROM generate_series(1, 100000) AS g;
+CREATE INDEX n_k ON n (k);
+SELECT 'd_dedup' AS index, allequalimage, pg_relation_size('d_dedup') / 8192 AS pages FROM bt_metap('d_dedup')
+UNION ALL
+SELECT 'n_k', allequalimage, pg_relation_size('n_k') / 8192 FROM bt_metap('n_k')
+ORDER BY index;
+```
+
+the numeric index is the size of the plain one: same ten values, no posting lists. (INCLUDE indexes never deduplicate either.)
+
+## bottom-up deletion
+
+an UPDATE that isn't [HOT](/learn/mvcc/hot-updates) writes a new row version on another page, and **every** index on the table gets a new entry pointing at it, including indexes whose column didn't change. that index now has two entries with the same key, one for the old version and one for the new. after the old version is dead, its entry is garbage, but it sits there until VACUUM, and a busy row piles up a lot of them. postgres calls this **version churn**.
+
+bottom-up deletion is aimed at exactly that. when a leaf of an index that the UPDATE didn't logically change is about to split, postgres looks at the heap pages its duplicate entries point to, checks which versions are dead to everyone, and deletes those entries. if that frees enough room, no split.
+
+here's churn on purpose: `ch` has an index on `a`, which never changes, and one on `b`, which every update changes, so updates can't be HOT. each pass updates every row once, a tenth at a time:
+
+```sql run session=churn
+CREATE TABLE ch (id int PRIMARY KEY, a int, b int);
+CREATE INDEX ch_a ON ch (a);
+CREATE INDEX ch_b ON ch (b);
+INSERT INTO ch SELECT g, g, 0 FROM generate_series(1, 10000) AS g;
+CREATE TABLE sizes (pass int, pkey bigint, a bigint, b bigint);
+INSERT INTO sizes SELECT 0, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+-- one pass: every row updated once, a tenth at a time
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 1, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+```sql run session=churn hidden
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 2, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+```sql run session=churn hidden
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 3, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+```sql run session=churn hidden
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 4, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+```sql run session=churn hidden
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 5, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+```sql run session=churn hidden
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 6, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+```sql run session=churn hidden
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 7, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+```sql run session=churn hidden
+UPDATE ch SET b = b + 1 WHERE id % 10 = 0;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 1;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 2;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 3;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 4;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 5;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 6;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 7;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 8;
+UPDATE ch SET b = b + 1 WHERE id % 10 = 9;
+INSERT INTO sizes SELECT 8, pg_relation_size('ch_pkey') / 8192, pg_relation_size('ch_a') / 8192, pg_relation_size('ch_b') / 8192;
+```
+
+eight passes later:
+
+```sql run session=churn
+SELECT * FROM sizes ORDER BY pass;
+```
+
+<Figure caption={<>index size in pages after 8 passes of churn over 10,000 rows, from the run blocks above. ch_b's key changes on every update, so its new entries are real new keys. ch_pkey and ch_a only gained stale duplicates, which got deleted instead of split.</>}>
+<Bars data={[
+  { label: "ch_pkey (unchanged key)", value: 57, tone: "live" },
+  { label: "ch_a (unchanged key)", value: 76, tone: "live" },
+  { label: "ch_b (changed key)", value: 85, tone: "hot" },
+]} unit="pages" />
+</Figure>
+
+`ch_pkey` and `ch_a` grow in the first two passes, from 30 to 57 pages, and then stop. `ch_a` holds at 57 pages for five passes while `ch_b` grows by 9 or 10 pages every pass. at pass 7 `ch_a` starts to split again: bottom-up deletion is a best effort that looks at a limited number of heap pages per attempt, and the manual says as much ("a page split will usually be avoided"). the primary key holds on longest because a unique index gets a second kind of help: every insert's [uniqueness check](/learn/index-internals/unique-checks) already visits the old versions of that key in the heap, and marks the dead ones' entries for removal on the way.
+
+## it needs the old versions to be dead
+
+"dead to everyone" is the catch. bottom-up deletion can only remove an entry whose heap version no snapshot can still see, the same rule as [VACUUM](/learn/mvcc/vacuum). here is the same churn on a real server, with a second session holding a repeatable read snapshot open the whole time:
+
+<Figure caption={<>the same churn, four passes, with and without another session holding an old snapshot. with it, no old version is removable, so nothing can be deleted and the indexes split as if bottom-up deletion didn't exist.</>}>
+<Bars data={[
+  { label: "ch_a, nobody else looking", value: 57, tone: "live" },
+  { label: "ch_a, snapshot held", value: heldAt(4)[1], tone: "dead" },
+  { label: "ch_pkey, snapshot held", value: heldAt(4)[0], tone: "dead" },
+]} unit="pages" />
+<Provenance trace={prov(held)} />
+</Figure>
+
+{heldAt(4)[1]} pages instead of 57. the extra pages stay after the snapshot is gone, because pages are never merged. a long-running transaction doesn't just hold back VACUUM ([the xmin horizon](/learn/mvcc/xmin-horizon)): it switches off the index's own cleanup too, and leaves the splits behind as permanent bloat.
+
+<Gotcha title="pg_upgrade keeps the old format">
+deduplication needs the index format from postgres 13 on, and the release notes say an index carried over by pg_upgrade from an older version won't use it until a REINDEX. if an index from that era is much bigger than a fresh build of it, that's a likely reason. `deduplicate_items = off` turns it off per index; there's rarely a reason to.
+</Gotcha>
+
+<Interview q="you update a non-indexed-looking column a lot and your indexes bloat. why, and what does postgres do about it?">
+if the updated column is in any index, or the page has no room, the update can't be HOT, so every index gets a new entry for the new version, even indexes on columns that didn't change. those leave duplicate entries pointing at dead versions until VACUUM. since postgres 14, bottom-up deletion removes those stale entries when a leaf is about to split, as long as the old versions are dead to every snapshot. bonus point: a long-running transaction stops that from working, and since b-tree pages are never merged, the splits it causes stay until REINDEX. fixes: keep HOT possible (fillfactor, fewer indexed columns), keep transactions short.
+</Interview>
+
+<Keylines>
+- deduplication (13+) stores a repeated key once with a posting list of heap addresses: a third of the size for ten values over 100,000 rows.
+- it happens lazily, just before a leaf would split, and only for types where equal means byte-equal.
+- a non-HOT update adds an entry to every index, even ones whose key didn't change: version churn.
+- bottom-up deletion (14+) deletes those stale entries instead of splitting, when the old versions are dead to everyone.
+- an old snapshot switches it off, and the splits that follow are permanent.
+</Keylines>

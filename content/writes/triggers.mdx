@@ -1,0 +1,216 @@
+import { TableSteps } from "@/components/figures/writes/TableSteps";
+import { framesOf, pickRun, tableOf } from "@/components/figures/writes/frames";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import trace from "./traces/triggers.pgtrace.json";
+
+{/* every figure reads traces/triggers.scenario.sql, captured on PGlite from bank: four triggers
+    logging the order they fire in, an audit table, a 20,000-row UPDATE under a row trigger and
+    under a statement trigger, and suppress_redundant_updates_trigger() against a no-op UPDATE. */}
+
+export const fired = tableOf(trace, 3);
+export const audit = framesOf(trace, [
+  { label: "empty", state: 6 },
+  { label: "transfer", stmt: 7, state: 8 },
+  { label: "close", stmt: 9, state: 10 },
+  { label: "open", stmt: 11, state: 12 },
+], "id");
+export const bulk = {
+  "FOR EACH ROW": pickRun(trace, [15, 16, 17]),
+  "FOR EACH STATEMENT": pickRun(trace, [20, 21, 22]),
+};
+export const noop = framesOf(trace, [
+  { label: "before", state: 24 },
+  { label: "no-op UPDATE", stmt: 25, state: 26 },
+  { label: "add the trigger", stmt: 27 },
+  { label: "no-op again", stmt: 28, state: 29 },
+  { label: "a real change", stmt: 30, state: 31 },
+], "id");
+export const source = prov(trace);
+
+<InShort>
+a **trigger** runs a function automatically when rows are inserted, updated or deleted. **BEFORE** row triggers run before each row is written and can change it (through **NEW**) or skip it. **AFTER** triggers run once the change is made, and see **OLD** and **NEW** as they ended up.
+
+a row trigger fires once per row: 20,000 times for a 20,000-row UPDATE. a statement trigger fires once, and with **transition tables** it still sees every row.
+</InShort>
+
+## the picture
+
+you know the rule that has to hold no matter who changes the table: every balance change gets an audit row, every updated row gets its version bumped, nothing with money in it gets deleted? you can remember to do it in every code path, or the database can do it for you, every time, whichever path the change came from. that's a trigger.
+
+think of a tripwire on a door. you don't call it, you walk through the door and it goes off. a BEFORE trigger is a guard who checks your bag before you go in (and can take things out, or turn you away). an AFTER trigger is the camera that records what happened once you're through.
+
+<Figure wide caption={<>four triggers on bank's accounts, one of each kind, all writing to one log. one UPDATE of three rows, and the log of what fired, in order. each BEFORE ROW trigger fires as its row is written; every AFTER ROW trigger waits until the statement has done all its rows.</>}>
+<Flow
+  stages={[
+    { label: "BEFORE STATEMENT", sub: "once", note: "fires once, before any row is touched. no OLD or NEW: there's no row yet." },
+    { label: "BEFORE ROW", sub: "per row, as it goes", note: "fires for each row just before it's written. can change NEW, or return NULL to skip the row." },
+    { label: "AFTER ROW", sub: "per row, at the end", note: "queued while the statement runs, fired for each row once all of them are done. the return value is ignored." },
+    { label: "AFTER STATEMENT", sub: "once", note: "fires once at the very end, even if no row matched. with REFERENCING it sees every changed row as a table." },
+  ]}
+/>
+<div className="mt-4">
+<ResultTable {...fired} group="trigger_when" />
+</div>
+<Provenance trace={source} />
+</Figure>
+
+<Predict options={["BEFORE ROW, for account 2", "AFTER ROW, for account 1"]} answer={0}>
+```sql
+-- one UPDATE touches accounts 1 and 2.
+-- after BEFORE ROW fires for account 1 and account 1 is written,
+-- which trigger fires next?
+```
+<Explain>
+BEFORE ROW for account 2. AFTER ROW triggers don't fire as rows are written: postgres queues them and runs them when the statement has finished every row (rows 5 to 7 in the log above). so an AFTER ROW trigger for one row can already see every other row the statement changed, and an error in it still undoes the whole statement.
+</Explain>
+</Predict>
+
+every block below starts from a fresh copy of bank, so nothing you do here sticks.
+
+## an audit table
+
+the classic first trigger. a table to write to, a function that returns `trigger`, and the trigger that ties the function to the table and its events:
+
+```sql run db=bank session=audit title="audit.sql"
+CREATE TABLE accounts_audit (
+  id          int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  account_id  int NOT NULL,
+  op          text NOT NULL,
+  old_balance numeric(12,2),
+  new_balance numeric(12,2)
+);
+
+CREATE FUNCTION audit_accounts() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    INSERT INTO accounts_audit (account_id, op, old_balance) VALUES (OLD.id, TG_OP, OLD.balance);
+  ELSIF TG_OP = 'INSERT' THEN
+    INSERT INTO accounts_audit (account_id, op, new_balance) VALUES (NEW.id, TG_OP, NEW.balance);
+  ELSE
+    INSERT INTO accounts_audit (account_id, op, old_balance, new_balance) VALUES (NEW.id, TG_OP, OLD.balance, NEW.balance);
+  END IF;
+  RETURN NULL;
+END $$;
+
+CREATE TRIGGER audit AFTER INSERT OR UPDATE OR DELETE ON accounts
+FOR EACH ROW EXECUTE FUNCTION audit_accounts();
+```
+
+inside a trigger function, `NEW` is the row being written (INSERT and UPDATE), `OLD` the row as it was (UPDATE and DELETE), and `TG_OP`, `TG_WHEN`, `TG_LEVEL` and `TG_TABLE_NAME` say why it's running. an AFTER row trigger's return value is ignored, so `RETURN NULL` is the convention.
+
+<Figure wide caption={<>the audit table after three ordinary statements on accounts. none of them mentions accounts_audit. the transfer updates two rows and gets two <C k="live">audit rows</C>. a DELETE has no new balance, an INSERT no old one.</>}>
+<TableSteps frames={audit} table="accounts_audit" file="accounts.sql" trace={source} />
+</Figure>
+
+```sql run session=audit
+UPDATE accounts SET balance = balance + CASE id WHEN 1 THEN -50.00 ELSE 50.00 END
+WHERE id IN (1, 2);
+
+SELECT * FROM accounts_audit ORDER BY id;
+```
+
+the audit rows are written in the same transaction as the change. roll the transfer back and its audit rows go too. that's the point: the audit can't disagree with the data. (keeping history properly, as of any date, is a design question of its own: [history, audit and soft delete](/learn/design/history-and-soft-delete).)
+
+## BEFORE triggers change the row
+
+a BEFORE row trigger runs before the row is written and returns the row to write. change `NEW` and you change what goes in. bank's accounts have a `version` column for [optimistic locking](/learn/transactions/lost-updates); a trigger can bump it so no code path forgets. and `WHEN` makes the trigger fire only when it matters:
+
+```sql run db=bank session=version
+CREATE FUNCTION bump_version() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.version := OLD.version + 1;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER bump BEFORE UPDATE ON accounts
+FOR EACH ROW WHEN (OLD.balance IS DISTINCT FROM NEW.balance)
+EXECUTE FUNCTION bump_version();
+
+UPDATE accounts SET balance = balance - 10 WHERE id = 1 RETURNING id, balance, version;
+UPDATE accounts SET owner = 'Alice' WHERE id = 1 RETURNING id, owner, version;
+```
+
+version 1 after the balance changed, still 1 after the rename: the WHEN condition was false, so the trigger didn't even run. RETURNING shows the row *after* BEFORE triggers changed it, which makes it the easy way to see what a trigger did ([RETURNING](/learn/writes/returning-old-and-new)).
+
+a BEFORE trigger can also say no: return NULL to skip the row silently, or raise an error to stop the whole statement.
+
+```sql run db=bank expect=error
+CREATE FUNCTION keep_funded() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.balance <> 0 THEN
+    RAISE EXCEPTION 'account % still holds %', OLD.id, OLD.balance;
+  END IF;
+  RETURN OLD;
+END $$;
+
+CREATE TRIGGER keep_funded BEFORE DELETE ON accounts
+FOR EACH ROW EXECUTE FUNCTION keep_funded();
+
+DELETE FROM accounts WHERE id = 1;
+```
+
+## one row at a time adds up
+
+a row trigger is called once per row, and whatever it does, it does once per row. bank's transfers table has 20,000 rows. touch all of them with a row-level audit trigger, and postgres says exactly how many times it ran:
+
+```sql run db=bank
+CREATE TABLE transfers_audit (transfer_id bigint, old_amount numeric(12,2), new_amount numeric(12,2));
+CREATE FUNCTION audit_transfer_row() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO transfers_audit VALUES (OLD.id, OLD.amount, NEW.amount);
+  RETURN NULL;
+END $$;
+CREATE TRIGGER audit_transfers AFTER UPDATE ON transfers
+FOR EACH ROW EXECUTE FUNCTION audit_transfer_row();
+
+EXPLAIN (ANALYZE, TIMING OFF, SUMMARY OFF, COSTS OFF, BUFFERS OFF)
+UPDATE transfers SET amount = amount + 1;
+```
+
+`Trigger audit_transfers: calls=20000`. twenty thousand function calls, each running its own single-row INSERT. a **statement-level** trigger runs once instead, and since it has no single NEW or OLD, `REFERENCING` hands it the statement's rows as two tables, the **transition tables**:
+
+<Figure wide caption={<>the same 20,000-row UPDATE with the same audit, as a row trigger and as a statement trigger with transition tables. both write 20,000 audit rows. one calls its function 20,000 times, the other once.</>}>
+<RunPick
+  options={[{ key: "trigger", values: ["FOR EACH ROW", "FOR EACH STATEMENT"] }]}
+  runs={bulk}
+  hot={["FOR EACH ROW", "FOR EACH STATEMENT", "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows"]}
+  file="audit_transfers.sql"
+  trace={source}
+/>
+</Figure>
+
+one INSERT ... SELECT of 20,000 rows instead of 20,000 INSERTs of one: the same difference as [COPY against single inserts](/learn/writes/copy-and-bulk-loads), inside the database. transition tables work for AFTER triggers only, and are the way to write anything that summarizes a statement (a running total, a count per account) without a call per row.
+
+## the UPDATE that changes nothing
+
+`UPDATE accounts SET currency = currency` changes no values. it still writes a complete new version of every row it touches, with a new address and a new xmin, because in postgres [an UPDATE is an INSERT](/learn/mvcc/update-is-insert) of a new version. that's work for the table, its indexes, the WAL and later VACUUM, for nothing. postgres ships a trigger function to skip it:
+
+<Figure wide caption={<>three accounts, with each version's address (<C k="ref">ctid</C>) and the transaction that wrote it (<C k="meta">xmin</C>). the no-op UPDATE rewrites every row, so both change. with suppress_redundant_updates_trigger() in place, the same UPDATE says UPDATE 0 and writes nothing. a real change still goes through.</>}>
+<TableSteps frames={noop} table="accounts, 3 of 1,000" file="noop.sql" trace={source} />
+</Figure>
+
+```sql run db=bank
+CREATE TRIGGER skip_noop BEFORE UPDATE ON accounts
+FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger();
+
+UPDATE accounts SET currency = currency;
+```
+
+the trigger compares the new row with the old one, byte for byte, and returns NULL when they're identical, so the row is skipped. the manual suggests naming it so it sorts after your other BEFORE triggers (they fire in name order), so it sees the row they produced. it's not free either: it compares every row. it pays off when no-op updates are common, like an ORM that writes every column back whether it changed or not.
+
+<Gotcha title="triggers you forgot about">
+triggers are invisible from the statement: `DELETE FROM accounts WHERE id = 3` doesn't say it also writes an audit row. that's their strength, and the reason they surprise people: a bulk load that crawls because of a row trigger nobody remembered, a trigger that updates its own table and fires itself again, an UPDATE on one table that cascades through three others. know what's on a table before you load into it (`\d accounts` in psql lists its triggers), and keep trigger functions short. `ALTER TABLE ... DISABLE TRIGGER` turns one off for a maintenance load. and remember TRUNCATE fires only `ON TRUNCATE` triggers, never your DELETE ones ([UPDATE and DELETE](/learn/writes/update-and-delete)).
+</Gotcha>
+
+<Interview q="BEFORE or AFTER trigger: when do you use which?">
+BEFORE row triggers to change or validate the row being written: fill in or normalize columns through NEW, bump a version, refuse the row (return NULL to skip it, raise to fail). AFTER triggers for side effects that should only happen once the change is final: audit rows, maintaining a summary table, a notification. AFTER triggers see the final row, including what BEFORE triggers changed, and fire after the statement's rows are all written. bonus points: statement-level AFTER triggers with REFERENCING transition tables handle a bulk change in one call instead of one per row; and `suppress_redundant_updates_trigger()` skips updates that change nothing, which otherwise still write a new row version.
+</Interview>
+
+<Keylines>
+- a trigger runs a function on INSERT, UPDATE or DELETE, whichever code path made the change.
+- BEFORE row triggers can change NEW or skip the row. AFTER triggers see the final rows.
+- AFTER row triggers are queued and fire once the statement has done all its rows.
+- a row trigger fires once per row. a statement trigger with transition tables fires once.
+- a no-op UPDATE still writes new versions. suppress_redundant_updates_trigger() skips them.
+</Keylines>

@@ -1,0 +1,341 @@
+{
+ "v": 1,
+ "scenario": "content/joins/traces/on-grid.scenario.sql",
+ "title": "two tiny tables, every ON and every join kind, from postgres itself",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {"kind":"table","am":"heap","columns":[{"name":"name","type":"text"},{"name":"city","type":"text"}]},
+  "stores": {"kind":"table","am":"heap","columns":[{"name":"city","type":"text"},{"name":"store","type":"text"}]}
+ },
+ "base": {"xid":757,"lsn":25832760},
+ "setup": "CREATE TABLE customers (name text, city text);\nINSERT INTO customers VALUES ('Ada', 'London'), ('Alan', 'London'), ('Grace', 'Paris'), ('Edsger', NULL);\nCREATE TABLE stores (city text, store text);\nINSERT INTO stores VALUES ('London', 'soho'), ('Paris', 'marais'), ('Berlin', 'mitte'), (NULL, 'online');",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT name, city FROM customers ORDER BY CASE name WHEN 'Ada' THEN 1 WHEN 'Alan' THEN 2 WHEN 'Grace' THEN 3 ELSE 4 END",
+   "note": "the left table, in the order the grid draws it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"name","type":"text"},{"name":"city","type":"text"}],
+    "data": [["Ada","London"],["Alan","London"],["Grace","Paris"],["Edsger",null]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT city, store FROM stores ORDER BY CASE store WHEN 'soho' THEN 1 WHEN 'marais' THEN 2 WHEN 'mitte' THEN 3 ELSE 4 END",
+   "note": "the right table, in the order the grid draws it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [{"name":"city","type":"text"},{"name":"store","type":"text"}],
+    "data": [["London","soho"],["Paris","marais"],["Berlin","mitte"],[null,"online"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c JOIN stores AS s ON s.city = c.city ORDER BY c.name, s.store",
+   "note": "the equi-join: a pair survives when the cities are equal. Edsger's NULL equals nothing, not even the online store's NULL.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 3,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [["Ada","London","London","soho"],["Alan","London","London","soho"],["Grace","Paris","Paris","marais"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c JOIN stores AS s ON true ORDER BY c.name, s.store",
+   "note": "ON true keeps every pair: 4 × 4 = 16 rows. that's CROSS JOIN.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 16,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London","Paris","marais"],
+     ["Ada","London","Berlin","mitte"],
+     ["Ada","London",null,"online"],
+     ["Ada","London","London","soho"],
+     ["Alan","London","Paris","marais"],
+     ["Alan","London","Berlin","mitte"],
+     ["Alan","London",null,"online"],
+     ["Alan","London","London","soho"],
+     ["Edsger",null,"Paris","marais"],
+     ["Edsger",null,"Berlin","mitte"],
+     ["Edsger",null,null,"online"],
+     ["Edsger",null,"London","soho"],
+     ["Grace","Paris","Paris","marais"],
+     ["Grace","Paris","Berlin","mitte"],
+     ["Grace","Paris",null,"online"],
+     ["Grace","Paris","London","soho"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c JOIN stores AS s ON s.city <> c.city ORDER BY c.name, s.store",
+   "note": "the cities differ: 6 pairs. a NULL city is unknown against everything, so Edsger and the online store sit this one out too.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 6,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London","Paris","marais"],
+     ["Ada","London","Berlin","mitte"],
+     ["Alan","London","Paris","marais"],
+     ["Alan","London","Berlin","mitte"],
+     ["Grace","Paris","Berlin","mitte"],
+     ["Grace","Paris","London","soho"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c JOIN stores AS s ON s.city = c.city AND s.store <> 'soho' ORDER BY c.name, s.store",
+   "note": "equal cities, and not the soho store: ON can test anything, from either side.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [["Grace","Paris","Paris","marais"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c JOIN stores AS s ON s.city IS NOT DISTINCT FROM c.city ORDER BY c.name, s.store",
+   "note": "IS NOT DISTINCT FROM treats two NULLs as the same, so Edsger finally meets the online store.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London","London","soho"],
+     ["Alan","London","London","soho"],
+     ["Edsger",null,null,"online"],
+     ["Grace","Paris","Paris","marais"]
+    ]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c JOIN stores AS s ON false ORDER BY c.name, s.store",
+   "note": "ON false: no pair survives.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 0,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": []
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c LEFT JOIN stores AS s ON s.city = c.city ORDER BY c.name, s.store",
+   "note": "LEFT JOIN, equal cities: the 3 pairs, plus Edsger, who matched nobody, padded with NULLs.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London","London","soho"],
+     ["Alan","London","London","soho"],
+     ["Edsger",null,null,null],
+     ["Grace","Paris","Paris","marais"]
+    ]
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c LEFT JOIN stores AS s ON true ORDER BY c.name, s.store",
+   "note": "LEFT JOIN, ON true: every customer already has a partner, so there's nobody to pad.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 16,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London","Paris","marais"],
+     ["Ada","London","Berlin","mitte"],
+     ["Ada","London",null,"online"],
+     ["Ada","London","London","soho"],
+     ["Alan","London","Paris","marais"],
+     ["Alan","London","Berlin","mitte"],
+     ["Alan","London",null,"online"],
+     ["Alan","London","London","soho"],
+     ["Edsger",null,"Paris","marais"],
+     ["Edsger",null,"Berlin","mitte"],
+     ["Edsger",null,null,"online"],
+     ["Edsger",null,"London","soho"],
+     ["Grace","Paris","Paris","marais"],
+     ["Grace","Paris","Berlin","mitte"],
+     ["Grace","Paris",null,"online"],
+     ["Grace","Paris","London","soho"]
+    ]
+   }
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c LEFT JOIN stores AS s ON s.city <> c.city ORDER BY c.name, s.store",
+   "note": "LEFT JOIN, the cities differ: the 6 pairs, plus Edsger again.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 7,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London","Paris","marais"],
+     ["Ada","London","Berlin","mitte"],
+     ["Alan","London","Paris","marais"],
+     ["Alan","London","Berlin","mitte"],
+     ["Edsger",null,null,null],
+     ["Grace","Paris","Berlin","mitte"],
+     ["Grace","Paris","London","soho"]
+    ]
+   }
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c LEFT JOIN stores AS s ON s.city = c.city AND s.store <> 'soho' ORDER BY c.name, s.store",
+   "note": "LEFT JOIN, equal and not soho: only Grace keeps a partner. Ada and Alan lost theirs to the ON, so they come back padded.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London",null,null],
+     ["Alan","London",null,null],
+     ["Edsger",null,null,null],
+     ["Grace","Paris","Paris","marais"]
+    ]
+   }
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c LEFT JOIN stores AS s ON s.city IS NOT DISTINCT FROM c.city ORDER BY c.name, s.store",
+   "note": "LEFT JOIN, IS NOT DISTINCT FROM: every customer has a partner now, Edsger included.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London","London","soho"],
+     ["Alan","London","London","soho"],
+     ["Edsger",null,null,"online"],
+     ["Grace","Paris","Paris","marais"]
+    ]
+   }
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "SELECT c.name, c.city, s.city, s.store FROM customers AS c LEFT JOIN stores AS s ON false ORDER BY c.name, s.store",
+   "note": "LEFT JOIN, ON false: no pair survives, so every customer comes back once, padded. a LEFT JOIN never has fewer rows than its left table.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"name","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"city","type":"text"},
+     {"name":"store","type":"text"}
+    ],
+    "data": [
+     ["Ada","London",null,null],
+     ["Alan","London",null,null],
+     ["Edsger",null,null,null],
+     ["Grace","Paris",null,null]
+    ]
+   }
+  }
+ ]
+}

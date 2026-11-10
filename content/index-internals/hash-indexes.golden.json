@@ -1,0 +1,267 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "07fbc610633cfc62": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_cust_hash ON orders USING hash (customer_id);\nSELECT ntuples, ffactor, maxbucket, highmask, lowmask, ovflpoint, firstfree, nmaps\nFROM hash_metapage_info(get_raw_page('orders_cust_hash', 0));\nSELECT hash_page_type(get_raw_page('orders_cust_hash', b)) AS type, count(*) AS pages\nFROM generate_series(0, pg_relation_size('orders_cust_hash') / 8192 - 1) AS b\nGROUP BY 1 ORDER BY 1;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["ntuples", "float8", 701],
+            ["ffactor", "int4", 23],
+            ["maxbucket", "int8", 20],
+            ["highmask", "int8", 20],
+            ["lowmask", "int8", 20],
+            ["ovflpoint", "int8", 20],
+            ["firstfree", "int8", 20],
+            ["nmaps", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "2ff0db49d6561979",
+          "rows": [
+            ["10000", "307", "32", "63", "31", "6", "2", "1"]
+          ]
+        },
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["type", "text", 25],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 5,
+          "digest": "9176780919ed050f",
+          "rows": [
+            ["bitmap", "1"],
+            ["bucket", "33"],
+            ["metapage", "1"],
+            ["overflow", "1"],
+            ["unused", "31"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "aef984c9f3f09aa0": {
+      "db": "shop",
+      "sql": "SELECT live_items, free_size, hasho_prevblkno, hasho_nextblkno, hasho_bucket, hasho_flag\nFROM hash_page_stats(get_raw_page('orders_cust_hash', 1));\nSELECT itemoffset, ctid, data FROM hash_page_items(get_raw_page('orders_cust_hash', 1)) ORDER BY itemoffset LIMIT 4;\nSELECT customer_id, hashint4(customer_id), hashint4(customer_id) & 63 AS low_bits\nFROM orders WHERE ctid = '(51,31)';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["live_items", "int4", 23],
+            ["free_size", "int4", 23],
+            ["hasho_prevblkno", "int8", 20],
+            ["hasho_nextblkno", "int8", 20],
+            ["hasho_bucket", "int8", 20],
+            ["hasho_flag", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "5b90679fd7fee802",
+          "rows": [
+            ["157", "5008", "32", "4294967295", "0", "2"]
+          ]
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int4", 23],
+            ["ctid", "tid", 27],
+            ["data", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "d001ea84d57d1ed5",
+          "rows": [
+            ["1", "(51,31)", "574373440"],
+            ["2", "(49,65)", "574373440"],
+            ["3", "(46,110)", "574373440"],
+            ["4", "(13,5)", "574373440"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["customer_id", "int4", 23],
+            ["hashint4", "int4", 23],
+            ["low_bits", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "910437e60ae07206",
+          "rows": [
+            ["1631", "574373440", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "6c1fdc8d1d303722": {
+      "db": "shop",
+      "sql": "CREATE TABLE t AS SELECT g AS id, md5(g::text) || md5((g * 7)::text) AS token FROM generate_series(1, 100000) AS g;\nCREATE INDEX t_id_btree ON t (id);\nCREATE INDEX t_id_hash ON t USING hash (id);\nCREATE INDEX t_token_btree ON t (token);\nCREATE INDEX t_token_hash ON t USING hash (token);\nSELECT relname AS index, pg_relation_size(oid) / 8192 AS pages\nFROM pg_class WHERE relname LIKE 't\\_%' AND relkind = 'i'\nORDER BY relname;",
+      "statements": [
+        {
+          "tag": "SELECT 100000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "d6755cfae38fabe0"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "88cd3481351da2f1"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "5f5c10228a940a7a"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "9f84e5a720f8ae6b"
+        },
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["index", "name", 19],
+            ["pages", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "b33b90a72244d88f",
+          "rows": [
+            ["t_id_btree", "276"],
+            ["t_id_hash", "514"],
+            ["t_token_btree", "1169"],
+            ["t_token_hash", "514"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "76b7bcb985ef7326": {
+      "db": "shop",
+      "sql": "CREATE UNIQUE INDEX ON customers USING hash (email);",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "0A000",
+            "message": "access method \"hash\" does not support unique indexes"
+          },
+          "digest": "b8dc53681048f3d5"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "0A000",
+        "message": "access method \"hash\" does not support unique indexes",
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "4da54ace78a0399c": {
+      "db": "shop",
+      "sql": "CREATE TABLE ev AS SELECT g AS id FROM generate_series(1, 100000) AS g;\nCREATE INDEX ev_hash ON ev USING hash (id);\nANALYZE ev;\nEXPLAIN (COSTS OFF) SELECT * FROM ev WHERE id = 42;\nEXPLAIN (COSTS OFF) SELECT * FROM ev WHERE id BETWEEN 42 AND 44;\nEXPLAIN (COSTS OFF) SELECT * FROM ev ORDER BY id LIMIT 3;",
+      "statements": [
+        {
+          "tag": "SELECT 100000",
+          "command": "SELECT",
+          "columns": null,
+          "rowCount": 100000,
+          "digest": "d6755cfae38fabe0"
+        },
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "adb973ce8f391dc8"
+        },
+        {
+          "tag": "ANALYZE",
+          "command": "ANALYZE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "7278dc48321794b7"
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "e2ff109ef6bf1282",
+          "rows": [
+            ["Index Scan using ev_hash on ev"],
+            ["  Index Cond: (id = 42)"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "fd9c33af707a030b",
+          "rows": [
+            ["Seq Scan on ev"],
+            ["  Filter: ((id >= 42) AND (id <= 44))"]
+          ]
+        },
+        {
+          "tag": "EXPLAIN",
+          "command": "EXPLAIN",
+          "columns": [
+            ["QUERY PLAN", "text", 25]
+          ],
+          "rowCount": null,
+          "digest": "ee9f0f6c25a2b215",
+          "rows": [
+            ["Limit"],
+            ["  ->  Sort"],
+            ["        Sort Key: id"],
+            ["        ->  Seq Scan on ev"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

@@ -1,0 +1,138 @@
+import { BagOps } from "@/components/figures/joins/BagOps";
+import { RunPick } from "@/components/figures/joins/RunPick";
+import { planOf, prov, resultOf, runsOf } from "@/components/figures/joins/captured";
+import bags from "./traces/bags.pgtrace.json";
+import shop from "./traces/set-shop.pgtrace.json";
+
+{/* the baskets read traces/bags.scenario.sql, the switch and the plans read
+    traces/set-shop.scenario.sql, both captured on PGlite. */}
+
+export const ada = resultOf(bags, 0);
+export const sean = resultOf(bags, 1);
+export const ops = runsOf(bags, ["UNION | distinct", "UNION | ALL", "INTERSECT | distinct", "INTERSECT | ALL", "EXCEPT | distinct", "EXCEPT | ALL"], 2);
+export const bagSrc = prov(bags);
+export const years = runsOf(shop, ["UNION", "UNION ALL", "INTERSECT", "EXCEPT"], 0);
+export const unionPlan = planOf(shop, 4);
+export const unionAllPlan = planOf(shop, 5);
+export const shopSrc = prov(shop);
+
+<InShort>
+set operations **stack** two results that have the same columns: **UNION** keeps what's in either, **INTERSECT** what's in both, **EXCEPT** what's in the first and not the second. each removes duplicates, unless you add **ALL**, which keeps them and skips the work of removing them.
+
+columns are matched by **position**, not by name.
+</InShort>
+
+## the picture
+
+you know the venn diagram from [the first chapter of this part](/learn/joins/joins-in-one-picture), the one that lies about joins? this is the chapter where it tells the truth. a join puts two tables side by side and makes rows wider. a set operation puts two results on top of each other: rows of the same shape, compared whole.
+
+think of two shopping baskets. UNION ALL tips both into one big basket. UNION does that, then keeps one of each item. INTERSECT keeps the items both baskets have. EXCEPT takes Ada's basket and removes whatever Sean also has.
+
+<Figure wide caption={<>pick an operation, then flip ALL. the table counts copies: m in Ada's basket, n in Sean's, and how many came <C k="live">out</C>. without ALL every item comes out at most once. and the two NULLs count as the same item.</>}>
+<BagOps left={ada} right={sean} runs={ops} names={["ada", "sean"]} trace={bagSrc} />
+</Figure>
+
+look at the NULL row. in a join, `NULL = NULL` isn't true, so two NULLs never meet. set operations don't use `=`. they ask whether two rows are *distinct*, and two NULLs aren't, so UNION keeps one NULL and INTERSECT finds it in both baskets. it's the same rule GROUP BY and DISTINCT use ([NULL and three-valued logic](/learn/basics/null-and-three-valued-logic) lists every place it applies).
+
+## the shop, by year
+
+now real data. which customers ordered in 2025, which in 2026, and how do the two lists combine?
+
+<Figure wide caption={<>switch the operation. UNION finds the 1,962 customers who ever ordered. UNION ALL keeps a row per order, so it counts all 10,000 orders. INTERSECT is the customers who came back, EXCEPT the ones who didn't.</>}>
+<RunPick
+  options={[{ key: "combine with", values: ["UNION", "UNION ALL", "INTERSECT", "EXCEPT"] }]}
+  runs={years}
+  hot={["UNION ALL", "UNION", "INTERSECT", "EXCEPT"]}
+  trace={shopSrc}
+/>
+</Figure>
+
+EXCEPT is the useful one here: 191 customers ordered last year and haven't been back. it's an anti join written as a set operation, and for a single column of keys it reads very naturally. (the `count(*) FROM (...) AS x` wrapper is just there to count, the set operation is the inside.)
+
+<Predict options={["20,000", "10,000", "1,962"]} answer={2}>
+```sql
+SELECT count(*) FROM (
+  SELECT customer_id FROM orders
+  UNION
+  SELECT customer_id FROM orders
+) AS x;
+```
+<Explain>
+UNION removes duplicates from the combined result, including duplicates that were already inside one side. both sides are the same 10,000 customer ids with lots of repeats, and after removing every repeat there's one row per customer who ever ordered: 1,962. UNION isn't "add the second query's new rows to the first", it's "every distinct row in either".
+</Explain>
+</Predict>
+
+```sql run db=shop
+SELECT count(*) FROM (
+  SELECT customer_id FROM orders
+  UNION
+  SELECT customer_id FROM orders
+) AS x;
+```
+
+## UNION ALL is usually what you meant
+
+UNION has to find duplicates, and finding duplicates means hashing or sorting every row. UNION ALL just appends one result to the other:
+
+<Figure wide caption={<>the two plans for the 2025 and 2026 customer lists. UNION adds a HashAggregate on top of the Append, to throw duplicates away. UNION ALL is only the Append.</>}>
+<Tabs>
+<Tab label="UNION">
+<PlanTree plan={unionPlan} />
+</Tab>
+<Tab label="UNION ALL">
+<PlanTree plan={unionAllPlan} />
+</Tab>
+</Tabs>
+</Figure>
+
+so reach for UNION ALL first, and use UNION only when you actually want duplicates gone. two common cases where UNION ALL is simply right:
+
+- **the two sides can't overlap.** last year's orders and this year's orders, active users and deleted users, the `eu` table and the `us` table. there's nothing to deduplicate, and UNION spends a hash table finding that out.
+- **the duplicates are real.** two order lines with the same product and the same quantity are two lines. stack them with UNION and one of them vanishes, and every sum after that is short.
+
+## the rules
+
+both sides need the same number of columns, with types that can be matched up. the result takes its column names from the first query. and columns are paired by position. names don't matter, so this runs without a word of complaint:
+
+```sql run db=shop
+SELECT name, city FROM customers WHERE id = 42
+UNION ALL
+SELECT city, name FROM customers WHERE id = 8
+ORDER BY name;
+```
+
+Dublin is now a name and Sean O'Neil is a city. if the types don't fit, postgres does notice:
+
+```sql run db=shop expect=error
+SELECT id FROM customers
+UNION
+SELECT name FROM customers;
+```
+
+two more:
+
+- a final `ORDER BY` or `LIMIT` applies to the whole combined result, not to the last query. to sort or limit one side, put that side in parentheses.
+- that final ORDER BY can only use the result's column names (the first query's) or positions. a name that only the second query used is an error:
+
+```sql run expect=error
+SELECT 1 AS a
+UNION
+SELECT 2 AS b
+ORDER BY b;
+```
+
+<Gotcha title="DISTINCT you didn't ask for">
+UNION, INTERSECT and EXCEPT all deduplicate, and they deduplicate everything: duplicates between the two sides, and duplicates inside each side. so `SELECT product_id, qty FROM order_items WHERE ... UNION SELECT ...` doesn't just merge two lists, it silently collapses every pair of identical lines into one. if the rows are things you'll count or sum, you want the ALL version, every time.
+</Gotcha>
+
+<Interview q="what's the difference between UNION and UNION ALL?">
+UNION ALL appends the second result to the first and returns everything. UNION does the same and then removes duplicate rows, which costs a hash or a sort over the whole result, and removes duplicates that were inside each side, not just between them. use UNION ALL unless you want that deduplication, because it's faster and it never loses rows that happen to be equal. bonus point: set operations compare rows with "is distinct", not `=`, so two NULLs count as duplicates of each other, and the same goes for INTERSECT and EXCEPT, which each have an ALL form too (INTERSECT ALL keeps the smaller count, EXCEPT ALL subtracts counts).
+</Interview>
+
+<Keylines>
+- set operations stack results: UNION (either), INTERSECT (both), EXCEPT (first, not second).
+- without ALL they remove every duplicate, inside each side too.
+- UNION ALL skips the deduplication: faster, and it never drops equal rows.
+- columns pair up by position. names come from the first query.
+- two NULLs count as the same row here, unlike in a join's ON.
+</Keylines>

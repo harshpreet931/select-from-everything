@@ -1,0 +1,168 @@
+import { TxLanes } from "@/components/figures/transactions/TxLanes";
+import { BackoffLab } from "@/components/figures/transactions/BackoffLab";
+import deposit from "./traces/retry-deposit.pgtrace.json";
+import oncall from "./traces/retry-oncall.pgtrace.json";
+import deadlock from "./traces/deadlock.pgtrace.json";
+
+{/* both retry runs are captured on a real postgres 18.6 server with two sessions
+    (traces/retry-*.scenario.sql); the three error texts come from them and from
+    traces/deadlock. the backoff figure is a model and says so. */}
+
+export const errs = [deposit, oncall, deadlock].map((t) => t.steps.flatMap((s) => [s.error, ...(s.woke ?? []).map((w) => w.error)]).find((e) => e && e.sqlstate !== "25P02"));
+export const errText = errs.map((e) => `ERROR:  ${e.message}\n        SQLSTATE ${e.sqlstate}`).join("\n\n");
+
+<InShort>
+SQLSTATE **40001** (serialization_failure) and **40P01** (deadlock_detected) don't mean your code is wrong. they mean "this transaction didn't happen; run it again". the **retry loop** goes around the **whole transaction**, from BEGIN to COMMIT, including the reads that decided what to write. it caps the attempts, waits a random, growing time between them (**jitter**), and keeps every side effect (emails, payments, HTTP calls) **outside**.
+</InShort>
+
+## the picture
+
+you know the error that shows up in the logs once a week under load, and goes away when you try again by hand? if it's a 40001, that's the design working. REPEATABLE READ and SERIALIZABLE stay correct by failing a transaction when concurrent work would have made it wrong, and they count on you to run it again.
+
+think of a shop till that refuses your card because the price changed while you were in the queue. you don't argue with the till, and you don't re-swipe the same receipt. you go back to the shelf, check the new price, decide again, and queue again.
+
+<Figure wide caption={<>two captured retries. in each, T2's first attempt ends in <C k="dead">40001</C>, it rolls back, and attempt 2 starts from BEGIN with a fresh snapshot. the deposit re-reads 110.00 and writes 130.00. the on-call retry re-checks the rule, sees only ben, and <C k="live">decides differently</C>.</>}>
+<TxLanes
+  option="the transaction"
+  side="db"
+  runs={[
+    { label: "a deposit", trace: deposit, verdict: { ok: true, what: "lost update", text: "attempt 2 read 110.00, wrote 130.00 and committed. both deposits are in." } },
+    { label: "going off call", trace: oncall, verdict: { ok: true, what: "write skew", text: "attempt 2 counted 1 doctor on call, so it changed nothing. ben stays on." } },
+  ]}
+/>
+</Figure>
+
+the second run is the one to remember. a retry is not a replay. the first attempt decided "2 on call, ben can go". that decision was based on data that's no longer true, which is why postgres refused it. the retry runs the *check* again, and the check now says no.
+
+## the errors to catch
+
+these are the ones the postgres manual says to retry, as this book's captures got them:
+
+<Figure caption={<>three captured errors: a write conflict at repeatable read, a read/write cycle at serializable, a deadlock. different messages, two codes. catch the code, never the message.</>}>
+<SqlPanel code={errText} lang="text" nolines file="what the client receives" />
+</Figure>
+
+match on the SQLSTATE: messages vary with the situation (the manual says the 40001 text will vary; it always has the code). the manual also mentions that a unique violation (23505) can be a serialization failure in disguise, say when two transactions pick the same "next free" key. retry that one only when you know that's what it is: a 23505 from a real duplicate will fail every time.
+
+## the loop
+
+the shape, in three languages. the same five rules in each: the whole transaction inside, COMMIT inside (it can fail with 40001 too), only the two codes retried, a cap on attempts, and a random wait that grows.
+
+<Tabs>
+<Tab label="python">
+```python
+import random, time
+import psycopg
+from psycopg import errors
+
+RETRY = (errors.SerializationFailure, errors.DeadlockDetected)  # 40001, 40P01
+
+def in_transaction(conn, work, attempts=5, base=0.05, cap=2.0):
+    for attempt in range(1, attempts + 1):
+        try:
+            with conn.transaction():      # BEGIN ... COMMIT, or ROLLBACK on error
+                return work(conn)         # every read and every write, in here
+        except RETRY:
+            if attempt == attempts:
+                raise
+            time.sleep(random.uniform(0, min(cap, base * 2 ** attempt)))
+
+# conn.isolation_level = psycopg.IsolationLevel.SERIALIZABLE
+# total = in_transaction(conn, lambda c: go_off_call(c, "ben"))
+```
+</Tab>
+<Tab label="java">
+```java
+interface Work<T> { T run(Connection c) throws SQLException; }
+
+static <T> T inTransaction(Connection c, Work<T> work) throws SQLException, InterruptedException {
+    c.setAutoCommit(false);
+    c.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+    for (int attempt = 1; ; attempt++) {
+        try {
+            T result = work.run(c);   // every read and every write
+            c.commit();               // COMMIT can fail with 40001 too
+            return result;
+        } catch (SQLException e) {
+            c.rollback();
+            String state = e.getSQLState();
+            boolean retry = "40001".equals(state) || "40P01".equals(state);
+            if (!retry || attempt == 5) throw e;
+            long ceil = Math.min(2_000, 50L << attempt);
+            Thread.sleep(ThreadLocalRandom.current().nextLong(ceil));
+        }
+    }
+}
+```
+</Tab>
+<Tab label="go">
+```go
+func inTx(ctx context.Context, pool *pgxpool.Pool, work func(pgx.Tx) error) error {
+	opts := pgx.TxOptions{IsoLevel: pgx.Serializable}
+	for attempt := 1; ; attempt++ {
+		// BeginTxFunc: BEGIN, work, COMMIT, or ROLLBACK if anything failed
+		err := pgx.BeginTxFunc(ctx, pool, opts, work)
+		var pgErr *pgconn.PgError
+		retry := errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01")
+		if !retry || attempt == 5 {
+			return err
+		}
+		ceil := min(2*time.Second, 50*time.Millisecond<<attempt)
+		time.Sleep(time.Duration(rand.Int64N(int64(ceil))))
+	}
+}
+```
+</Tab>
+</Tabs>
+
+<Predict question="a loop that catches 40001 and re-runs only the failing UPDATE, without a ROLLBACK first. what does the retried UPDATE get?" options={["UPDATE 1: it works this time", "the same 40001", "25P02: the transaction is aborted"]} answer={2}>
+```python
+cur.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+balance = cur.execute("SELECT balance FROM accounts WHERE id = 1").fetchone()[0]
+for attempt in range(5):
+    try:
+        cur.execute("UPDATE accounts SET balance = %s WHERE id = 1", (balance + 20,))
+        break
+    except errors.SerializationFailure:
+        continue   # ?
+```
+<Explain>
+25P02, "current transaction is aborted, commands ignored until end of transaction block". the 40001 aborted the whole transaction, so every later statement is refused until a ROLLBACK. the deposit capture above sends exactly that retry (its step 6) and gets exactly that error. and even with a ROLLBACK in there, retrying just the UPDATE would write `balance + 20` computed from the stale read. the loop has to start over from the read.
+</Explain>
+</Predict>
+
+## where the loop goes
+
+around the unit of work, in your application's data layer, where the code that decides what to write lives. not around a single statement (the Predict above), not inside a database transaction (postgres can't restart a transaction from the inside), and not in the database: postgres has no automatic retry, because only your code knows how to recompute the decision. the manual says as much.
+
+and keep side effects out of it. the work function may run five times; anything it does outside the database happens five times too:
+
+- **emails, push notifications, webhooks**: send them after the loop returns, or write them to an outbox table inside the transaction and let a worker send them (the outbox row commits or vanishes with the rest).
+- **charging a card, calling another service**: same. or give the call an idempotency key, so the second attempt is recognised as a repeat.
+- **in-memory state**: counters, caches, objects you mutate. build the result inside the function and return it; don't change anything shared until it's committed.
+
+## backoff and jitter
+
+two transactions that collided once will collide again if they retry at the same instant. so wait before retrying, wait longer each time, and make the wait random:
+
+<Figure wide caption={<>a model: four clients fail together at t = 0 and retry. with jitter <C k="hot">none</C>, all four wait the same time and arrive together again, every round. switch to full and roll a few times: they spread out.</>}>
+<BackoffLab />
+</Figure>
+
+cap the attempts (five is plenty for most apps) and let the last failure surface. if retries are routine, something is too contended: a hot row every request touches, or transactions held open too long. the cure is in the data model, not in a bigger retry count.
+
+<Gotcha title="the error can come from COMMIT">
+at SERIALIZABLE, the 40001 often arrives at COMMIT, after every statement succeeded ([write skew](/learn/transactions/write-skew) shows it). code that treats COMMIT as a formality (not catching its errors, or committing in a `finally`) will report success for a transaction that was rolled back. the COMMIT belongs inside the loop, and nothing counts as done until it returns.
+</Gotcha>
+
+<Interview q="your app occasionally gets SQLSTATE 40001. what do you do?">
+treat it as a request to retry, not a bug. roll back and re-run the entire transaction from the beginning, including the reads, so the decision is made again on fresh data. retry only 40001 and 40P01 (deadlock), cap the attempts, back off with random jitter, and make sure the COMMIT is inside the retried block, since serializable failures often surface at commit. keep side effects (emails, external calls) outside the loop or behind an outbox or idempotency key, because the body may run more than once. bonus point: if 40001s are frequent, look for a hot row or long transactions instead of raising the retry cap.
+</Interview>
+
+<Keylines>
+- 40001 and 40P01 mean "nothing happened, try again". catch the code, not the message.
+- retry the whole transaction, reads included. a retry decides again, it doesn't replay.
+- COMMIT goes inside the loop: it can fail with 40001.
+- cap the attempts, back off, add jitter.
+- the body may run several times. side effects go after the commit, or into an outbox.
+</Keylines>

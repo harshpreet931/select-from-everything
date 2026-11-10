@@ -1,0 +1,261 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/timestamptz.scenario.sql",
+ "title": "one signup instant under four TimeZone settings, the paris clock change, and AT TIME ZONE both ways",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nSELECT created_at FROM customers WHERE id = 12",
+   "note": "with TimeZone = UTC, the instant prints as itself.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"created_at","type":"timestamptz"}],
+    "data": [["2026-03-29 01:30:00+00"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SET TimeZone = 'Asia/Kolkata';\nSELECT created_at FROM customers WHERE id = 12",
+   "note": "the same stored value, printed for india: five and a half hours later on the clock.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"created_at","type":"timestamptz"}],
+    "data": [["2026-03-29 07:00:00+05:30"]]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SET TimeZone = 'Europe/Paris';\nSELECT created_at FROM customers WHERE id = 12",
+   "note": "printed for paris: it's 03:30, half an hour after the clocks jumped from 02:00 to 03:00.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"created_at","type":"timestamptz"}],
+    "data": [["2026-03-29 03:30:00+02"]]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SET TimeZone = 'America/New_York';\nSELECT created_at FROM customers WHERE id = 12",
+   "note": "printed for new york: still the evening before.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"created_at","type":"timestamptz"}],
+    "data": [["2026-03-28 21:30:00-04"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nSELECT z.zone, t AS utc, to_char(t AT TIME ZONE z.zone, 'HH24:MI') AS wall\nFROM (VALUES (1, 'UTC'), (2, 'Asia/Kolkata'), (3, 'Europe/Paris'), (4, 'America/New_York')) AS z (n, zone)\nCROSS JOIN generate_series(timestamptz '2026-03-28 21:00+00', timestamptz '2026-03-29 05:00+00', interval '1 hour') AS t\nORDER BY z.n, t",
+   "note": "hourly instants around the signup, and the wall clock each zone shows at each one.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 36,
+    "columns": [{"name":"zone","type":"text"},{"name":"utc","type":"timestamptz"},{"name":"wall","type":"text"}],
+    "data": [
+     ["UTC","2026-03-28 21:00:00+00","21:00"],
+     ["UTC","2026-03-28 22:00:00+00","22:00"],
+     ["UTC","2026-03-28 23:00:00+00","23:00"],
+     ["UTC","2026-03-29 00:00:00+00","00:00"],
+     ["UTC","2026-03-29 01:00:00+00","01:00"],
+     ["UTC","2026-03-29 02:00:00+00","02:00"],
+     ["UTC","2026-03-29 03:00:00+00","03:00"],
+     ["UTC","2026-03-29 04:00:00+00","04:00"],
+     ["UTC","2026-03-29 05:00:00+00","05:00"],
+     ["Asia/Kolkata","2026-03-28 21:00:00+00","02:30"],
+     ["Asia/Kolkata","2026-03-28 22:00:00+00","03:30"],
+     ["Asia/Kolkata","2026-03-28 23:00:00+00","04:30"],
+     ["Asia/Kolkata","2026-03-29 00:00:00+00","05:30"],
+     ["Asia/Kolkata","2026-03-29 01:00:00+00","06:30"],
+     ["Asia/Kolkata","2026-03-29 02:00:00+00","07:30"],
+     ["Asia/Kolkata","2026-03-29 03:00:00+00","08:30"],
+     ["Asia/Kolkata","2026-03-29 04:00:00+00","09:30"],
+     ["Asia/Kolkata","2026-03-29 05:00:00+00","10:30"],
+     ["Europe/Paris","2026-03-28 21:00:00+00","22:00"],
+     ["Europe/Paris","2026-03-28 22:00:00+00","23:00"],
+     ["Europe/Paris","2026-03-28 23:00:00+00","00:00"],
+     ["Europe/Paris","2026-03-29 00:00:00+00","01:00"],
+     ["Europe/Paris","2026-03-29 01:00:00+00","03:00"],
+     ["Europe/Paris","2026-03-29 02:00:00+00","04:00"],
+     ["Europe/Paris","2026-03-29 03:00:00+00","05:00"],
+     ["Europe/Paris","2026-03-29 04:00:00+00","06:00"],
+     ["Europe/Paris","2026-03-29 05:00:00+00","07:00"],
+     ["America/New_York","2026-03-28 21:00:00+00","17:00"],
+     ["America/New_York","2026-03-28 22:00:00+00","18:00"],
+     ["America/New_York","2026-03-28 23:00:00+00","19:00"],
+     ["America/New_York","2026-03-29 00:00:00+00","20:00"],
+     ["America/New_York","2026-03-29 01:00:00+00","21:00"],
+     ["America/New_York","2026-03-29 02:00:00+00","22:00"],
+     ["America/New_York","2026-03-29 03:00:00+00","23:00"],
+     ["America/New_York","2026-03-29 04:00:00+00","00:00"],
+     ["America/New_York","2026-03-29 05:00:00+00","01:00"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SET TimeZone = 'Europe/Paris';\nSELECT w AS typed, w::timestamptz AS stored, w::timestamptz AT TIME ZONE 'UTC' AS in_utc\nFROM (VALUES ('2026-03-29 01:30'), ('2026-03-29 02:00'), ('2026-03-29 02:30'), ('2026-03-29 03:00'), ('2026-03-29 03:30')) AS v (w)\nORDER BY w",
+   "note": "paris wall-clock times typed in on the morning of the change. 02:00 and 02:30 never happened there.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 5,
+    "columns": [
+     {"name":"typed","type":"text"},
+     {"name":"stored","type":"timestamptz"},
+     {"name":"in_utc","type":"timestamp"}
+    ],
+    "data": [
+     ["2026-03-29 01:30","2026-03-29 01:30:00+01","2026-03-29 00:30:00"],
+     ["2026-03-29 02:00","2026-03-29 03:00:00+02","2026-03-29 01:00:00"],
+     ["2026-03-29 02:30","2026-03-29 03:30:00+02","2026-03-29 01:30:00"],
+     ["2026-03-29 03:00","2026-03-29 03:00:00+02","2026-03-29 01:00:00"],
+     ["2026-03-29 03:30","2026-03-29 03:30:00+02","2026-03-29 01:30:00"]
+    ]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nSELECT timestamptz '2026-03-29 01:30+00' AT TIME ZONE 'Asia/Kolkata' AS result,\n       pg_typeof(timestamptz '2026-03-29 01:30+00' AT TIME ZONE 'Asia/Kolkata') AS type",
+   "note": "timestamptz AT TIME ZONE: an instant in, the wall clock in that zone out, as a plain timestamp.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"timestamp"},{"name":"type","type":"regtype"}],
+    "data": [["2026-03-29 07:00:00","timestamp without time zone"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nSELECT timestamp '2026-03-29 01:30' AT TIME ZONE 'Asia/Kolkata' AS result,\n       pg_typeof(timestamp '2026-03-29 01:30' AT TIME ZONE 'Asia/Kolkata') AS type",
+   "note": "timestamp AT TIME ZONE: a wall clock in, read as that zone's, an instant out.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"timestamptz"},{"name":"type","type":"regtype"}],
+    "data": [["2026-03-28 20:00:00+00","timestamp with time zone"]]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nSELECT timestamptz '2026-03-29 01:30+00'::timestamp AS result,\n       pg_typeof(timestamptz '2026-03-29 01:30+00'::timestamp) AS type",
+   "note": "timestamptz to timestamp: the wall clock in the session's zone, and the zone is dropped.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"timestamp"},{"name":"type","type":"regtype"}],
+    "data": [["2026-03-29 01:30:00","timestamp without time zone"]]
+   }
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "SET TimeZone = 'UTC';\nSELECT timestamp '2026-03-29 01:30'::timestamptz AS result,\n       pg_typeof(timestamp '2026-03-29 01:30'::timestamptz) AS type",
+   "note": "timestamp to timestamptz: the wall clock read as the session's zone.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"timestamptz"},{"name":"type","type":"regtype"}],
+    "data": [["2026-03-29 01:30:00+00","timestamp with time zone"]]
+   }
+  }
+ ],
+ "db": "shop"
+}

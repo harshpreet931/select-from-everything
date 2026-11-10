@@ -1,0 +1,113 @@
+import { UndoChain } from "@/components/figures/mvcc/UndoChain";
+import { Provenance } from "@/components/figures/kit/Provenance";
+
+<InShort>
+postgres keeps old row versions **in the table**. InnoDB (mysql) and oracle **update in place** and keep the old values in an **undo log** instead: a reader that needs an older version rebuilds it by applying undo. both give readers a snapshot without blocking writers. they pay in opposite places: postgres in **VACUUM** and bloat, undo designs in **undo space**, reconstruction work for old readers, and expensive **rollbacks**.
+</InShort>
+
+## the picture
+
+you know how [an UPDATE in postgres is an insert](/learn/mvcc/update-is-insert), and the old version sits in the table until [VACUUM](/learn/mvcc/vacuum) removes it? the obvious question is: why not just change the row, and keep the old value somewhere off to the side? that's the other way to build MVCC, and it's what InnoDB and oracle do.
+
+think of two ways to keep a document's history. one keeps every printed draft in the same folder, newest on top, and someone clears out the old drafts later (postgres). the other keeps only the latest draft in the folder, plus a notebook of edits; to read yesterday's version you take today's and undo the edits backwards (undo logs). the folder stays thin, but reading old versions costs work, and the notebook can't be thrown away while anyone still wants yesterday.
+
+<Figure wide caption={<>step through: one row, updated twice, then read by an old snapshot, then cleaned up. postgres adds a version per update; InnoDB overwrites the row and chains <C k="meta">undo records</C> behind its roll pointer. the old reader gets <C k="live">100</C> either way, by very different amounts of work.</>}>
+<UndoChain />
+</Figure>
+
+## how InnoDB does it
+
+according to the [mysql 8.4 manual](https://dev.mysql.com/doc/refman/8.4/en/innodb-multi-versioning.html), every InnoDB row carries hidden fields: a 6-byte `DB_TRX_ID`, the last transaction that inserted or updated it, and a 7-byte `DB_ROLL_PTR`, the roll pointer, which points at an undo log record holding what the row looked like before. a DELETE is an update that sets a deleted bit. the rows live in the clustered index (the primary key's b-tree), and they're updated in place.
+
+a consistent read walks back from the current row:
+
+<Figure caption={<>an InnoDB consistent read, as the mysql 8.4 manual describes it. hover a stage. the work grows with how many changes happened since the reader's snapshot, not with the size of the row.</>}>
+<Flow stages={[
+  { label: "read the row", sub: "clustered index", note: "the current version, in place, with its DB_TRX_ID." },
+  { label: "visible to me?", sub: "read view", note: "compare DB_TRX_ID with the transactions this reader's snapshot (its read view) counts as done. if visible, that's the answer." },
+  { label: "apply undo", sub: "DB_ROLL_PTR", note: "if not, follow the roll pointer to the undo record and rebuild the previous version in a private copy. then ask again." },
+  { label: "repeat", sub: "back in time", note: "until a version is visible, or there's nothing older: the row didn't exist yet for this reader." },
+]} />
+<Provenance drawn="from the mysql 8.4 manual, innodb multi-versioning" />
+</Figure>
+
+the manual splits undo into two kinds. insert undo is only needed for rollback and is discarded at commit. update undo is also needed for consistent reads, so it can only be discarded once no snapshot could need it. a background **purge** does that, and only then are delete-marked rows and their index records physically removed ([purge configuration](https://dev.mysql.com/doc/refman/8.4/en/innodb-purge-configuration.html)). the queue of undo waiting for purge is the **history list length** in `SHOW ENGINE INNODB STATUS`.
+
+secondary indexes work differently from the clustered one: their records have no hidden columns and aren't updated in place. changing an indexed column delete-marks the old entry and inserts a new one, and purge removes the old one later. when a secondary index page has been touched by a newer transaction, a read has to go to the clustered index to check the row, so covering index reads are skipped there.
+
+## how oracle does it
+
+the [oracle database concepts guide](https://docs.oracle.com/en/database/oracle/oracle-database/23/cncpt/data-concurrency-and-consistency.html) describes the same idea at the level of whole blocks. every change writes undo entries into undo segments. a query notes the SCN (system change number) when it starts, and for every block that changed after that, the database copies the current block into a new buffer and applies undo to it until it reflects that SCN: a consistent read clone. read committed does this per statement, serializable per transaction, the same split as postgres's [snapshots](/learn/mvcc/snapshots) and [isolation levels](/learn/transactions/isolation-levels).
+
+<Figure caption={<>an oracle consistent read, as the concepts guide describes it. hover a stage. the <C k="dead">last stage</C> is the one postgres can't hit: its old versions stay in the table until nobody needs them.</>}>
+<Flow stages={[
+  { label: "query starts", sub: "note the SCN", note: "the statement (or, at serializable, the transaction) records the SCN it reads as of." },
+  { label: "read a block", sub: "current version", note: "blocks come from the buffer cache as they are now, with every change made since." },
+  { label: "CR clone", sub: "apply undo", note: "for a block changed after the query's SCN, copy it into a new buffer and apply undo until it matches that SCN." },
+  { label: "undo gone?", sub: "snapshot too old", note: "if the undo it needs has been overwritten by newer transactions, the query fails with snapshot too old." },
+]} />
+<Provenance drawn="from the oracle database 23 concepts guide, data concurrency and consistency" />
+</Figure>
+
+the catch is in the same guide: undo space gets reused. a long-running report can need undo that a newer transaction has already overwritten, and then it fails with a **snapshot too old** error. an undo retention period tells the database how long to try to keep old undo around.
+
+## what each design pays
+
+| | postgres (versions in the heap) | undo logs (InnoDB, oracle) |
+| --- | --- | --- |
+| an UPDATE writes | a whole new tuple, plus an entry in every index unless it's [HOT](/learn/mvcc/hot-updates) | the changed row in place, plus an undo record |
+| the table holds | every version not yet vacuumed | only the newest version (plus delete-marked rows until purge) |
+| an old reader | checks each version's xmin and xmax, picks one | rebuilds the version by applying undo, one change at a time |
+| ROLLBACK | flips two bits in the commit log, instantly | applies undo to put every changed row back |
+| crash recovery | redo only: in-flight transactions' versions just stay invisible | redo, then roll back the transactions that were in flight ([InnoDB recovery](https://dev.mysql.com/doc/refman/8.4/en/innodb-recovery.html)) |
+| cleanup | VACUUM: scan heap and indexes for dead tuples | purge: discard undo, remove delete-marked rows |
+| a long reader holds back | [cleanup of everything](/learn/mvcc/xmin-horizon): bloat in every table | undo discard: the undo grows, or (oracle) the reader fails |
+
+rollback is the row people forget. postgres's is free, and it leaves garbage. watch it in the browser:
+
+```sql run db=lab
+SELECT pg_relation_size('notes') AS bytes;
+BEGIN;
+UPDATE notes SET body = body || '!';
+ROLLBACK;
+SELECT pg_relation_size('notes') AS bytes;
+SELECT pg_xact_status(t_xmin::text::xid8) AS written_by, count(*) AS tuples
+FROM generate_series(0, pg_relation_size('notes') / 8192 - 1) AS b,
+     heap_page_items(get_raw_page('notes', b::int))
+WHERE lp_flags = 1
+GROUP BY 1 ORDER BY 1;
+```
+
+the ROLLBACK itself did nothing to the table. 400 rows updated, rolled back, and the file is bigger than before, holding 400 versions written by an aborted transaction next to the 400 originals. no reader will ever see them; VACUUM will free them. an undo-log engine would instead spend the ROLLBACK walking its undo and restoring 400 rows, and the table would end up as it started. a big transaction that fails late is cheap to abort in postgres and expensive in InnoDB, and the same goes for the in-flight transactions after a crash: the mysql manual warns that rolling back an interrupted transaction can take three or four times as long as it had been running.
+
+<Predict question="a two-hour report runs while the table it reads gets heavy updates. which can happen?" options={["postgres: error", "oracle: error", "neither ever errors"]} answer={1}>
+```sql
+-- session 1, for two hours:
+SELECT ... FROM orders ...;
+-- meanwhile, everyone else:
+UPDATE orders SET ...;   -- all day
+```
+<Explain>
+oracle can fail the report with "snapshot too old", if the undo it needs has been overwritten. postgres keeps every old version in the table until no snapshot needs it, so the report always finishes, and the table bloats instead: VACUUM can't remove anything newer than the report's snapshot. postgres used to have an opt-in "snapshot too old" too (old_snapshot_threshold); it was removed in postgres 17 (<a href="https://www.postgresql.org/docs/release/17.0/">release notes</a>).
+</Explain>
+</Predict>
+
+## so which is better?
+
+neither, which is why both exist. undo designs keep tables compact and stable in size, keep old versions out of the table entirely, and an update only touches the secondary indexes whose columns changed. they pay with reconstruction work for long reads, undo space that has to be sized and can run out, purge lag under heavy write load, and slow rollbacks and recoveries of big transactions. postgres pays with dead tuples in tables and indexes, VACUUM as a permanent background job, index entries for non-HOT updates, and [wraparound](/learn/mvcc/freezing-and-wraparound) management, and gets instant rollback, simple crash recovery, and readers that never fail for lack of history. a fuller side by side of the two engines is [postgres vs InnoDB](/learn/deep-dives/postgres-vs-innodb).
+
+<Gotcha title="the long transaction is the enemy either way">
+on postgres it holds back vacuum and the tables bloat. on InnoDB, the manual's own advice is to commit regularly, including read-only transactions, or the update undo can't be discarded and the rollback segment grows until it fills its undo tablespace. on oracle it risks "snapshot too old". different symptoms, same cause: a reader that needs a very old view of the data.
+</Gotcha>
+
+<Interview q="how does MVCC differ between postgres and mysql (InnoDB)?">
+postgres stores every row version in the heap: an UPDATE inserts a new tuple and marks the old one with xmax, readers pick the visible version by xmin/xmax and their snapshot, and VACUUM later removes dead versions and their index entries. InnoDB updates rows in place in the clustered index and writes the previous values to undo logs; each row has DB_TRX_ID and DB_ROLL_PTR, and a consistent read follows the roll pointer, applying undo until it reaches a version its read view can see. purge discards undo no one needs. trade-offs: postgres has cheap rollback and recovery but bloat and vacuum; InnoDB has compact tables but undo growth, reconstruction cost for long readers, and costly rollbacks. bonus point: oracle works like InnoDB at block level, and can fail long queries with "snapshot too old" when undo is reused.
+</Interview>
+
+<Keylines>
+- postgres: versions in the table, VACUUM cleans up. InnoDB and oracle: update in place, old values in undo.
+- an undo reader rebuilds old versions by applying undo, one change at a time.
+- postgres rollback is two bits in the commit log; an undo engine applies its undo to put rows back.
+- long readers cost postgres bloat, and cost undo designs undo space or a "snapshot too old" error.
+- neither is free. they just send the bill to different places.
+</Keylines>

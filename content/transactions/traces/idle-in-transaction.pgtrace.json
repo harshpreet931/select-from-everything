@@ -1,0 +1,159 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/idle-in-transaction.scenario.sql",
+ "title": "idle in transaction: T1 updates a row and goes quiet, T2 waits behind it until the server ends T1's session",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23210088},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nUPDATE accounts SET balance = balance - 10.00 WHERE id = 1",
+   "note": "T1 opens a transaction and takes 10.00 from alice. then the app goes off to call a payment API, and doesn't come back.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "obs",
+   "sql": "SELECT application_name AS session, state, wait_event_type\nFROM pg_stat_activity\nWHERE application_name IN ('T1', 'T2')\nORDER BY 1",
+   "note": "the server's view: T1 is idle in transaction. it isn't running anything, but it still holds alice's row.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"session","type":"text"},{"name":"state","type":"text"},{"name":"wait_event_type","type":"text"}],
+    "data": [["T1","idle in transaction","Client"],["T2","idle","Client"]]
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T2",
+   "sql": "UPDATE accounts SET balance = balance + 5.00 WHERE id = 1",
+   "note": "T2 wants to add 5.00 to alice, and waits for T1.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"tuple","target":"accounts (0,1)","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "obs",
+   "sql": "SELECT application_name AS session, state, wait_event_type\nFROM pg_stat_activity\nWHERE application_name IN ('T1', 'T2')\nORDER BY 1",
+   "note": "now T2 is active, waiting on a lock, behind a session that is doing nothing at all.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 2,
+    "columns": [{"name":"session","type":"text"},{"name":"state","type":"text"},{"name":"wait_event_type","type":"text"}],
+    "data": [["T1","idle in transaction","Client"],["T2","active","Lock"]]
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T1","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts_pkey","mode":"RowExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"tuple","target":"accounts (0,1)","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "obs",
+   "sql": "SELECT pg_sleep(3)",
+   "note": "T1's session has a 2 s limit on sitting idle inside a transaction. a few seconds later the server ends the session, rolls its transaction back, and T2 gets the row.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_sleep","type":"void"}],"data":[[""]]},
+   "woke": [{"session":"T2","step":2,"result":{"command":"UPDATE","rows":1,"columns":[],"data":[]}}],
+   "locks": [],
+   "log": ["FATAL:  terminating connection due to idle-in-transaction timeout"]
+  },
+  {
+   "i": 5,
+   "session": "obs",
+   "sql": "SELECT application_name AS session, state\nFROM pg_stat_activity\nWHERE application_name IN ('T1', 'T2')\nORDER BY 1",
+   "note": "T1 is gone from pg_stat_activity.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"session","type":"text"},{"name":"state","type":"text"}],
+    "data": [["T2","idle"]]
+   },
+   "locks": []
+  },
+  {
+   "i": 6,
+   "session": "T2",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "alice has 105.00: T2's 5.00 went in, and T1's withdrawal never happened.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["105.00"]]},
+   "locks": []
+  }
+ ]
+}

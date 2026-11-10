@@ -1,0 +1,75 @@
+{
+ "v": 1,
+ "scenario": "content/storage/traces/toast-sizes.scenario.sql",
+ "title": "one text column, values from 100 bytes to 1 MB, compressible and not",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"},
+  "notes": {"kind":"table","am":"heap","columns":[{"name":"id","type":"int4"},{"name":"body","type":"text"}]},
+  "notes_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"notes"},
+  "docs": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"kind","type":"text"},{"name":"body","type":"text"}]
+  },
+  "docs_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"docs"}
+ },
+ "base": {"xid":757,"lsn":27400608},
+ "setup": "CREATE TABLE docs (id int PRIMARY KEY, kind text, body text);\nINSERT INTO docs SELECT n, 'repetitive', repeat('a', n)\nFROM unnest(ARRAY[100, 1000, 2000, 2100, 4000, 10000, 100000, 1000000]) AS n ORDER BY n;\nINSERT INTO docs SELECT -n, 'random', (SELECT string_agg(md5(g::text), '' ORDER BY g) FROM generate_series(1, n / 32) AS g)\nFROM unnest(ARRAY[96, 992, 2016, 2112, 4000, 10016, 100000, 1000000]) AS n ORDER BY n;\n-- the toast table's name has the table's oid in it, which differs between engines, so look it up\nCREATE FUNCTION toast_chunks(v text) RETURNS bigint LANGUAGE plpgsql AS $f$\nDECLARE n bigint;\nBEGIN\n  EXECUTE format('SELECT count(*) FROM %s WHERE chunk_id = $1',\n                 (SELECT reltoastrelid::regclass FROM pg_class WHERE relname = 'docs'))\n    INTO n USING pg_column_toast_chunk_id(v);\n  RETURN n;\nEND $f$;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT d.kind, octet_length(d.body) AS bytes, pg_column_size(d.body) AS stored,\n       pg_column_compression(d.body) AS method, h.lp_len AS tuple_len,\n       toast_chunks(d.body) AS chunks\nFROM docs d\nJOIN heap_page_items(get_raw_page('docs', 0)) h ON h.t_ctid = d.ctid\nORDER BY d.kind, octet_length(d.body)",
+   "note": "how each value was stored: its size, what it takes in the row, how it was compressed, and how many toast chunks it became.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 16,
+    "columns": [
+     {"name":"kind","type":"text"},
+     {"name":"bytes","type":"int4"},
+     {"name":"stored","type":"int4"},
+     {"name":"method","type":"text"},
+     {"name":"tuple_len","type":"int2"},
+     {"name":"chunks","type":"int8"}
+    ],
+    "data": [
+     ["random","96","97",null,"132","0"],
+     ["random","992","996",null,"1032","0"],
+     ["random","2016","2016",null,"53","2"],
+     ["random","2112","2112",null,"53","2"],
+     ["random","4000","4000",null,"53","3"],
+     ["random","10016","10016",null,"53","6"],
+     ["random","100000","100000",null,"53","51"],
+     ["random","1000000","1000000",null,"53","502"],
+     ["repetitive","100","101",null,"140","0"],
+     ["repetitive","1000","1004",null,"1044","0"],
+     ["repetitive","2000","35","pglz","75","0"],
+     ["repetitive","2100","35","pglz","75","0"],
+     ["repetitive","4000","56","pglz","96","0"],
+     ["repetitive","10000","125","pglz","165","0"],
+     ["repetitive","100000","1156","pglz","1196","0"],
+     ["repetitive","1000000","11452","pglz","57","6"]
+    ]
+   }
+  }
+ ],
+ "db": "lab"
+}

@@ -1,0 +1,103 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "8f3e60278cf8a293": {
+      "db": "lab",
+      "sql": "SELECT datname, datfrozenxid, age(datfrozenxid) FROM pg_database ORDER BY datname;\nSELECT relname, relfrozenxid, age(relfrozenxid) FROM pg_class\nWHERE relname IN ('accounts', 'notes') ORDER BY relname;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["datname", "name", 19],
+            ["datfrozenxid", "xid", 28],
+            ["age", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "60356589aa34e7cf",
+          "rows": [
+            ["postgres", "744", "9"],
+            ["template0", "744", "9"],
+            ["template1", "744", "9"]
+          ]
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["relname", "name", 19],
+            ["relfrozenxid", "xid", 28],
+            ["age", "int4", 23]
+          ],
+          "rowCount": 2,
+          "digest": "5959353d2dffbbb6",
+          "rows": [
+            ["accounts", "752", "1"],
+            ["notes", "752", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "363d2ef39a3641ba": {
+      "db": "lab",
+      "sql": "VACUUM (FREEZE) accounts;\nSELECT lp, t_xmin, t_infomask, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).combined_flags\nFROM heap_page_items(get_raw_page('accounts', 0)) ORDER BY lp;\nSELECT relfrozenxid, age(relfrozenxid) FROM pg_class WHERE relname = 'accounts';\nSELECT all_visible, all_frozen FROM pg_visibility_map('accounts');",
+      "statements": [
+        {
+          "tag": "VACUUM",
+          "command": "VACUUM",
+          "columns": null,
+          "rowCount": null,
+          "digest": "b40b2a8273442d58"
+        },
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmin", "xid", 28],
+            ["t_infomask", "int4", 23],
+            ["combined_flags", "text[]", 1009]
+          ],
+          "rowCount": 3,
+          "digest": "3293a66d5d2c6d4e",
+          "rows": [
+            ["1", "752", "2818", "{HEAP_XMIN_FROZEN}"],
+            ["2", "752", "2818", "{HEAP_XMIN_FROZEN}"],
+            ["3", "752", "2818", "{HEAP_XMIN_FROZEN}"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["relfrozenxid", "xid", 28],
+            ["age", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "9c38f0e65366f79b",
+          "rows": [
+            ["753", "0"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["all_visible", "bool", 16],
+            ["all_frozen", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "ec9e52d632ec8e12",
+          "rows": [
+            ["t", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

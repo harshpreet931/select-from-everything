@@ -1,0 +1,297 @@
+{
+ "v": 1,
+ "scenario": "content/locking/traces/lock-queue.scenario.sql",
+ "title": "the lock queue: a long read, an ALTER TABLE behind it, and every reader behind that",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1","T2","T3","T4"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"owner","type":"text"},
+    {"name":"balance","type":"numeric"},
+    {"name":"note","type":"text"},
+    {"name":"memo","type":"text"}
+   ]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23210088},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "BEGIN;\nSELECT sum(balance) FROM accounts",
+   "note": "T1 is a report. it opens a transaction and reads accounts, so it holds ACCESS SHARE on the table until it ends.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"sum","type":"numeric"}],"data":[["200.00"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 1,
+   "session": "T2",
+   "sql": "ALTER TABLE accounts ADD COLUMN note text",
+   "note": "T2 is a migration. ALTER TABLE ... ADD COLUMN wants ACCESS EXCLUSIVE, which conflicts with T1's ACCESS SHARE, so it queues.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false}
+   ]
+  },
+  {
+   "i": 2,
+   "session": "T3",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "T3 is an ordinary read. ACCESS SHARE is compatible with T1's, but a lock request also has to get past everyone already queued, and T2's ACCESS EXCLUSIVE is in the way. T3 queues behind T2.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T2"],
+    "lock": {"session":"T3","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false},
+    {"session":"T3","type":"virtualxid","target":"6/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T3","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 3,
+   "session": "T4",
+   "sql": "SELECT balance FROM accounts WHERE id = 2",
+   "note": "T4, another read, queues too. from here on, every query that touches accounts waits.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T2"],
+    "lock": {"session":"T4","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false},
+    {"session":"T3","type":"virtualxid","target":"6/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T3","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false},
+    {"session":"T4","type":"virtualxid","target":"7/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T4","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 4,
+   "session": "obs",
+   "sql": "SELECT a.application_name AS session, l.mode, l.granted,\n       ARRAY(SELECT b.application_name FROM pg_stat_activity b\n             WHERE b.pid = ANY (pg_blocking_pids(a.pid))\n             ORDER BY b.application_name) AS blocked_by\nFROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid\nWHERE l.locktype = 'relation' AND l.relation = 'accounts'::regclass\nORDER BY l.granted DESC, l.waitstart NULLS FIRST, a.application_name",
+   "note": "who blocks whom, from pg_locks and pg_blocking_pids. T2 is blocked by T1 (a lock T1 holds), T3 and T4 by T2 (a lock T2 is only waiting for).",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"session","type":"text"},
+     {"name":"mode","type":"text"},
+     {"name":"granted","type":"bool"},
+     {"name":"blocked_by","type":"_text"}
+    ],
+    "data": [
+     ["T1","AccessShareLock","t","{}"],
+     ["T2","AccessExclusiveLock","f","{T1}"],
+     ["T3","AccessShareLock","f","{T2}"],
+     ["T4","AccessShareLock","f","{T2}"]
+    ]
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"759","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false},
+    {"session":"T3","type":"virtualxid","target":"6/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T3","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false},
+    {"session":"T4","type":"virtualxid","target":"7/4","mode":"ExclusiveLock","granted":true},
+    {"session":"T4","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "the report finishes. T2 gets ACCESS EXCLUSIVE, adds the column, and lets go. then T3 and T4 get their reads.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "woke": [
+    {"session":"T2","step":1,"result":{"command":"ALTER TABLE","rows":null,"columns":[],"data":[]}},
+    {
+     "session": "T3",
+     "step": 2,
+     "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]}
+    },
+    {
+     "session": "T4",
+     "step": 3,
+     "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]}
+    }
+   ],
+   "locks": []
+  },
+  {
+   "i": 6,
+   "session": "obs",
+   "sql": "SELECT 'round two' AS round",
+   "note": "round two: the same migration, with lock_timeout.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"round","type":"text"}],"data":[["round two"]]},
+   "locks": []
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "BEGIN;\nSELECT sum(balance) FROM accounts",
+   "note": "T1 starts another long report.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"sum","type":"numeric"}],"data":[["200.00"]]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 8,
+   "session": "T2",
+   "sql": "SET lock_timeout = '2s'",
+   "note": "this time the migration sets lock_timeout first.",
+   "status": "ok",
+   "result": {"command":"SET","rows":null,"columns":[],"data":[]},
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 9,
+   "session": "T2",
+   "sql": "ALTER TABLE accounts ADD COLUMN memo text",
+   "note": "T2 queues for ACCESS EXCLUSIVE again, but now it will give up after two seconds.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T1"],
+    "lock": {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/6","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false}
+   ]
+  },
+  {
+   "i": 10,
+   "session": "T3",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "T3 queues behind T2, like before.",
+   "status": "blocked",
+   "blocked": {
+    "by": ["T2"],
+    "lock": {"session":"T3","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false}
+   },
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"transactionid","target":"760","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"virtualxid","target":"5/6","mode":"ExclusiveLock","granted":true},
+    {"session":"T2","type":"relation","target":"accounts","mode":"AccessExclusiveLock","granted":false},
+    {"session":"T3","type":"virtualxid","target":"6/5","mode":"ExclusiveLock","granted":true},
+    {"session":"T3","type":"relation","target":"accounts","mode":"AccessShareLock","granted":false}
+   ]
+  },
+  {
+   "i": 11,
+   "session": "obs",
+   "sql": "SELECT pg_sleep(2)",
+   "note": "two seconds later: T2 gave up with 55P03 and left the queue, so T3 got its ACCESS SHARE and finished. the report never noticed.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"pg_sleep","type":"void"}],"data":[[""]]},
+   "woke": [
+    {"session":"T2","step":9,"error":{"sqlstate":"55P03","message":"canceling statement due to lock timeout"}},
+    {
+     "session": "T3",
+     "step": 10,
+     "result": {"command":"SELECT","rows":1,"columns":[{"name":"balance","type":"numeric"}],"data":[["100.00"]]}
+    }
+   ],
+   "locks": [
+    {"session":"T1","type":"relation","target":"accounts","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"relation","target":"accounts_pkey","mode":"AccessShareLock","granted":true},
+    {"session":"T1","type":"virtualxid","target":"4/5","mode":"ExclusiveLock","granted":true}
+   ]
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "the report ends.",
+   "status": "ok",
+   "result": {"command":"COMMIT","rows":null,"columns":[],"data":[]},
+   "locks": []
+  },
+  {
+   "i": 13,
+   "session": "T2",
+   "sql": "ALTER TABLE accounts ADD COLUMN memo text",
+   "note": "the retry: nothing holds accounts now, so the ALTER gets its lock at once.",
+   "status": "ok",
+   "result": {"command":"ALTER TABLE","rows":null,"columns":[],"data":[]},
+   "locks": []
+  }
+ ]
+}

@@ -1,0 +1,194 @@
+import { TableSteps } from "@/components/figures/design/TableSteps";
+import { RangeLine } from "@/components/figures/design/RangeLine";
+import { framesOf } from "@/components/figures/design/frames";
+import { prov, resultOf } from "@/lib/db/captured";
+import soft from "./traces/soft-delete.pgtrace.json";
+import versions from "./traces/versions.pgtrace.json";
+
+{/* the stepper reads traces/soft-delete.scenario.sql, the timeline and the "as of" switch read
+    traces/versions.scenario.sql. both PGlite, one session. the timeline converts the captured
+    dates to days after march 1; nothing else is computed. */}
+
+export const steps = framesOf(soft, [
+  { label: "two customers", state: 1 },
+  { label: "Ada leaves", stmt: 2, state: 3 },
+  { label: "Ada returns", stmt: 4 },
+  { label: "partial index", stmt: 5 },
+  { label: "Ada returns, again", stmt: 6, state: 7 },
+  { label: "a live duplicate", stmt: 8 },
+], "id");
+export const day = (d) => (Date.parse(d) - Date.parse("2026-03-01")) / 86400000;
+export const hist = versions.steps[5].result.data;
+export const rows = hist.map((r) => ({
+  label: r[0],
+  note: `${r[1].slice(5)} → ${r[2] ? r[2].slice(5) : "now"}`,
+  lo: day(r[1]),
+  hi: r[2] ? day(r[2]) : 45,
+  loInc: true,
+  hiInc: false,
+  tone: r[2] ? "ref" : "live",
+  dashed: !r[2],
+}));
+export const asOf = {
+  "march 5": resultOf(versions, 6),
+  "march 15": resultOf(versions, 7),
+  "march 25": resultOf(versions, 8),
+  "april 10": resultOf(versions, 9),
+};
+
+<InShort>
+**soft delete** marks a row as gone (`deleted_at`) instead of removing it. it keeps the row for undo and audits, and makes every query, constraint and foreign key responsible for ignoring it. the classic trap: a UNIQUE constraint still sees deleted rows. a **partial unique index** `WHERE deleted_at IS NULL` fixes it.
+
+for real history, keep versions: a **history table** where each row has a **validity range** (`tstzrange`), written by a trigger, so "what was the price last tuesday" is one `@>` query. an **audit table** records who changed what, as the changes happen.
+</InShort>
+
+## the picture
+
+you know the "are you sure? this can't be undone" dialog, and the support ticket the next morning asking to undo it? so the team adds `deleted_at`, and every `DELETE` becomes an `UPDATE`. a month later someone signs up again with the same email, and gets "email already taken" from an account that, as far as they know, is gone.
+
+think of a library withdrawing a book. it doesn't shred the catalogue card (the row), it stamps it WITHDRAWN (deleted_at). good for history. but now the rule "one card per ISBN" counts the stamped cards too, and the library can't catalogue a new copy of a book it once withdrew.
+
+<Figure wide caption={<>step through. Ada closes her account (a soft delete), then signs up again, and UNIQUE (email) <C k="dead">refuses</C>: the deleted row still holds the email. a partial unique index only covers live rows, so the old row stops counting, and two <em>live</em> rows with one email are still refused.</>}>
+<TableSteps frames={steps} table="customers" file="customers.sql" trace={prov(soft)} />
+</Figure>
+
+## soft delete, honestly
+
+the partial index from the figure is the fix for uniqueness:
+
+```sql run session=soft
+SET TimeZone = 'UTC';
+CREATE TABLE customers (
+  id         int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email      text NOT NULL,
+  name       text NOT NULL,
+  deleted_at timestamptz
+);
+CREATE UNIQUE INDEX customers_email_live ON customers (email) WHERE deleted_at IS NULL;
+
+INSERT INTO customers (email, name, deleted_at) VALUES
+  ('ada@example.com', 'Ada Lovelace', '2026-03-10 09:00+00'),
+  ('ada@example.com', 'Ada Lovelace', NULL),
+  ('grace@example.com', 'Grace Okafor', NULL);
+SELECT id, email, deleted_at FROM customers ORDER BY id;
+```
+
+the rest of the cost is everywhere else. every query that means "customers" now has to say `WHERE deleted_at IS NULL`, and the one that forgets shows deleted people. the usual guard is a view that does it once:
+
+```sql run session=soft
+CREATE VIEW live_customers AS SELECT id, email, name FROM customers WHERE deleted_at IS NULL;
+
+SELECT count(*) AS all_rows, (SELECT count(*) FROM live_customers) AS live FROM customers;
+```
+
+and point the app at the view ([views](/learn/design/views)). foreign keys are the part no view fixes: orders still reference a "deleted" customer, happily, because to postgres the row exists. that's often what you want (old orders keep their customer), but it means a soft delete never cascades, and "delete this customer's data" (a GDPR request, say) needs a real DELETE anyway.
+
+<Predict options={["the deleted rows", "only live rows", "an error"]} answer={0}>
+```sql
+-- customers has a deleted_at column and the partial index above.
+-- a report someone wrote last year:
+SELECT count(*) FROM customers WHERE email LIKE '%@example.com';
+```
+<Explain>
+it counts deleted customers too. a soft delete is just an UPDATE: the rows are still in the table, and nothing filters them unless the query says so. the partial index only changes what's unique, not what's visible. that's the standing risk of soft delete, and why people hide the table behind a view (or, for strict cases, row-level security).
+</Explain>
+</Predict>
+
+when soft delete isn't worth it: if you only need undo for a few minutes, or an audit trail, move the row to an archive table in the same transaction (`WITH gone AS (DELETE ... RETURNING *) INSERT INTO customers_archive SELECT * FROM gone`) and keep the live table clean. deletes stay deletes, and history lives where only the people who want it look.
+
+## an audit table
+
+an audit table answers "who changed this, from what, to what". a row trigger can write one entry per change, with the old and new row as jsonb:
+
+```sql run
+CREATE TABLE accounts (id int PRIMARY KEY, owner text NOT NULL, balance numeric(12,2) NOT NULL);
+CREATE TABLE audit_log (
+  id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tbl     text NOT NULL,
+  op      text NOT NULL,
+  who     text NOT NULL DEFAULT current_user,
+  old_row jsonb,
+  new_row jsonb
+);
+CREATE FUNCTION audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO audit_log (tbl, op, old_row, new_row)
+  VALUES (TG_TABLE_NAME, TG_OP,
+          CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END,
+          CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END);
+  RETURN NULL;
+END $$;
+CREATE TRIGGER accounts_audit AFTER INSERT OR UPDATE OR DELETE ON accounts
+FOR EACH ROW EXECUTE FUNCTION audit();
+
+INSERT INTO accounts VALUES (1, 'alice', 100.00);
+UPDATE accounts SET balance = 80.00 WHERE id = 1;
+DELETE FROM accounts WHERE id = 1;
+
+SELECT id, op, who, old_row ->> 'balance' AS old_balance, new_row ->> 'balance' AS new_balance
+FROM audit_log ORDER BY id;
+```
+
+because it's a trigger, it catches every path, and because it runs in the same transaction, a rolled-back change leaves no entry. in production you'd add `changed_at timestamptz DEFAULT now()` and the application user, which the database only knows if the app tells it (`SET app.user = ...` per transaction, read with `current_setting`), since many apps connect as one role. for very high write rates, logical decoding can build the same log from the WAL without a trigger on the write path.
+
+## versions with a validity range
+
+an audit log is a list of events. for "what was true at time T" you want **versions**: one row per state, each valid over a range of time. a [range type](/learn/types/ranges) holds the interval in one column, half-open, so consecutive versions meet without overlapping:
+
+```sql run session=hist
+SET TimeZone = 'UTC';
+CREATE TABLE prices (sku text PRIMARY KEY, price numeric(8,2) NOT NULL);
+CREATE TABLE price_history (sku text NOT NULL, price numeric(8,2) NOT NULL, valid tstzrange NOT NULL);
+
+-- close the current version and open a new one, on every insert or price change.
+-- the clock comes from app.clock so this page's output is stable; in production, now().
+CREATE FUNCTION keep_price_history() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE t timestamptz := coalesce(current_setting('app.clock', true)::timestamptz, now());
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    UPDATE price_history SET valid = tstzrange(lower(valid), t)
+    WHERE sku = OLD.sku AND upper_inf(valid);
+  END IF;
+  INSERT INTO price_history VALUES (NEW.sku, NEW.price, tstzrange(t, NULL));
+  RETURN NEW;
+END $$;
+CREATE TRIGGER prices_history AFTER INSERT OR UPDATE OF price ON prices
+FOR EACH ROW EXECUTE FUNCTION keep_price_history();
+
+SET app.clock = '2026-03-01 00:00+00'; INSERT INTO prices VALUES ('TEA-01', 6.50);
+SET app.clock = '2026-03-12 00:00+00'; UPDATE prices SET price = 7.25 WHERE sku = 'TEA-01';
+SET app.clock = '2026-03-20 00:00+00'; UPDATE prices SET price = 5.95 WHERE sku = 'TEA-01';
+SET app.clock = '2026-04-01 00:00+00'; UPDATE prices SET price = 7.25 WHERE sku = 'TEA-01';
+
+SELECT price, valid FROM price_history ORDER BY lower(valid);
+```
+
+<Figure wide caption={<>the four versions of TEA-01&apos;s price on a march-to-april timeline, from the history table. each range includes its start and excludes its end, so they tile the line with no gap and no overlap. the <C k="live">last one</C> has no end yet (dashed): it&apos;s the current price.</>}>
+<RangeLine min={0} max={45} rows={rows} ticks={[{ at: 0, label: "mar 1" }, { at: 11, label: "mar 12", minor: true }, { at: 19, label: "mar 20" }, { at: 31, label: "apr 1" }, { at: 45, label: "apr 15", minor: true }]} trace={prov(versions)} />
+</Figure>
+
+now "as of" is containment, `valid @> timestamp`: exactly one version contains any instant.
+
+<Figure caption={<>pick a date. the query is the same, only the instant changes, and exactly one version answers.</>}>
+<RunPick options={[{ key: "as of", values: ["march 5", "march 15", "march 25", "april 10"] }]} runs={asOf} file="as_of.sql" hot={["@>"]} trace={prov(versions)} />
+</Figure>
+
+two things make this solid. an exclusion constraint, `EXCLUDE USING gist (sku WITH =, valid WITH &&)`, guarantees no two versions of one sku overlap, and postgres 18 can declare the same thing as a key, `PRIMARY KEY (sku, valid WITHOUT OVERLAPS)` ([temporal keys](/learn/design/temporal-keys)). and a GiST index on (sku, valid) makes the `@>` lookup fast once the history is long.
+
+the SQL standard has system-versioned tables (`PERIOD FOR SYSTEM_TIME`, `FOR SYSTEM_TIME AS OF`), where the database keeps this history itself. postgres doesn't implement them, which is why the trigger above is the usual pattern (the temporal_tables extension packages it).
+
+<Gotcha title="what 'as of last tuesday' costs">
+every version is a row, and with an audit log every change is another. a price that changes hourly grows 8,760 rows a year per product, forever. decide up front how long history is kept, partition it by time so old history can be dropped as a whole partition, and index for the queries you'll actually run ("current price" should hit `upper_inf(valid)` or the live table, not scan history).
+</Gotcha>
+
+<Interview q="how would you implement soft delete, and what goes wrong?">
+a nullable deleted_at timestamptz, set instead of deleting. what goes wrong: unique constraints still count deleted rows (use a partial unique index WHERE deleted_at IS NULL), every query must filter them (hide the table behind a view, or use RLS), foreign keys and cascades ignore it, and the table keeps growing. if the goal is history or undo rather than hiding, an archive table filled by DELETE ... RETURNING, or a versioned history table with a tstzrange validity period and an exclusion constraint, is usually cleaner. bonus point: a hard delete is still needed for erasure requests.
+</Interview>
+
+<Keylines>
+- soft delete is an UPDATE: every query, constraint and foreign key still sees the row.
+- a partial unique index WHERE deleted_at IS NULL keeps uniqueness among live rows only.
+- an audit trigger records every change in the same transaction, so rollbacks leave no trace.
+- versions with a tstzrange validity make "as of" a single @> lookup.
+- history only grows: decide retention and partition it before it's big.
+</Keylines>

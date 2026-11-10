@@ -1,0 +1,154 @@
+import xidLazy from "./traces/xid-lazy.pgtrace.json";
+
+export const last = xidLazy.steps[7];
+
+<InShort>
+every tuple carries two transaction ids in its header: **xmin**, the transaction that wrote it, and **xmax**, the one that deleted it, replaced it or locked it (0 if nobody has). a transaction only gets a real **xid** when it first writes. before that, and forever if it only reads, it gets by on a **virtual xid** that costs nothing.
+</InShort>
+
+## the picture
+
+you know how [an UPDATE writes a new row](/learn/mvcc/update-is-insert) and stamps the old one? the stamp is a number. so is the birth certificate on the new one. those numbers are transaction ids, and they're the whole vocabulary MVCC is written in.
+
+think of a library where every book has two stamps inside the cover: who shelved it, and who pulled it (blank while it's still on the shelf). a reader doesn't need either stamp to read, so nobody gives readers a stamp number at the door. you get one at the moment you shelve or pull something (your first write).
+
+<Figure caption={<>an xid's life. hover a stage. the <C k="meta">virtual xid</C> exists from the first statement, the real xid only from the first write, and whether it committed is decided in one place, the commit log, not in the tuples.</>}>
+<Flow stages={[
+  { label: "BEGIN", sub: "virtual xid", note: "every transaction gets a virtual xid like 4/4: a backend number and a counter local to that backend. it lives in the lock table, never on disk." },
+  { label: "SELECT", sub: "still virtual", note: "reading needs a snapshot, not an xid. a read-only transaction never gets one." },
+  { label: "first write", sub: "real xid", note: "INSERT, UPDATE, DELETE or SELECT FOR UPDATE: now it needs a number to stamp into tuples, so it takes the next one from the shared counter." },
+  { label: "COMMIT / ROLLBACK", sub: "pg_xact", note: "two bits in the commit log flip to committed or aborted. the tuples it wrote don't change." },
+]} />
+</Figure>
+
+here's lab's accounts table, with the three system columns every table has. `ctid` is where the version lives, `xmin` and `xmax` are the stamps:
+
+```sql run db=lab session=xids
+SELECT ctid, xmin, xmax, id, owner, balance FROM accounts ORDER BY id;
+```
+
+all three rows were written by xid 752, the transaction that loaded the dataset, and nobody has touched them since: xmax 0.
+
+## lazy assignment
+
+an xid isn't handed out at `BEGIN`. `pg_current_xact_id_if_assigned()` tells you whether you have one yet, without taking one:
+
+```sql run session=xids
+BEGIN;
+SELECT pg_current_xact_id_if_assigned() AS my_xid;
+SELECT owner FROM accounts WHERE id = 1;
+SELECT pg_current_xact_id_if_assigned() AS my_xid;
+UPDATE accounts SET balance = balance - 10 WHERE id = 1;
+SELECT pg_current_xact_id_if_assigned() AS my_xid;
+COMMIT;
+```
+
+nothing after `BEGIN`, nothing after the read, 753 the moment it wrote. that's on purpose: xids are a finite resource ([32 bits, and they wrap](/learn/mvcc/freezing-and-wraparound)), every assigned one has to be tracked in the commit log, and every running one makes snapshots bigger. most transactions on a busy server only read, so most never cost an xid.
+
+what a transaction has from the start is a **virtual xid**. it's in the lock table as a lock on itself:
+
+```sql run session=xids
+BEGIN;
+SELECT locktype, virtualxid, transactionid, mode
+FROM pg_locks
+WHERE locktype IN ('virtualxid', 'transactionid')
+ORDER BY locktype;
+UPDATE accounts SET balance = balance + 10 WHERE id = 2;
+SELECT locktype, virtualxid, transactionid, mode
+FROM pg_locks
+WHERE locktype IN ('virtualxid', 'transactionid')
+ORDER BY locktype;
+ROLLBACK;
+```
+
+`0/5` is backend 0, local transaction 5. (the browser engine has one backend, so it's always backend 0, and every lock in `pg_locks` is ours. on a server, filter by `pid`.) after the UPDATE the transaction holds a second lock, on its real xid, 754. other sessions that need to wait for this transaction wait on that lock: that's what "waits for ShareLock on transaction 754" means in [lock waits](/learn/locking/row-lock-internals).
+
+<Predict question="a transaction runs 1,000 SELECTs and then COMMITs. how many xids did it use?" options={["0", "1", "1,000"]} answer={0}>
+```sql
+BEGIN;
+SELECT ... ;   -- a thousand times
+COMMIT;
+```
+<Explain>
+none. a read-only transaction never needs to stamp a tuple, so it never takes an xid. it has a virtual xid for its whole life, and its snapshot is what decides what it sees. (one catch: `txid_current()` and `pg_current_xact_id()` assign an xid when you call them, read-only or not. use the `_if_assigned` version to look without touching.)
+</Explain>
+</Predict>
+
+## two sessions, captured
+
+the browser engine has one session, so it can't show the part that surprises people: xids are numbered in the order transactions *first write*, not the order they begin. this is a real postgres 18.6 server with two sessions. T1 begins first and reads. T2 begins later and writes first.
+
+<Figure wide caption={<>step through. watch the <C k="meta">locks</C> panel: each session holds its virtual xid from BEGIN, and a transactionid lock appears only at its first write. on the page, the new versions are <C k="hot">hot</C> when they appear, and nothing on the page changes at ROLLBACK or COMMIT.</>}>
+<PgStepper trace={xidLazy} panels={["lanes", "page:accounts", "locks"]} />
+</Figure>
+
+T2 got 759 and T1 got 760, the other way round from their BEGINs. and look at the last step: bob's original tuple still says xmax 759, the xid of a transaction that rolled back.
+
+<Figure caption={<>after both are done. bob's original version (slot 2) carries T2's xmax, but T2 <C k="dead">aborted</C>, so nothing was deleted. slot 3 is T2's rolled-back version, never visible to anyone.</>}>
+<PageView page={last.heap.accounts[0]} xact={last.xact} layout="auto" focus={2} fields={["id", "owner", "balance"]} provenance="real postgres 18.6 output · a native server · traces/xid-lazy, the last step" />
+</Figure>
+
+## what xmax really means
+
+xmax is "the transaction that last laid a claim on this version". that can be:
+
+<Defs>
+<dt>0</dt><dd>nobody. the version is current.</dd>
+<dt>a committed xid</dt><dd>deleted, or replaced by an UPDATE (then t_ctid points at the new version).</dd>
+<dt>an aborted xid</dt><dd>someone tried and rolled back. the version is alive. the number stays until something overwrites it.</dd>
+<dt>a locker's xid</dt><dd>SELECT FOR UPDATE or FOR SHARE (<a href="/learn/transactions/row-locking-clauses">row-locking clauses</a>). a flag in t_infomask says lock only.</dd>
+<dt>a MultiXact id</dt><dd>several lockers at once. a different counter entirely, see <a href="/learn/mvcc/multixacts">MultiXacts</a>.</dd>
+</Defs>
+
+the lock case is the one that fools people, because the number stays after the lock is gone:
+
+```sql run session=xids
+BEGIN;
+SELECT owner FROM accounts WHERE id = 3 FOR UPDATE;
+COMMIT;
+SELECT ctid, xmin, xmax, owner FROM accounts WHERE id = 3;
+SELECT lp, t_xmax, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags
+FROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 3;
+```
+
+carol is fine, and her xmax is 755. the flags say why it doesn't count: `HEAP_XMAX_LOCK_ONLY` and `HEAP_XMAX_EXCL_LOCK`, a row lock, not a delete. the [visibility rules](/learn/mvcc/visibility-rules) read those flags before they read the number.
+
+## subtransactions get their own
+
+a SAVEPOINT that writes gets an xid of its own, a subtransaction xid, so that rolling back to the savepoint can undo just its part (by marking just that xid aborted):
+
+```sql run session=xids
+BEGIN;
+INSERT INTO accounts VALUES (4, 'dave', 10.00);
+SAVEPOINT before_erin;
+INSERT INTO accounts VALUES (5, 'erin', 10.00);
+SELECT xmin, id, owner FROM accounts WHERE id >= 4 ORDER BY id;
+ROLLBACK TO before_erin;
+COMMIT;
+SELECT xmin, id, owner FROM accounts WHERE id >= 4 ORDER BY id;
+```
+
+dave was written by 756, erin by 757, inside the same transaction. after `ROLLBACK TO`, 757 is aborted and erin is gone; 756 commits with the rest. postgres keeps the child → parent links in `pg_subtrans`, so a reader that finds xmin 757 can find out which top-level transaction it belonged to. it's also why a loop that opens a savepoint per row (some drivers and ORMs do this for you) burns xids fast.
+
+<Gotcha title="asking for your xid costs one">
+`SELECT txid_current()` and `SELECT pg_current_xact_id()` both *assign* an xid if the transaction doesn't have one yet. a monitoring query that calls them on every poll eats xids for nothing. read `pg_current_xact_id_if_assigned()`, or `backend_xid` in `pg_stat_activity`, which is null for a transaction that hasn't written.
+
+```sql run session=xids
+SELECT pg_current_xact_id_if_assigned() AS looked;
+SELECT pg_current_xact_id() AS took, pg_current_xact_id()::xid AS as_32_bits;
+```
+</Gotcha>
+
+that second column is the other thing to know: `pg_current_xact_id()` returns an `xid8`, a 64-bit id with an epoch in the high half that never wraps. the `xid` in tuple headers is only the low 32 bits. why that's fine most of the time, and what happens when it isn't, is [freezing and wraparound](/learn/mvcc/freezing-and-wraparound).
+
+<Interview q="what are xmin and xmax on a postgres row?">
+two transaction ids in every tuple header. xmin is the transaction that created this version (INSERT, or the UPDATE that produced it). xmax is the transaction that deleted or replaced it, or locked it, and 0 if nobody has. visibility is decided from them plus a snapshot: a version is visible if its xmin committed before your snapshot and its xmax didn't. bonus point: xids are assigned lazily, at the first write, so read-only transactions never get one (they only hold a virtual xid), and a non-zero xmax doesn't mean deleted: it can be an aborted xid or a row lock.
+</Interview>
+
+<Keylines>
+- xmin = who wrote this version, xmax = who ended or locked it, 0 = nobody.
+- a real xid is assigned at the first write. readers live on a virtual xid and never cost one.
+- xids are in the order of first writes, not BEGINs.
+- a non-zero xmax can be an aborted xid or a row lock. the infomask flags tell you which.
+- savepoints that write get their own subtransaction xids.
+</Keylines>

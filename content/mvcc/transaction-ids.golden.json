@@ -1,0 +1,345 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "51358073214eb297": {
+      "db": "lab",
+      "sql": "SELECT ctid, xmin, xmax, id, owner, balance FROM accounts ORDER BY id;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27],
+            ["xmin", "xid", 28],
+            ["xmax", "xid", 28],
+            ["id", "int4", 23],
+            ["owner", "text", 25],
+            ["balance", "numeric", 1700]
+          ],
+          "rowCount": 3,
+          "digest": "25db0639d7fb04cd",
+          "rows": [
+            ["(0,1)", "752", "0", "1", "alice", "100.00"],
+            ["(0,2)", "752", "0", "2", "bob", "100.00"],
+            ["(0,3)", "752", "0", "3", "carol", "50.00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "62dca34d12d631aa": {
+      "db": "lab",
+      "sql": "BEGIN;\nSELECT pg_current_xact_id_if_assigned() AS my_xid;\nSELECT owner FROM accounts WHERE id = 1;\nSELECT pg_current_xact_id_if_assigned() AS my_xid;\nUPDATE accounts SET balance = balance - 10 WHERE id = 1;\nSELECT pg_current_xact_id_if_assigned() AS my_xid;\nCOMMIT;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["my_xid", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "47bee3622604c6fb",
+          "rows": [
+            [null]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "657974eb0576dcbd",
+          "rows": [
+            ["alice"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["my_xid", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "dd09b0471cadcd25",
+          "rows": [
+            [null]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "8076d3d0a61a7e81"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["my_xid", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "e4cbcdaf74626c16",
+          "rows": [
+            ["753"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "722a5aee5ca78144"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "1faab6a273a90991": {
+      "db": "lab",
+      "sql": "BEGIN;\nSELECT locktype, virtualxid, transactionid, mode\nFROM pg_locks\nWHERE locktype IN ('virtualxid', 'transactionid')\nORDER BY locktype;\nUPDATE accounts SET balance = balance + 10 WHERE id = 2;\nSELECT locktype, virtualxid, transactionid, mode\nFROM pg_locks\nWHERE locktype IN ('virtualxid', 'transactionid')\nORDER BY locktype;\nROLLBACK;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["virtualxid", "text", 25],
+            ["transactionid", "xid", 28],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "2c1b69b291d8439a",
+          "rows": [
+            ["virtualxid", "0/5", null, "ExclusiveLock"]
+          ]
+        },
+        {
+          "tag": "UPDATE 1",
+          "command": "UPDATE",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "0b180bc9b96cf94b"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["locktype", "text", 25],
+            ["virtualxid", "text", 25],
+            ["transactionid", "xid", 28],
+            ["mode", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "029f702b78153e1d",
+          "rows": [
+            ["transactionid", null, "754", "ExclusiveLock"],
+            ["virtualxid", "0/5", null, "ExclusiveLock"]
+          ]
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6a25a386d4d4ec7b"
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "56097c1102933eca": {
+      "db": "lab",
+      "sql": "BEGIN;\nSELECT owner FROM accounts WHERE id = 3 FOR UPDATE;\nCOMMIT;\nSELECT ctid, xmin, xmax, owner FROM accounts WHERE id = 3;\nSELECT lp, t_xmax, (heap_tuple_infomask_flags(t_infomask, t_infomask2)).raw_flags\nFROM heap_page_items(get_raw_page('accounts', 0)) WHERE lp = 3;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["owner", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "3a4b14c8ec397ccb",
+          "rows": [
+            ["carol"]
+          ]
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f634ecd471a56cb0"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["ctid", "tid", 27],
+            ["xmin", "xid", 28],
+            ["xmax", "xid", 28],
+            ["owner", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "a8cf7ff53e9bbd21",
+          "rows": [
+            ["(0,3)", "752", "755", "carol"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["lp", "int2", 21],
+            ["t_xmax", "xid", 28],
+            ["raw_flags", "text[]", 1009]
+          ],
+          "rowCount": 1,
+          "digest": "d7a64f84774c74be",
+          "rows": [
+            ["3", "755", "{HEAP_HASVARWIDTH,HEAP_XMAX_EXCL_LOCK,HEAP_XMAX_LOCK_ONLY,HEAP_XMIN_COMMITTED,HEAP_KEYS_UPDATED}"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "d523c6eba527c098": {
+      "db": "lab",
+      "sql": "BEGIN;\nINSERT INTO accounts VALUES (4, 'dave', 10.00);\nSAVEPOINT before_erin;\nINSERT INTO accounts VALUES (5, 'erin', 10.00);\nSELECT xmin, id, owner FROM accounts WHERE id >= 4 ORDER BY id;\nROLLBACK TO before_erin;\nCOMMIT;\nSELECT xmin, id, owner FROM accounts WHERE id >= 4 ORDER BY id;",
+      "statements": [
+        {
+          "tag": "BEGIN",
+          "command": "BEGIN",
+          "columns": null,
+          "rowCount": null,
+          "digest": "cc1bdc2088413acc"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "456644ddbdad5fe2"
+        },
+        {
+          "tag": "SAVEPOINT",
+          "command": "SAVEPOINT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "bd9a4934dd00cf92"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": null,
+          "rowCount": 1,
+          "digest": "01f7a6f15b1050a4"
+        },
+        {
+          "tag": "SELECT 2",
+          "command": "SELECT",
+          "columns": [
+            ["xmin", "xid", 28],
+            ["id", "int4", 23],
+            ["owner", "text", 25]
+          ],
+          "rowCount": 2,
+          "digest": "4cd7729c74b5cd4f",
+          "rows": [
+            ["756", "4", "dave"],
+            ["757", "5", "erin"]
+          ]
+        },
+        {
+          "tag": "ROLLBACK",
+          "command": "ROLLBACK",
+          "columns": null,
+          "rowCount": null,
+          "digest": "db45e74bd6762320"
+        },
+        {
+          "tag": "COMMIT",
+          "command": "COMMIT",
+          "columns": null,
+          "rowCount": null,
+          "digest": "722a5aee5ca78144"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["xmin", "xid", 28],
+            ["id", "int4", 23],
+            ["owner", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "bc1618c2a0e0ad5d",
+          "rows": [
+            ["756", "4", "dave"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "644afad7080f6807": {
+      "db": "lab",
+      "sql": "SELECT pg_current_xact_id_if_assigned() AS looked;\nSELECT pg_current_xact_id() AS took, pg_current_xact_id()::xid AS as_32_bits;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["looked", "xid8", 5069]
+          ],
+          "rowCount": 1,
+          "digest": "6569f6564db75780",
+          "rows": [
+            [null]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["took", "xid8", 5069],
+            ["as_32_bits", "xid", 28]
+          ],
+          "rowCount": 1,
+          "digest": "7ecbe15e09fd7cba",
+          "rows": [
+            ["758", "758"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

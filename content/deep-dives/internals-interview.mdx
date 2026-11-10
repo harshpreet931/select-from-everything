@@ -1,0 +1,138 @@
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov } from "@/lib/db/captured";
+import { traceBTree } from "@/lib/db/fromTrace";
+import realTree from "../index-internals/traces/real-tree.pgtrace.json";
+import twice from "../mvcc/traces/update-twice.pgtrace.json";
+import wsrr from "../transactions/traces/ws-rr.pgtrace.json";
+import crash from "../wal/traces/crash-recovery.pgtrace.json";
+
+{/* every figure here is a recap: it reuses a capture from the chapter that explains the topic,
+    read-only (index-internals/real-tree, mvcc/update-twice, transactions/ws-rr,
+    wal/crash-recovery). only slices are passed to client figures where the primitive allows it. */}
+
+export const tree = traceBTree(realTree, realTree.steps.length - 1, "t_id");
+export const vac = twice.steps[10];
+
+<InShort>
+the internals round asks the same six things in different words: **b-tree vs LSM**, **MVCC**, **isolation**, **WAL and crash recovery**, **VACUUM**, and **replication**. each has a one-paragraph answer that lands, and a follow-up the interviewer uses to see if you actually know how it works.
+
+this chapter gathers the answers from across the book, sharpens them, and points at the chapter (and the captured trace) behind each.
+</InShort>
+
+## the picture
+
+you know how a system design round drifts into "and how does the database actually do that?" that's where people bluff. the trick is that the questions are few, and each answer is a mechanism you can draw: a tree, a page with two versions on it, two sessions side by side, a log with a pointer.
+
+think of it as six whiteboard drawings you practise until you can do them from memory. every one of them is a real capture somewhere in this book, and they're below, small.
+
+<Figure caption={<>the six questions and the one-line core of each answer. the sections below expand them.</>}>
+<Tree>{`
+b-tree vs LSM #ref // update in place, read-optimized vs append and merge, write-optimized
+MVCC // writers make versions; readers pick one with a snapshot
+isolation #hot // what anomalies each level allows, and how postgres stops them
+WAL #meta // log the change, flush the log at commit, write pages later
+VACUUM // something has to remove versions nobody can see, and freeze old xids
+replication // ship the WAL (physical) or decoded row changes (logical)
+`}</Tree>
+</Figure>
+
+## b-tree vs LSM
+
+a b+tree keeps keys sorted in fixed-size pages, updated in place: a lookup is one root-to-leaf descent, a few pages for millions of keys ([b+trees](/learn/index-internals/b-plus-trees)). here's a real one postgres built, 200 keys over six leaves:
+
+<Figure caption={<>a real nbtree from <a href="/learn/index-internals/b-plus-trees">b+trees</a>: a root over a row of leaves linked left to right. every lookup is root → one leaf.</>}>
+<BTree view={tree} collapse={5} />
+<Provenance trace={prov(realTree)} />
+</Figure>
+
+an LSM tree buffers writes in memory (a memtable), flushes them as sorted immutable files (SSTables), and merges files in the background (compaction). writes are sequential and cheap; a read may check several files, which bloom filters mostly skip ([LSM trees and bloom filters](/learn/index-internals/lsm-trees)).
+
+<Interview q="b-tree or LSM tree: which would you pick, and why?">
+a b-tree when reads dominate and you want predictable point and range lookups: one descent, data updated in place, which is why postgres, mysql and sqlite use them. an LSM tree when writes dominate (ingest, time series, logs): writes become sequential appends, at the cost of read amplification (several sorted files per lookup, mitigated by bloom filters) and write amplification from compaction, which rewrites data several times over its life. bonus point: name the three amplifications (read, write, space) and say each design trades one for another; and that updating pages in place is what makes torn pages possible, which is why postgres logs a full-page image the first time a page changes after a checkpoint.
+</Interview>
+
+## MVCC
+
+postgres never overwrites a row. an UPDATE writes a new version and stamps the old one's xmax; each reader's **snapshot** decides which version it sees, so readers never wait for writers ([an UPDATE is an INSERT](/learn/mvcc/update-is-insert), [the visibility rules](/learn/mvcc/visibility-rules)).
+
+<Figure caption={<>the page from <a href="/learn/mvcc/update-is-insert">an UPDATE is an INSERT</a>, after its VACUUM: the two old versions of alice are gone, slot 1 is a <C k="ref">redirect</C> to the live version, so the index entry still works.</>}>
+<PageView page={vac.heap.accounts[0]} xact={vac.xact} layout="auto" focus={1} provenance="real postgres 18.6 output · a native server · mvcc/traces/update-twice, after the VACUUM" />
+</Figure>
+
+the same thing in the browser, in one statement. postgres 18 can return both sides of an UPDATE:
+
+```sql run db=lab
+UPDATE accounts SET balance = balance + 10 WHERE id = 1
+RETURNING old.ctid AS old_version, new.ctid AS new_version, old.balance AS old_balance, new.balance AS new_balance;
+```
+
+two addresses for one row: the old version is still on the page until VACUUM, and the new one is a whole new tuple.
+
+<Interview q="how does MVCC work in postgres, and how is it different from mysql's?">
+every row version carries xmin (the transaction that created it) and xmax (the one that deleted or replaced it). an UPDATE is a new version plus an xmax stamp on the old one; a DELETE is just the stamp. a snapshot lists which transactions had committed when it was taken, and a reader sees the version whose xmin committed before its snapshot and whose xmax didn't. so readers never block writers and vice versa. InnoDB updates rows in place and keeps old values in undo logs, rebuilding old versions on demand; postgres keeps old versions in the table and cleans them with VACUUM. bonus point: commit status lives in pg_xact (the commit log), and the first reader caches it on the tuple as hint bits ([MVCC with undo logs](/learn/mvcc/undo-logs), [postgres vs InnoDB](/learn/deep-dives/postgres-vs-innodb)).
+</Interview>
+
+## isolation
+
+the standard defines levels by the anomalies they allow; postgres implements them with snapshots, and never allows dirty reads ([isolation levels: the standard vs postgres](/learn/transactions/isolation-levels)). REPEATABLE READ in postgres is snapshot isolation, which still allows **write skew**:
+
+<Figure wide caption={<>from <a href="/learn/transactions/write-skew">write skew and SERIALIZABLE</a>: two on-call doctors at REPEATABLE READ each check that the other is on call, each goes off call, both commit. no lock conflict, no error, and <C k="dead">nobody is on call</C>.</>}>
+<SessionLanes sessions={["T1", "T2"]} trace={wsrr} side="db" />
+</Figure>
+
+<Interview q="what isolation levels does postgres have, and what does each prevent?">
+READ COMMITTED (the default) takes a new snapshot per statement: no dirty reads, but non-repeatable reads and phantoms between statements, and lost updates if you read then write. REPEATABLE READ takes one snapshot for the transaction: no non-repeatable reads and no phantoms (stronger than the standard requires), and a concurrent update of the same row fails with 40001 instead of being lost, but write skew is still possible. SERIALIZABLE is REPEATABLE READ plus SSI: postgres tracks read-write dependencies and aborts one transaction with 40001 when they could form a cycle, so the result equals some serial order. READ UNCOMMITTED behaves like READ COMMITTED. bonus point: serializable failures are expected, so the app needs a retry loop ([serializable snapshot isolation](/learn/locking/ssi), [retrying serialization failures](/learn/transactions/retry-loops)).
+</Interview>
+
+## WAL and crash recovery
+
+every change is logged before the page it changes may reach disk; COMMIT waits only for the log; pages are written later; after a crash, redo replays the log from the last checkpoint ([the write-ahead rule](/learn/wal/write-ahead-rule), [crash recovery](/learn/wal/crash-recovery)). the [capstone](/learn/deep-dives/one-insert-all-the-way-down) traces all of it for one INSERT. here's the crash half:
+
+<Figure wide caption={<>from <a href="/learn/wal/crash-recovery">crash recovery</a>: T1 commits, T2 doesn't, the server is killed, and recovery replays the WAL. T1's row <C k="live">comes back</C>; T2's insert is on the page too, but its xid now counts as aborted.</>}>
+<SessionLanes sessions={["T1", "T2"]} trace={crash} side="db" />
+</Figure>
+
+<Interview q="what happens when you COMMIT, and what happens after a crash?">
+during the transaction, each change goes into a WAL record in memory and modifies a page in shared buffers. at COMMIT, postgres writes a commit record and flushes the WAL up to it (one sequential fsync, shared by concurrent committers: group commit), marks the transaction committed in pg_xact, and returns. dirty data pages are written later by the checkpointer and background writer. after a crash, startup reads the last checkpoint's redo pointer and replays every WAL record from there, skipping records a page already has (by comparing LSNs); transactions with no commit record simply never committed, and their versions stay invisible. there's no undo pass, because MVCC doesn't need one. bonus point: full-page images after each checkpoint protect against torn pages ([what COMMIT waits for](/learn/wal/commit-path), [ARIES](/learn/wal/aries)).
+</Interview>
+
+<Quiz question="postgres crashes mid-transaction. recovery replays the WAL. what happens to that transaction's rows?" options={["undo removes them", "they stay on the page, invisible", "they become visible"]} answer={1}>
+<Explain>
+they stay. postgres has no undo pass: the half-done transaction's tuples are replayed onto the page like everything else, but its xid has no commit record, so after recovery pg_xact says aborted and every snapshot ignores those versions. VACUUM removes them later. InnoDB, with update-in-place, does have to roll back in-flight transactions using undo.
+</Explain>
+</Quiz>
+
+## VACUUM
+
+<Interview q="why does postgres need VACUUM, and what goes wrong when it falls behind?">
+UPDATE and DELETE leave dead versions in the table and dead entries in its indexes. VACUUM finds versions no snapshot can see anymore, frees their space for reuse (it doesn't shrink the file), removes index entries pointing at them, and updates the visibility map that index-only scans rely on. it also freezes old tuples, because xids are 32 bits and compared in a circle; an unfrozen tuple older than about two billion transactions would suddenly look like it's from the future, so postgres refuses new xids before that happens. autovacuum runs it in the background based on dead-tuple counts. it falls behind when a long transaction or a stale replication slot holds back the xmin horizon (so nothing becomes removable), or when cost limits throttle it on a busy table. bonus point: VACUUM FULL rewrites the table and takes an ACCESS EXCLUSIVE lock; plain VACUUM doesn't block reads or writes ([VACUUM](/learn/mvcc/vacuum), [the xmin horizon](/learn/mvcc/xmin-horizon), [freezing and wraparound](/learn/mvcc/freezing-and-wraparound)).
+</Interview>
+
+## replication
+
+physical replication ships the WAL itself: a standby replays it byte for byte, so it's an exact copy of the whole cluster. logical replication decodes the WAL into row changes per table and applies them as SQL on the other side.
+
+<Figure caption={<>streaming replication, after <a href="/learn/wal/streaming-replication">streaming replication</a>: the same WAL that makes a crash recoverable is what a standby replays. drawn by hand.</>}>
+<Flow stages={[
+  { label: "primary", sub: "WAL written", note: "every change is already in the WAL, for crash safety." },
+  { label: "walsender", sub: "streams WAL", note: "a process per standby sends WAL as it's flushed (or from a replication slot that keeps it until the standby has it)." },
+  { label: "walreceiver", sub: "writes, flushes", note: "on the standby, WAL lands in its own pg_wal." },
+  { label: "startup process", sub: "replays", note: "the standby is in permanent crash recovery: it replays records as they arrive, and serves read-only queries meanwhile." },
+]} />
+</Figure>
+
+<Interview q="physical vs logical replication, and what does synchronous replication guarantee?">
+physical (streaming) replication sends WAL to standbys that replay it: an exact, read-only copy of the whole cluster, same major version, used for failover and read scaling. logical replication decodes WAL into per-table row changes (publications and subscriptions): it works across major versions and can replicate a subset of tables into a writable database, but doesn't copy DDL or sequences by itself. asynchronous replication can lose the last few transactions on failover; with synchronous_commit = on and synchronous_standby_names set, COMMIT waits until the standby has flushed the commit record, so a committed transaction survives losing the primary; remote_apply also waits for replay, so reads on the standby see it. bonus point: replication slots stop the primary from removing WAL a standby still needs, which also means an abandoned slot fills the disk ([logical replication](/learn/wal/logical-replication), [read replicas](/learn/scale/read-replicas)).
+</Interview>
+
+<Gotcha title="don't answer with the standard when they ask about postgres">
+"REPEATABLE READ allows phantoms" is true of the standard and false of postgres. "databases undo uncommitted changes after a crash" is true of InnoDB and false of postgres. say which one you mean, every time: it's the fastest way to show you know the difference between a textbook and a running system.
+</Gotcha>
+
+<Keylines>
+- b-tree: sorted pages, in place, read-optimized. LSM: appends and merges, write-optimized.
+- MVCC: versions with xmin and xmax, snapshots pick one, VACUUM cleans up.
+- postgres REPEATABLE READ is snapshot isolation: no phantoms, but write skew. SERIALIZABLE adds SSI.
+- COMMIT waits for the WAL flush only. recovery is redo from the last checkpoint, no undo.
+- physical replication ships WAL; logical ships decoded row changes.
+</Keylines>

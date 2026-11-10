@@ -1,0 +1,39 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "2a87d2f4a6ad7bf5": {
+      "db": "shop",
+      "sql": "SELECT root, level FROM bt_metap('customers_pkey');\nSELECT count(*) AS leaf_pages FROM generate_series(1, pg_relation_size('customers_pkey') / 8192 - 1) AS blkno\nWHERE (bt_page_stats('customers_pkey', blkno::int)).type = 'l';",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["root", "int8", 20],
+            ["level", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "4d8756ddc47e6c93",
+          "rows": [
+            ["3", "1"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["leaf_pages", "int8", 20]
+          ],
+          "rowCount": 1,
+          "digest": "a46d6b825e138b5c",
+          "rows": [
+            ["6"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

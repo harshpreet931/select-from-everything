@@ -1,0 +1,132 @@
+import { AutovacuumMath } from "@/components/figures/mvcc/AutovacuumMath";
+import { Provenance } from "@/components/figures/kit/Provenance";
+import { prov, resultOf } from "@/lib/db/captured";
+import av from "./traces/autovacuum.pgtrace.json";
+import settings from "./traces/vacuum-settings.pgtrace.json";
+
+export const procs = resultOf(av, 0);
+export const runs = { "right after the DELETE": resultOf(av, 2), "three seconds later": resultOf(av, 4) };
+export const avlog = av.steps[3].log.filter((l) => !/system usage/.test(l)).join("\n");
+export const cost = Object.fromEntries(settings.steps[0].result.data.map((r) => [r[0], Number(r[1])]));
+
+<InShort>
+**autovacuum** is a background launcher that wakes up every `autovacuum_naptime` (a minute by default), checks every table's statistics, and starts a worker for each table past its **threshold**: 50 dead rows plus 20% of the table, by default. workers run slowly on purpose, against a **cost limit**, so they don't swamp the disk. it doesn't exist in this page's browser engine.
+</InShort>
+
+## the picture
+
+you know how [VACUUM](/learn/mvcc/vacuum) is a command you have to run? nobody runs it by hand on a real server. something has to notice that a table has collected enough dead rows, and vacuum it without anyone asking, without hogging the disk, and without ever blocking the application.
+
+think of a building's cleaning crew. a supervisor (the launcher) walks the floors every so often and checks each room's tally of mess (the statistics). rooms past their limit get a cleaner (a worker). cleaners work at a steady pace, stopping for a breather after every so many bins (the cost limit), so the building stays usable while they work. a big hall needs a big mess before anyone is sent, because the limit grows with the room.
+
+first, honesty about this page. the engine running your queries is one process, and nothing runs in the background:
+
+```sql run db=lab session=av
+SHOW autovacuum;
+SELECT backend_type, count(*) FROM pg_stat_activity GROUP BY backend_type ORDER BY backend_type;
+```
+
+the setting says on, and there's nobody to do it: one standalone backend, that's all. a real postgres 18.6 server, captured:
+
+<Figure caption={<>the processes of a real server, from pg_stat_activity. the <C k="hot">autovacuum launcher</C> is one of them; its workers come and go.</>}>
+<ResultTable columns={procs.columns} rows={procs.rows} rowTones={procs.rows.map((r) => (r[0] === "autovacuum launcher" ? "hot" : null))} />
+<Provenance trace={prov(av)} />
+</Figure>
+
+everything below about autovacuum itself is captured on a native server, or read from one.
+
+## the trigger
+
+each round, for each table, the launcher compares the statistics system's count of dead rows (`n_dead_tup`) with:
+
+```text
+vacuum threshold = min(autovacuum_vacuum_max_threshold,
+                       autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × reltuples)
+```
+
+the defaults are {cost.autovacuum_vacuum_threshold} and {cost.autovacuum_vacuum_scale_factor}, so 50 dead rows plus a fifth of the table. the cap is new in postgres 18 <Since v={18} />, at {cost.autovacuum_vacuum_max_threshold.toLocaleString("en-US")}. there are two more triggers on the same pattern: inserted rows (so insert-only tables still get vacuumed, for the [visibility map](/learn/storage/fsm-and-vm) and [freezing](/learn/mvcc/freezing-and-wraparound)), and changed rows for ANALYZE.
+
+<Figure wide caption={<>slide the table size. the <C k="dead">dead</C> share of the table before a worker comes is the same 20% for any big table, until postgres 18's cap kicks in. try the smaller scale factors, the usual fix for big tables.</>}>
+<AutovacuumMath trace={settings} />
+</Figure>
+
+<Predict question="postgres 18, default settings, a 1,000,000,000-row table. how many dead rows before autovacuum vacuums it?" options={["250", "100 million", "200 million"]} answer={1}>
+```text
+50 + 0.2 × 1,000,000,000 = 200,000,050
+```
+<Explain>
+100 million. the formula says 200,000,050, but postgres 18 caps it with autovacuum_vacuum_max_threshold, 100,000,000 by default. on 17 and older the table really would wait for 200 million dead rows. either way that's a lot of dead rows to scan past, which is why big, busy tables get their own scale factor.
+</Explain>
+</Predict>
+
+## watching it work
+
+this capture switches autovacuum on with a one-second nap. (server-wide thresholds are pushed out of reach so the catalogs are left alone and the run repeats exactly; the table gets the default threshold back as a storage parameter.) a 1,000-row table has a threshold of 250. delete 300 rows, wait:
+
+<Figure wide caption={<>switch moments. the statistics count 300 dead rows; a few seconds later a worker has been and gone: <C k="live">0 dead</C>, and autovacuum_count is 1. nobody typed VACUUM.</>}>
+<RunPick options={[{ key: "when", values: ["right after the DELETE", "three seconds later"] }]} runs={runs} trace={prov(av)} file="stats.sql" />
+</Figure>
+
+and the worker's own report, from the server log (with `log_autovacuum_min_duration = 0` on the table):
+
+<Figure caption={<>the worker's log line. the same report VACUUM VERBOSE prints, as a <C k="hot">LOG</C> line. 300 removed, two pages newly all-visible and one all-frozen, and the index cleaned.</>}>
+<SqlPanel code={avlog} lang="text" hot={[1, 3, 6]} nolines />
+<Provenance trace={prov(av)} />
+</Figure>
+
+in the browser, the dead rows just stay. the counter is there; nobody reads it:
+
+```sql run session=av
+DELETE FROM notes WHERE id <= 100;
+SELECT pg_stat_force_next_flush();
+SELECT n_dead_tup, last_autovacuum, autovacuum_count
+FROM pg_stat_user_tables WHERE relname = 'notes';
+```
+
+## going slowly on purpose
+
+a worker charges itself for every page it touches: {cost.vacuum_cost_page_hit} for a page already in [shared buffers](/learn/storage/buffer-pool), {cost.vacuum_cost_page_miss} for one it has to read, {cost.vacuum_cost_page_dirty} for one it dirties. when the total reaches the cost limit ({cost.vacuum_cost_limit}, since `autovacuum_vacuum_cost_limit` is {cost.autovacuum_vacuum_cost_limit}, meaning "use vacuum_cost_limit") it sleeps for `autovacuum_vacuum_cost_delay`, {cost.autovacuum_vacuum_cost_delay} ms. and the limit is shared: with several workers running, each gets a proportional slice of it.
+
+<Figure caption={<>pages a worker can process between two {cost.autovacuum_vacuum_cost_delay} ms naps, by what it does to them. arithmetic on the defaults a real server reported, not a measurement. a manual VACUUM has vacuum_cost_delay = {cost.vacuum_cost_delay}: it never naps.</>}>
+<Bars data={[
+  { label: "pages found in shared buffers", value: cost.vacuum_cost_limit / cost.vacuum_cost_page_hit, tone: "live" },
+  { label: "pages read from disk", value: cost.vacuum_cost_limit / cost.vacuum_cost_page_miss, tone: "hot" },
+  { label: "pages dirtied", value: cost.vacuum_cost_limit / cost.vacuum_cost_page_dirty },
+]} unit=" pages" />
+<Provenance trace={prov(settings)} />
+</Figure>
+
+that's the right default for a background chore on a shared machine, and the wrong one for a table that's falling behind. a worker that dirties every page it visits manages {cost.vacuum_cost_limit / cost.vacuum_cost_page_dirty} pages per nap.
+
+## the busy table it never reaches
+
+the usual ways autovacuum loses:
+
+- **the table is big.** 20% of a big table is a lot of dead rows, and a scan of a big table at a polite pace takes a long time. lower the scale factor for that table:
+
+```sql run session=av
+ALTER TABLE notes SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 1000);
+SELECT relname, reloptions FROM pg_class WHERE relname = 'notes';
+```
+
+- **the workers are busy.** `autovacuum_max_workers` is {cost.autovacuum_max_workers}. three huge tables can occupy all of them for hours while everything else waits. postgres 18 lets you raise it without a restart, up to `autovacuum_worker_slots` ({cost.autovacuum_worker_slots}) <Since v={18} />.
+- **it's too polite.** raise `autovacuum_vacuum_cost_limit` (say to 1000 or 2000 on decent storage), or lower the delay.
+- **it can't remove anything.** a worker can be running constantly and still report "dead but not yet removable" for every row, because [a forgotten transaction](/learn/mvcc/xmin-horizon) is holding the horizon back. no setting fixes that.
+
+`pg_stat_progress_vacuum` shows a running vacuum's phase and how far through the heap it is. `n_dead_tup`, `last_autovacuum` and `autovacuum_count` in `pg_stat_user_tables` tell you whether it's keeping up.
+
+<Gotcha title="turning autovacuum off doesn't turn it off">
+`autovacuum = off` stops the routine vacuums. it doesn't stop the anti-wraparound ones: once a table's oldest unfrozen xid gets older than `autovacuum_freeze_max_age`, a worker is started for it anyway. and where a normal autovacuum (which holds a [SHARE UPDATE EXCLUSIVE lock](/learn/locking/table-lock-modes)) steps aside when someone wants a conflicting lock, this one (it shows up as "(to prevent wraparound)" in pg_stat_activity) doesn't. people who disable autovacuum to "save I/O" get this vacuum later, all at once, at the worst time. see [freezing and wraparound](/learn/mvcc/freezing-and-wraparound).
+</Gotcha>
+
+<Interview q="when does autovacuum vacuum a table, and why might it fall behind?">
+the launcher checks each table every autovacuum_naptime; a table is vacuumed when its dead tuple count exceeds autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × reltuples (50 + 20% by default, capped at autovacuum_vacuum_max_threshold since postgres 18), or its inserts exceed the insert threshold, or it needs freezing. workers throttle themselves with cost-based delays and share a cost limit. it falls behind on big tables (the 20% is huge), when all workers are tied up, when the cost limit is too low for the write rate, or when an old snapshot keeps dead tuples from being removable. bonus point: per-table storage parameters (ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ...)) are the usual fix for the big ones.
+</Interview>
+
+<Keylines>
+- the launcher wakes every naptime; a table past 50 + 20% dead rows gets a worker.
+- postgres 18 caps that at 100 million dead rows. inserts and changes for ANALYZE have triggers of their own.
+- workers throttle themselves: page costs against a shared limit, then a short nap.
+- big tables need a smaller scale factor. a stuck horizon needs a fixed transaction, not a setting.
+- the browser engine has no autovacuum: every VACUUM on this site is one you can see.
+</Keylines>

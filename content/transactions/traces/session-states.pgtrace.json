@@ -1,0 +1,136 @@
+{
+ "v": 1,
+ "scenario": "content/transactions/traces/session-states.scenario.sql",
+ "title": "one session through a transaction, with pg_stat_activity's state read after every statement",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": false,
+  "ioMethod": "worker"
+ },
+ "server": {
+  "TimeZone": "UTC",
+  "DateStyle": "ISO, MDY",
+  "extra_float_digits": "1",
+  "lc_messages": "C",
+  "jit": "off",
+  "max_parallel_workers_per_gather": "0",
+  "autovacuum": "off",
+  "synchronize_seqscans": "off",
+  "checkpoint_timeout": "1d",
+  "max_wal_size": "4GB",
+  "bgwriter_lru_maxpages": "0",
+  "wal_writer_delay": "10s",
+  "deadlock_timeout": "100ms",
+  "wal_level": "replica",
+  "full_page_writes": "on"
+ },
+ "sessions": ["T1"],
+ "rels": {
+  "accounts": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [{"name":"id","type":"int4"},{"name":"owner","type":"text"},{"name":"balance","type":"numeric"}]
+  },
+  "accounts_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"accounts"}
+ },
+ "base": {"xid":759,"lsn":23211976},
+ "setup": "CREATE TABLE accounts (\n  id      int PRIMARY KEY,\n  owner   text NOT NULL,\n  balance numeric(12,2) NOT NULL CHECK (balance >= 0)\n);\nINSERT INTO accounts VALUES (1, 'alice', 100.00), (2, 'bob', 100.00), (3, 'carol', 0.00);\nVACUUM accounts;",
+ "steps": [
+  {
+   "i": 0,
+   "session": "obs",
+   "sql": "SELECT state FROM pg_stat_activity WHERE application_name = 'T1'",
+   "note": "T1 is connected, between statements, not in a transaction.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"state","type":"text"}],"data":[["idle"]]}
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "BEGIN",
+   "note": "BEGIN opens a transaction block.",
+   "status": "ok",
+   "result": {"command":"BEGIN","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 2,
+   "session": "obs",
+   "sql": "SELECT state FROM pg_stat_activity WHERE application_name = 'T1'",
+   "note": "between statements now, but inside a transaction.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"state","type":"text"}],"data":[["idle in transaction"]]}
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = balance + 50.00 WHERE id = 1",
+   "note": "T1 updates alice. the transaction holds her row until it ends.",
+   "status": "ok",
+   "result": {"command":"UPDATE","rows":1,"columns":[],"data":[]}
+  },
+  {
+   "i": 4,
+   "session": "obs",
+   "sql": "SELECT state FROM pg_stat_activity WHERE application_name = 'T1'",
+   "note": "still idle in transaction, now holding a row lock.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"state","type":"text"}],"data":[["idle in transaction"]]}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "UPDATE accounts SET balance = balance - 50.00 WHERE id = 3",
+   "note": "T1 takes 50.00 from carol, who has 0.00. the CHECK says no.",
+   "status": "error",
+   "error": {
+    "sqlstate": "23514",
+    "message": "new row for relation \"accounts\" violates check constraint \"accounts_balance_check\"",
+    "detail": "Failing row contains (3, carol, -50.00)."
+   }
+  },
+  {
+   "i": 6,
+   "session": "obs",
+   "sql": "SELECT state FROM pg_stat_activity WHERE application_name = 'T1'",
+   "note": "the transaction is still open, but it's aborted.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"state","type":"text"}],
+    "data": [["idle in transaction (aborted)"]]
+   }
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT balance FROM accounts WHERE id = 1",
+   "note": "anything else T1 sends is refused, even a plain read.",
+   "status": "error",
+   "error": {
+    "sqlstate": "25P02",
+    "message": "current transaction is aborted, commands ignored until end of transaction block"
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "COMMIT",
+   "note": "COMMIT ends it. the reply is ROLLBACK, and alice's 50.00 goes with it.",
+   "status": "ok",
+   "result": {"command":"ROLLBACK","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "obs",
+   "sql": "SELECT state FROM pg_stat_activity WHERE application_name = 'T1'",
+   "note": "back to idle.",
+   "status": "ok",
+   "result": {"command":"SELECT","rows":1,"columns":[{"name":"state","type":"text"}],"data":[["idle"]]}
+  }
+ ]
+}

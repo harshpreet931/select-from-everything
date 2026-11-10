@@ -1,0 +1,250 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "c5a7a2d1c8c37fa2": {
+      "db": "shop",
+      "sql": "SELECT country, count(*) AS customers\nFROM customers\nWHERE city IS NOT NULL\nGROUP BY country\nHAVING count(*) > 150\nORDER BY customers DESC, country;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["country", "bpchar", 1042],
+            ["customers", "int8", 20]
+          ],
+          "rowCount": 4,
+          "digest": "35c4140526fb4ad8",
+          "rows": [
+            ["US", "593"],
+            ["DE", "273"],
+            ["GB", "245"],
+            ["IN", "229"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7b777b074d484c67": {
+      "db": "empty",
+      "sql": "SELECT 'a' || 'b';\nSELECT 3 / 5;\nSELECT 1 / 0;\nSELECT 'Ada' = 'ada';\nSELECT 'Ada' LIKE 'ada';\nSELECT 'Ada' ILIKE 'ada';\nSELECT '42'::int;\nSELECT 1 FETCH FIRST 1 ROWS ONLY;",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "text", 25]
+          ],
+          "rowCount": 1,
+          "digest": "3f554512124be2d7",
+          "rows": [
+            ["ab"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "d198af3a187f1f2f",
+          "rows": [
+            ["0"]
+          ]
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22012",
+            "message": "division by zero"
+          },
+          "digest": "dbb1111627573450"
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "1198ee0580b9b830",
+          "rows": [
+            ["f"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "dd57e2428d3d9c0d",
+          "rows": [
+            ["f"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "39dece7b1b112b34",
+          "rows": [
+            ["t"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["int4", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "36fa1291dbeba0b7",
+          "rows": [
+            ["42"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["?column?", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "b0583da6908e9ea6",
+          "rows": [
+            ["1"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22012",
+        "message": "division by zero",
+        "statement": 2
+      },
+      "txn": "I"
+    },
+    "c291e4eb10a30f65": {
+      "db": "empty",
+      "sql": "CREATE TABLE t (n integer);\nINSERT INTO t VALUES ('forty-two');\nINSERT INTO t VALUES (7) RETURNING n;\nSELECT a.n, b.n FROM t AS a FULL OUTER JOIN t AS b ON a.n = b.n;",
+      "statements": [
+        {
+          "tag": "CREATE TABLE",
+          "command": "CREATE TABLE",
+          "columns": null,
+          "rowCount": null,
+          "digest": "6b8a5a0782580feb"
+        },
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "22P02",
+            "message": "invalid input syntax for type integer: \"forty-two\"",
+            "position": 23
+          },
+          "digest": "88c51f07ea20ed0f"
+        },
+        {
+          "tag": "INSERT 0 1",
+          "command": "INSERT",
+          "columns": [
+            ["n", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "416c9d6fb08222d8",
+          "rows": [
+            ["7"]
+          ]
+        },
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["n", "int4", 23],
+            ["n", "int4", 23]
+          ],
+          "rowCount": 1,
+          "digest": "1a1e065462f6db24",
+          "rows": [
+            ["7", "7"]
+          ]
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "22P02",
+        "message": "invalid input syntax for type integer: \"forty-two\"",
+        "position": 23,
+        "statement": 1
+      },
+      "txn": "I"
+    },
+    "9710bb64f0583756": {
+      "db": "shop",
+      "sql": "SELECT id, name FROM customers ORDER BY id LIMIT 10, 3;",
+      "statements": [
+        {
+          "tag": "",
+          "command": "ERROR",
+          "columns": null,
+          "rowCount": null,
+          "error": {
+            "severity": "ERROR",
+            "sqlstate": "42601",
+            "message": "LIMIT #,# syntax is not supported",
+            "hint": "Use separate LIMIT and OFFSET clauses.",
+            "position": 44
+          },
+          "digest": "d5528c75354673b2"
+        }
+      ],
+      "error": {
+        "severity": "ERROR",
+        "sqlstate": "42601",
+        "message": "LIMIT #,# syntax is not supported",
+        "hint": "Use separate LIMIT and OFFSET clauses.",
+        "position": 44,
+        "statement": 0
+      },
+      "txn": "I"
+    },
+    "73e239331e153c6e": {
+      "db": "shop",
+      "sql": "SELECT id, name FROM customers ORDER BY id\nOFFSET 10 ROWS FETCH FIRST 3 ROWS ONLY;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["id", "int4", 23],
+            ["name", "text", 25]
+          ],
+          "rowCount": 3,
+          "digest": "247cc9894459a8ff",
+          "rows": [
+            ["11", "Ana Lima"],
+            ["12", "Ravi Kumar"],
+            ["13", "Mei Kowalski"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

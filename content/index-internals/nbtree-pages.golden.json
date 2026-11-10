@@ -1,0 +1,236 @@
+{
+  "v": 1,
+  "engine": "PostgreSQL 18.6 (PGlite 0.5.12)",
+  "blocks": {
+    "d9fd6c7e2f7c1a7d": {
+      "db": "shop",
+      "sql": "SELECT * FROM bt_metap('orders_pkey');",
+      "statements": [
+        {
+          "tag": "SELECT 1",
+          "command": "SELECT",
+          "columns": [
+            ["magic", "int4", 23],
+            ["version", "int4", 23],
+            ["root", "int8", 20],
+            ["level", "int8", 20],
+            ["fastroot", "int8", 20],
+            ["fastlevel", "int8", 20],
+            ["last_cleanup_num_delpages", "int8", 20],
+            ["last_cleanup_num_tuples", "float8", 701],
+            ["allequalimage", "bool", 16]
+          ],
+          "rowCount": 1,
+          "digest": "1fdf65d8bf4af715",
+          "rows": [
+            ["340322", "4", "3", "1", "3", "1", "0", "-1", "t"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "12135bc49c48b311": {
+      "db": "shop",
+      "sql": "SELECT blkno, type, live_items, avg_item_size, free_size,\n       btpo_prev AS prev, btpo_next AS next, btpo_level AS level\nFROM bt_multi_page_stats('orders_pkey', 1, -1)\nORDER BY blkno;",
+      "statements": [
+        {
+          "tag": "SELECT 29",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["type", "char", 18],
+            ["live_items", "int4", 23],
+            ["avg_item_size", "int4", 23],
+            ["free_size", "int4", 23],
+            ["prev", "int8", 20],
+            ["next", "int8", 20],
+            ["level", "int8", 20]
+          ],
+          "rowCount": 29,
+          "digest": "1368c98b887f0d14",
+          "rows": [
+            ["1", "l", "367", "16", "808", "0", "2", "0"],
+            ["2", "l", "367", "16", "808", "1", "4", "0"],
+            ["3", "r", "28", "15", "7596", "0", "0", "1"],
+            ["4", "l", "367", "16", "808", "2", "5", "0"],
+            ["5", "l", "367", "16", "808", "4", "6", "0"],
+            ["6", "l", "367", "16", "808", "5", "7", "0"],
+            ["7", "l", "367", "16", "808", "6", "8", "0"],
+            ["8", "l", "367", "16", "808", "7", "9", "0"],
+            ["9", "l", "367", "16", "808", "8", "10", "0"],
+            ["10", "l", "367", "16", "808", "9", "11", "0"],
+            ["11", "l", "367", "16", "808", "10", "12", "0"],
+            ["12", "l", "367", "16", "808", "11", "13", "0"],
+            ["13", "l", "367", "16", "808", "12", "14", "0"],
+            ["14", "l", "367", "16", "808", "13", "15", "0"],
+            ["15", "l", "367", "16", "808", "14", "16", "0"],
+            ["16", "l", "367", "16", "808", "15", "17", "0"],
+            ["17", "l", "367", "16", "808", "16", "18", "0"],
+            ["18", "l", "367", "16", "808", "17", "19", "0"],
+            ["19", "l", "367", "16", "808", "18", "20", "0"],
+            ["20", "l", "367", "16", "808", "19", "21", "0"],
+            ["21", "l", "367", "16", "808", "20", "22", "0"],
+            ["22", "l", "367", "16", "808", "21", "23", "0"],
+            ["23", "l", "367", "16", "808", "22", "24", "0"],
+            ["24", "l", "367", "16", "808", "23", "25", "0"],
+            ["25", "l", "367", "16", "808", "24", "26", "0"],
+            ["26", "l", "367", "16", "808", "25", "27", "0"],
+            ["27", "l", "367", "16", "808", "26", "28", "0"],
+            ["28", "l", "367", "16", "808", "27", "29", "0"],
+            ["29", "l", "118", "16", "5788", "28", "0", "0"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "169e40114facfaba": {
+      "db": "shop",
+      "sql": "SELECT p.blkno, h.lower, h.upper, h.special, s.live_items, s.free_size, s.btpo_flags\nFROM (VALUES (1), (3), (29)) AS p(blkno),\n     page_header(get_raw_page('orders_pkey', p.blkno)) AS h,\n     bt_page_stats('orders_pkey', p.blkno) AS s\nORDER BY p.blkno;",
+      "statements": [
+        {
+          "tag": "SELECT 3",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int4", 23],
+            ["lower", "int4", 23],
+            ["upper", "int4", 23],
+            ["special", "int4", 23],
+            ["live_items", "int4", 23],
+            ["free_size", "int4", 23],
+            ["btpo_flags", "int4", 23]
+          ],
+          "rowCount": 3,
+          "digest": "331b4aba3ba4aecd",
+          "rows": [
+            ["1", "1492", "2304", "8176", "367", "808", "1"],
+            ["3", "136", "7736", "8176", "28", "7596", "2"],
+            ["29", "496", "6288", "8176", "118", "5788", "1"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "7d1df8b87291e2f2": {
+      "db": "shop",
+      "sql": "SELECT itemoffset, ctid, itemlen, htid, data\nFROM bt_page_items('orders_pkey', 1)\nWHERE itemoffset <= 3 OR itemoffset = 367\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "SELECT 4",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["ctid", "tid", 27],
+            ["itemlen", "int2", 21],
+            ["htid", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 4,
+          "digest": "29889686ab335d61",
+          "rows": [
+            ["1", "(3,1)", "16", null, "6f 01 00 00 00 00 00 00"],
+            ["2", "(0,1)", "16", "(0,1)", "01 00 00 00 00 00 00 00"],
+            ["3", "(0,2)", "16", "(0,2)", "02 00 00 00 00 00 00 00"],
+            ["367", "(3,5)", "16", "(3,5)", "6e 01 00 00 00 00 00 00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "4b4a1faaf76d86b2": {
+      "db": "shop",
+      "sql": "SELECT itemoffset, ctid AS downlink, itemlen, data\nFROM bt_page_items('orders_pkey', 3)\nWHERE itemoffset <= 4 OR itemoffset = 28\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "SELECT 5",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["downlink", "tid", 27],
+            ["itemlen", "int2", 21],
+            ["data", "text", 25]
+          ],
+          "rowCount": 5,
+          "digest": "7610d7f96b62f46d",
+          "rows": [
+            ["1", "(1,0)", "8", ""],
+            ["2", "(2,1)", "16", "6f 01 00 00 00 00 00 00"],
+            ["3", "(4,1)", "16", "dd 02 00 00 00 00 00 00"],
+            ["4", "(5,1)", "16", "4b 04 00 00 00 00 00 00"],
+            ["28", "(29,1)", "16", "9b 26 00 00 00 00 00 00"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    },
+    "42259496a41dea66": {
+      "db": "shop",
+      "sql": "CREATE INDEX orders_status ON orders (status);\nSELECT blkno, type, live_items, avg_item_size, free_size\nFROM bt_multi_page_stats('orders_status', 1, -1)\nORDER BY blkno;\nSELECT itemoffset, itemlen, cardinality(tids) AS rows, htid, left(data, 20) AS data\nFROM bt_page_items('orders_status', 1)\nORDER BY itemoffset;",
+      "statements": [
+        {
+          "tag": "CREATE INDEX",
+          "command": "CREATE INDEX",
+          "columns": null,
+          "rowCount": null,
+          "digest": "f4ff18fb7d24a707"
+        },
+        {
+          "tag": "SELECT 10",
+          "command": "SELECT",
+          "columns": [
+            ["blkno", "int8", 20],
+            ["type", "char", 18],
+            ["live_items", "int4", 23],
+            ["avg_item_size", "int4", 23],
+            ["free_size", "int4", 23]
+          ],
+          "rowCount": 10,
+          "digest": "4f4fc536a911313a",
+          "rows": [
+            ["1", "l", "10", "686", "1244"],
+            ["2", "l", "10", "730", "804"],
+            ["3", "r", "9", "29", "7848"],
+            ["4", "l", "10", "730", "804"],
+            ["5", "l", "10", "730", "804"],
+            ["6", "l", "10", "730", "804"],
+            ["7", "l", "10", "730", "804"],
+            ["8", "l", "10", "730", "804"],
+            ["9", "l", "10", "730", "804"],
+            ["10", "l", "7", "635", "3672"]
+          ]
+        },
+        {
+          "tag": "SELECT 10",
+          "command": "SELECT",
+          "columns": [
+            ["itemoffset", "int2", 21],
+            ["itemlen", "int2", 21],
+            ["rows", "int4", 23],
+            ["htid", "tid", 27],
+            ["data", "text", 25]
+          ],
+          "rowCount": 10,
+          "digest": "b9feed232df50203",
+          "rows": [
+            ["1", "32", null, "(6,104)", "15 64 65 6c 69 76 65"],
+            ["2", "808", "130", "(0,1)", "15 63 61 6e 63 65 6c"],
+            ["3", "808", "130", "(30,99)", "15 63 61 6e 63 65 6c"],
+            ["4", "368", "57", "(66,103)", "15 63 61 6e 63 65 6c"],
+            ["5", "808", "130", "(0,2)", "15 64 65 6c 69 76 65"],
+            ["6", "808", "130", "(1,18)", "15 64 65 6c 69 76 65"],
+            ["7", "808", "130", "(2,41)", "15 64 65 6c 69 76 65"],
+            ["8", "808", "130", "(3,56)", "15 64 65 6c 69 76 65"],
+            ["9", "808", "130", "(4,75)", "15 64 65 6c 69 76 65"],
+            ["10", "808", "130", "(5,90)", "15 64 65 6c 69 76 65"]
+          ]
+        }
+      ],
+      "error": null,
+      "txn": "I"
+    }
+  }
+}

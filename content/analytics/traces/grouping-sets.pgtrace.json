@@ -1,0 +1,259 @@
+{
+ "v": 1,
+ "scenario": "content/analytics/traces/grouping-sets.scenario.sql",
+ "title": "ROLLUP, CUBE and GROUPING SETS over the shop's orders by year and status",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {
+  "customers": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"name","type":"text"},
+    {"name":"email","type":"text"},
+    {"name":"city","type":"text"},
+    {"name":"country","type":"bpchar"},
+    {"name":"created_at","type":"timestamptz"}
+   ]
+  },
+  "customers_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"customers"},
+  "customers_email_key": {"kind":"index","am":"btree","columns":[{"name":"email","type":"text"}],"on":"customers"},
+  "products": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"sku","type":"text"},
+    {"name":"name","type":"text"},
+    {"name":"category","type":"text"},
+    {"name":"price","type":"numeric"},
+    {"name":"tags","type":"_text"},
+    {"name":"attrs","type":"jsonb"},
+    {"name":"description","type":"text"},
+    {"name":"discontinued","type":"bool"}
+   ]
+  },
+  "products_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"products"},
+  "products_sku_key": {"kind":"index","am":"btree","columns":[{"name":"sku","type":"text"}],"on":"products"},
+  "orders": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"id","type":"int4"},
+    {"name":"customer_id","type":"int4"},
+    {"name":"status","type":"text"},
+    {"name":"ordered_at","type":"timestamptz"},
+    {"name":"shipped_at","type":"timestamptz"}
+   ]
+  },
+  "orders_pkey": {"kind":"index","am":"btree","columns":[{"name":"id","type":"int4"}],"on":"orders"},
+  "order_items": {
+   "kind": "table",
+   "am": "heap",
+   "columns": [
+    {"name":"order_id","type":"int4"},
+    {"name":"line_no","type":"int2"},
+    {"name":"product_id","type":"int4"},
+    {"name":"qty","type":"int4"},
+    {"name":"unit_price","type":"numeric"}
+   ]
+  },
+  "order_items_pkey": {
+   "kind": "index",
+   "am": "btree",
+   "columns": [{"name":"order_id","type":"int4"},{"name":"line_no","type":"int2"}],
+   "on": "order_items"
+  }
+ },
+ "base": {"xid":798,"lsn":33378632},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT year, status, count(*) AS orders, GROUPING(year, status) AS g\nFROM (SELECT extract(year FROM ordered_at)::int AS year, status FROM orders) AS o\nGROUP BY year, status\nORDER BY year NULLS LAST, status NULLS LAST",
+   "note": "plain GROUP BY: one row per year and status that exists. 9 rows, and GROUPING() is 0 on every one: nothing is rolled up.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 9,
+    "columns": [
+     {"name":"year","type":"int4"},
+     {"name":"status","type":"text"},
+     {"name":"orders","type":"int8"},
+     {"name":"g","type":"int4"}
+    ],
+    "data": [
+     ["2025","cancelled","183","0"],
+     ["2025","delivered","4864","0"],
+     ["2025","refunded","47","0"],
+     ["2026","cancelled","134","0"],
+     ["2026","delivered","4488","0"],
+     ["2026","paid","62","0"],
+     ["2026","placed","51","0"],
+     ["2026","refunded","51","0"],
+     ["2026","shipped","120","0"]
+    ]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT year, status, count(*) AS orders, GROUPING(year, status) AS g\nFROM (SELECT extract(year FROM ordered_at)::int AS year, status FROM orders) AS o\nGROUP BY ROLLUP (year, status)\nORDER BY year NULLS LAST, status NULLS LAST",
+   "note": "ROLLUP adds a subtotal per year (status rolled up, GROUPING 1) and a grand total (both rolled up, GROUPING 3). 12 rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [
+     {"name":"year","type":"int4"},
+     {"name":"status","type":"text"},
+     {"name":"orders","type":"int8"},
+     {"name":"g","type":"int4"}
+    ],
+    "data": [
+     ["2025","cancelled","183","0"],
+     ["2025","delivered","4864","0"],
+     ["2025","refunded","47","0"],
+     ["2025",null,"5094","1"],
+     ["2026","cancelled","134","0"],
+     ["2026","delivered","4488","0"],
+     ["2026","paid","62","0"],
+     ["2026","placed","51","0"],
+     ["2026","refunded","51","0"],
+     ["2026","shipped","120","0"],
+     ["2026",null,"4906","1"],
+     [null,null,"10000","3"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT year, status, count(*) AS orders, GROUPING(year, status) AS g\nFROM (SELECT extract(year FROM ordered_at)::int AS year, status FROM orders) AS o\nGROUP BY CUBE (year, status)\nORDER BY year NULLS LAST, status NULLS LAST",
+   "note": "CUBE adds every combination: the ROLLUP rows, plus a total per status across both years (GROUPING 2). 18 rows.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 18,
+    "columns": [
+     {"name":"year","type":"int4"},
+     {"name":"status","type":"text"},
+     {"name":"orders","type":"int8"},
+     {"name":"g","type":"int4"}
+    ],
+    "data": [
+     ["2025","cancelled","183","0"],
+     ["2025","delivered","4864","0"],
+     ["2025","refunded","47","0"],
+     ["2025",null,"5094","1"],
+     ["2026","cancelled","134","0"],
+     ["2026","delivered","4488","0"],
+     ["2026","paid","62","0"],
+     ["2026","placed","51","0"],
+     ["2026","refunded","51","0"],
+     ["2026","shipped","120","0"],
+     ["2026",null,"4906","1"],
+     [null,"cancelled","317","2"],
+     [null,"delivered","9352","2"],
+     [null,"paid","62","2"],
+     [null,"placed","51","2"],
+     [null,"refunded","98","2"],
+     [null,"shipped","120","2"],
+     [null,null,"10000","3"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT year, status, count(*) AS orders, GROUPING(year, status) AS g\nFROM (SELECT extract(year FROM ordered_at)::int AS year, status FROM orders) AS o\nGROUP BY GROUPING SETS ((year), (status))\nORDER BY year NULLS LAST, status NULLS LAST",
+   "note": "GROUPING SETS lists exactly the groupings you want. here only the two kinds of subtotal: 2 years and 6 statuses, no detail and no grand total.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 8,
+    "columns": [
+     {"name":"year","type":"int4"},
+     {"name":"status","type":"text"},
+     {"name":"orders","type":"int8"},
+     {"name":"g","type":"int4"}
+    ],
+    "data": [
+     ["2025",null,"5094","1"],
+     ["2026",null,"4906","1"],
+     [null,"cancelled","317","2"],
+     [null,"delivered","9352","2"],
+     [null,"paid","62","2"],
+     [null,"placed","51","2"],
+     [null,"refunded","98","2"],
+     [null,"shipped","120","2"]
+    ]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT category, count(*) AS products\nFROM products\nGROUP BY ROLLUP (category)\nORDER BY products, category",
+   "note": "ROLLUP over category: two rows say NULL. one is the three products that have no category, the other is the grand total. nothing in the output says which is which.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [{"name":"category","type":"text"},{"name":"products","type":"int8"}],
+    "data": [
+     [null,"3"],
+     ["books","12"],
+     ["games","14"],
+     ["garden","15"],
+     ["pets","17"],
+     ["kitchen","19"],
+     ["audio","21"],
+     ["outdoor","22"],
+     ["toys","24"],
+     ["office","26"],
+     ["bath","27"],
+     [null,"200"]
+    ]
+   }
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT CASE WHEN GROUPING(category) = 1 THEN '(all)' ELSE coalesce(category, '(none)') END AS category,\n       count(*) AS products,\n       GROUPING(category) AS g\nFROM products\nGROUP BY ROLLUP (category)\nORDER BY g, products, category",
+   "note": "GROUPING(category) is 1 on the row where category was rolled up, so it can label the total, and coalesce can label the real NULLs.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 12,
+    "columns": [{"name":"category","type":"text"},{"name":"products","type":"int8"},{"name":"g","type":"int4"}],
+    "data": [
+     ["(none)","3","0"],
+     ["books","12","0"],
+     ["games","14","0"],
+     ["garden","15","0"],
+     ["pets","17","0"],
+     ["kitchen","19","0"],
+     ["audio","21","0"],
+     ["outdoor","22","0"],
+     ["toys","24","0"],
+     ["office","26","0"],
+     ["bath","27","0"],
+     ["(all)","200","1"]
+    ]
+   }
+  }
+ ],
+ "db": "shop"
+}

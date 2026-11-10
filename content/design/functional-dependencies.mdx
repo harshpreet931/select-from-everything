@@ -1,0 +1,157 @@
+import { ClosureLab } from "@/components/figures/design/ClosureLab";
+import { goldenAt, tonedRun } from "@/components/figures/design/runs";
+import golden from "./functional-dependencies.golden.json";
+import { prov } from "@/lib/db/captured";
+import fd from "./traces/fd-check.pgtrace.json";
+
+{/* the RunPick reads traces/fd-check.scenario.sql (PGlite, school). the tones come from postgres's
+    own `agrees` column: false is dead. the closure lab is the textbook algorithm, run in the page. */}
+
+export const checks = {
+  "course_code → course_title": tonedRun(fd, 0, "agrees", { f: "dead" }),
+  "instructor_name → instructor_office": tonedRun(fd, 1, "agrees", { f: "dead" }),
+  "student_name → student_email": tonedRun(fd, 2, "agrees", { f: "dead" }),
+  "name → email, all students": tonedRun(fd, 3, "agrees", { f: "dead" }),
+};
+export const source = prov(fd);
+export const hannah = goldenAt(golden, "WHERE instructor_name = 'Hannah Okoye'");
+export const hannahTones = hannah.rows.map((r) => (r[3] === "B-199" ? "dead" : null));
+
+<InShort>
+a **functional dependency** X → Y says: any two rows that agree on X agree on Y. course code determines course title; a student's id determines their name.
+
+it's a rule about every row the table could ever hold, so data can only **disprove** one (one counterexample), never prove it. the **closure** X⁺ is everything X determines, and X is a **candidate key** when X⁺ is every column and no smaller set manages it. keys and [normal forms](/learn/design/normal-forms) are both built from this.
+</InShort>
+
+## the picture
+
+you know how you can look at a spreadsheet and *feel* that some columns repeat? every row with CS101 says "Intro to Programming", every row with Hannah Okoye says B-101. that feeling has a name and a test.
+
+think of a phone book: the number determines the person who answers (number → person), but a name doesn't determine a number, because there are two Alex Kims. X → Y is a promise in one direction. it says nothing about Y → X.
+
+<Figure wide caption={<>pick a dependency. each row is one distinct (X, Y) pair in the school data, with how many rows carry it, and postgres&apos;s verdict: <code>agrees</code> is false, and the row <C k="dead">dead</C>, when the same X shows up with a second Y. the third and fourth are the same claim on 30 rows and on all 40 students.</>}>
+<RunPick options={[{ key: "fd", values: ["course_code → course_title", "instructor_name → instructor_office", "student_name → student_email", "name → email, all students"] }]} runs={checks} trace={source} maxRows={12} />
+</Figure>
+
+look at the last two. in enrollments_flat every student name happens to come with one email, so the data agrees with student_name → student_email. across all students it breaks: two different people called Alex Kim. a dependency comes from what the columns *mean* (an email identifies a person, a name doesn't). the data can only catch you being wrong.
+
+## checking one in SQL
+
+"rows that agree on X agree on Y" turns into a query almost word for word: group by X, and look for a group with more than one distinct Y.
+
+```sql run db=school
+SELECT instructor_name, count(DISTINCT instructor_office) AS offices,
+       string_agg(DISTINCT instructor_office, ', ' ORDER BY instructor_office) AS which
+FROM enrollments_flat
+GROUP BY instructor_name
+HAVING count(DISTINCT instructor_office) > 1
+ORDER BY instructor_name;
+```
+
+one row back is a violation. here are the rows behind it:
+
+```sql run db=school
+SELECT student_name, course_code, instructor_name, instructor_office
+FROM enrollments_flat
+WHERE instructor_name = 'Hannah Okoye'
+ORDER BY student_name, course_code;
+```
+
+<Figure caption={<>Hannah Okoye&apos;s five rows in enrollments_flat, from the block above. four say B-101. one says B-199, and since instructor_name → instructor_office should hold, that row is the <C k="dead">counterexample</C>: an office someone updated in one place only.</>}>
+<ResultTable columns={hannah.columns} rows={hannah.rows} rowTones={hannahTones} />
+</Figure>
+
+the B-199 row is the update anomaly the dataset plants on purpose. zero rows means "not disproved yet". for a dependency with several columns on either side, group by all of X and count distinct rows of Y: `count(DISTINCT (y1, y2))`.
+
+<Predict options={["no rows", "one row", "an error"]} answer={0}>
+```sql
+SELECT course_code
+FROM enrollments_flat
+GROUP BY course_code
+HAVING count(DISTINCT course_title) > 1;
+```
+<Explain>
+no rows. every course code in the table comes with one title, so course_code → course_title holds here (and it's a real rule: course codes are the courses table's primary key). no rows can't prove a rule, but here the meaning backs it up.
+</Explain>
+</Predict>
+
+## the one postgres knows about
+
+postgres doesn't track your dependencies, with one exception: a primary key determines every other column of its table. that's why you can GROUP BY a key and still select the other columns:
+
+```sql run db=school
+SELECT s.id, s.name, s.email, count(*) AS enrollments
+FROM students AS s JOIN enrollments AS e ON e.student_id = s.id
+GROUP BY s.id
+ORDER BY enrollments DESC, s.id
+LIMIT 3;
+```
+
+group by the name instead, and postgres won't assume name → email, rightly:
+
+```sql run db=school expect=error
+SELECT s.name, s.email, count(*) AS enrollments
+FROM students AS s JOIN enrollments AS e ON e.student_id = s.id
+GROUP BY s.name;
+```
+
+the standard calls this functional dependence and lets a database infer far more (from UNIQUE NOT NULL columns, from equalities in WHERE). postgres only uses primary keys of the grouped tables. ([GROUP BY](/learn/basics/group-by) has the rest.)
+
+## closure: everything X drags along
+
+dependencies combine. if order_id → email and email → address, then order_id → address. three rules, Armstrong's axioms, generate every dependency that follows from a set:
+
+<Defs>
+<dt>reflexivity</dt><dd>if Y is a subset of X, then X → Y. trivially, (a, b) → a.</dd>
+<dt>augmentation</dt><dd>if X → Y, then XZ → YZ. add the same columns to both sides.</dd>
+<dt>transitivity</dt><dd>if X → Y and Y → Z, then X → Z.</dd>
+</Defs>
+
+in practice you don't apply axioms by hand, you compute a **closure**: start with X, and keep adding the right side of any dependency whose left side you already have, until nothing changes. what you end with, X⁺, is everything X determines. if X⁺ is every column, X is a **superkey**; if it is and no proper subset of X is, X is a **candidate key**.
+
+<Figure wide caption={<>pick a table, pick starting attributes, and step. a dependency lights up <C k="hot">hot</C> when its left side is already inside, and its right side joins the closure. reach every attribute and the start set is a key; the line under it lists every candidate key.</>}>
+<ClosureLab presets={[
+  { name: "orders_wide", attrs: ["order_id", "sku", "qty", "product", "list_price", "ordered_on", "email", "customer", "address"], start: ["order_id"], fds: [
+    { lhs: ["order_id", "sku"], rhs: ["qty"] },
+    { lhs: ["sku"], rhs: ["product", "list_price"] },
+    { lhs: ["order_id"], rhs: ["ordered_on", "email"] },
+    { lhs: ["email"], rhs: ["customer", "address"] },
+  ] },
+  { name: "tutoring", attrs: ["student", "subject", "tutor"], start: ["student", "tutor"], fds: [
+    { lhs: ["student", "subject"], rhs: ["tutor"] },
+    { lhs: ["tutor"], rhs: ["subject"] },
+  ] },
+  { name: "enrollments_flat", attrs: ["student_email", "student_name", "course_code", "course_title", "instructor_name", "instructor_office", "term", "grade"], start: ["student_email", "course_code"], fds: [
+    { lhs: ["student_email"], rhs: ["student_name"] },
+    { lhs: ["course_code"], rhs: ["course_title", "instructor_name"] },
+    { lhs: ["instructor_name"], rhs: ["instructor_office"] },
+    { lhs: ["student_email", "course_code", "term"], rhs: ["grade"] },
+  ] },
+]} />
+</Figure>
+
+try orders_wide from `order_id` alone: you get the order's date, the customer and the address, but never the product or the qty, so it isn't a key. add `sku` and everything arrives. tutoring has two candidate keys, (student, subject) and (student, tutor), and that overlap is exactly the [BCNF](/learn/design/normal-forms) corner case. enrollments_flat needs the term too: the same student can take the same course twice.
+
+## from dependencies to keys and forms
+
+once you have the dependencies, the rest of design is mechanical:
+
+- the **candidate keys** are the minimal sets whose closure is everything. pick one as the primary key, put UNIQUE on the others ([keys](/learn/design/keys)).
+- a dependency whose left side isn't a key is redundancy waiting to happen. its right side gets repeated once per row with the same left side.
+- splitting the table so that left side becomes a key of its own table removes the redundancy, and keeps the join lossless. that's every step of [normal forms](/learn/design/normal-forms).
+
+<Gotcha title="don't mine dependencies from data and trust them">
+tools exist that scan a table and report every X → Y that holds. on a sample they report coincidences: in enrollments_flat, course_code → instructor_name holds today, but nothing stops a course getting a second instructor next term. a dependency you encode as a key or a table structure has to be true of the business, so ask what the columns mean, then use queries like the HAVING above to find the rows that already break it.
+</Gotcha>
+
+<Interview q="what's a functional dependency, and how do you find a table's candidate keys?">
+X → Y means any two rows with the same X values have the same Y values. it's a constraint from the meaning of the data, not something a sample proves. to find candidate keys, compute attribute closures: X⁺ is everything reachable by repeatedly applying dependencies whose left side is already in the set. X is a superkey if X⁺ is all attributes, and a candidate key if no proper subset is. bonus point: an attribute that never appears on any right side must be in every key, which prunes the search fast.
+</Interview>
+
+<Keylines>
+- X → Y: rows that agree on X agree on Y. one direction only.
+- data can disprove a dependency, never prove it. GROUP BY X HAVING count(DISTINCT Y) > 1 finds the counterexamples.
+- the closure X⁺ is everything X determines. X⁺ = all columns means X is a superkey.
+- a candidate key is a minimal superkey; a table can have several.
+- postgres knows one dependency: a primary key determines its row, so GROUP BY the key works.
+</Keylines>

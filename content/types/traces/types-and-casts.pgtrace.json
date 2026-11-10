@@ -1,0 +1,214 @@
+{
+ "v": 1,
+ "scenario": "content/types/traces/types-and-casts.scenario.sql",
+ "title": "literals and their types, the operators postgres can pick from, pg_cast, and five values stored into an int column",
+ "engine": {
+  "version": "18.6",
+  "major": 18,
+  "blockSize": 8192,
+  "walBlockSize": 8192,
+  "segSize": 16777216,
+  "checksums": true,
+  "ioMethod": "sync",
+  "build": "PGlite 0.5.12"
+ },
+ "server": {},
+ "sessions": ["T1"],
+ "rels": {"t":{"kind":"table","am":"heap","columns":[{"name":"n","type":"int4"}]}},
+ "base": {"xid":753,"lsn":25708888},
+ "setup": "",
+ "steps": [
+  {
+   "i": 0,
+   "session": "T1",
+   "sql": "SELECT pg_typeof('1') AS \"'1'\", pg_typeof(1) AS \"1\", pg_typeof('1.5') AS \"'1.5'\"",
+   "note": "the type of each literal on its own, before any operator touches it.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"'1'","type":"regtype"},{"name":"1","type":"regtype"},{"name":"'1.5'","type":"regtype"}],
+    "data": [["unknown","integer","unknown"]]
+   }
+  },
+  {
+   "i": 1,
+   "session": "T1",
+   "sql": "SELECT oprleft::regtype AS left_type, oprright::regtype AS right_type, oprresult::regtype AS result_type\nFROM pg_operator\nWHERE oprname = '+' AND oprkind = 'b' AND oprright = 'integer'::regtype\nORDER BY oprleft::regtype::text",
+   "note": "every binary + that takes an integer on the right.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 4,
+    "columns": [
+     {"name":"left_type","type":"regtype"},
+     {"name":"right_type","type":"regtype"},
+     {"name":"result_type","type":"regtype"}
+    ],
+    "data": [
+     ["bigint","integer","bigint"],
+     ["date","integer","date"],
+     ["integer","integer","integer"],
+     ["smallint","integer","integer"]
+    ]
+   }
+  },
+  {
+   "i": 2,
+   "session": "T1",
+   "sql": "SELECT oprleft::regtype AS left_type, oprright::regtype AS right_type, oprresult::regtype AS result_type\nFROM pg_operator\nWHERE oprname = '||'\nORDER BY oprleft::regtype::text, oprright::regtype::text",
+   "note": "every || there is.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 11,
+    "columns": [
+     {"name":"left_type","type":"regtype"},
+     {"name":"right_type","type":"regtype"},
+     {"name":"result_type","type":"regtype"}
+    ],
+    "data": [
+     ["anycompatible","anycompatiblearray","anycompatiblearray"],
+     ["anycompatiblearray","anycompatible","anycompatiblearray"],
+     ["anycompatiblearray","anycompatiblearray","anycompatiblearray"],
+     ["anynonarray","text","text"],
+     ["bit varying","bit varying","bit varying"],
+     ["bytea","bytea","bytea"],
+     ["jsonb","jsonb","jsonb"],
+     ["text","anynonarray","text"],
+     ["text","text","text"],
+     ["tsquery","tsquery","tsquery"],
+     ["tsvector","tsvector","tsvector"]
+    ]
+   }
+  },
+  {
+   "i": 3,
+   "session": "T1",
+   "sql": "SELECT '1' + 1 AS result, pg_typeof('1' + 1) AS type",
+   "note": "'1' + 1: the unknown takes integer from the other side.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"int4"},{"name":"type","type":"regtype"}],
+    "data": [["2","integer"]]
+   }
+  },
+  {
+   "i": 4,
+   "session": "T1",
+   "sql": "SELECT '1.5' + 1 AS result",
+   "note": "'1.5' + 1: same operator, so '1.5' has to be read as an integer, and it isn't one.",
+   "status": "error",
+   "error": {"sqlstate":"22P02","message":"invalid input syntax for type integer: \"1.5\""}
+  },
+  {
+   "i": 5,
+   "session": "T1",
+   "sql": "SELECT '1' || 1 AS result, pg_typeof('1' || 1) AS type",
+   "note": "'1' || 1: the unknown becomes text, and text || anynonarray takes the integer.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 1,
+    "columns": [{"name":"result","type":"text"},{"name":"type","type":"regtype"}],
+    "data": [["11","text"]]
+   }
+  },
+  {
+   "i": 6,
+   "session": "T1",
+   "sql": "SELECT 1 || 1 AS result",
+   "note": "1 || 1: two integers, and no || takes two integers.",
+   "status": "error",
+   "error": {"sqlstate":"42883","message":"operator does not exist: integer || integer"}
+  },
+  {
+   "i": 7,
+   "session": "T1",
+   "sql": "SELECT castsource::regtype AS source, casttarget::regtype AS target, castcontext AS context\nFROM pg_cast\nWHERE castsource = ANY ('{int2,int4,int8,numeric,float8,date,timestamptz,bool}'::regtype[])\n  AND casttarget = ANY ('{int2,int4,int8,numeric,float8,date,timestamptz,bool}'::regtype[])\n  AND castsource <> casttarget\nORDER BY array_position('{int2,int4,int8,numeric,float8,date,timestamptz,bool}'::regtype[], castsource),\n         array_position('{int2,int4,int8,numeric,float8,date,timestamptz,bool}'::regtype[], casttarget)",
+   "note": "the casts between eight common types, and the context each one is allowed in.",
+   "status": "ok",
+   "result": {
+    "command": "SELECT",
+    "rows": 24,
+    "columns": [{"name":"source","type":"regtype"},{"name":"target","type":"regtype"},{"name":"context","type":"char"}],
+    "data": [
+     ["smallint","integer","i"],
+     ["smallint","bigint","i"],
+     ["smallint","numeric","i"],
+     ["smallint","double precision","i"],
+     ["integer","smallint","a"],
+     ["integer","bigint","i"],
+     ["integer","numeric","i"],
+     ["integer","double precision","i"],
+     ["integer","boolean","e"],
+     ["bigint","smallint","a"],
+     ["bigint","integer","a"],
+     ["bigint","numeric","i"],
+     ["bigint","double precision","i"],
+     ["numeric","smallint","a"],
+     ["numeric","integer","a"],
+     ["numeric","bigint","a"],
+     ["numeric","double precision","i"],
+     ["double precision","smallint","a"],
+     ["double precision","integer","a"],
+     ["double precision","bigint","a"],
+     ["double precision","numeric","a"],
+     ["date","timestamp with time zone","i"],
+     ["timestamp with time zone","date","a"],
+     ["boolean","integer","e"]
+    ]
+   }
+  },
+  {
+   "i": 8,
+   "session": "T1",
+   "sql": "CREATE TABLE t (n int)",
+   "note": "an int column to store into.",
+   "status": "ok",
+   "result": {"command":"CREATE TABLE","rows":null,"columns":[],"data":[]}
+  },
+  {
+   "i": 9,
+   "session": "T1",
+   "sql": "INSERT INTO t (n) VALUES (3.7) RETURNING n",
+   "note": "3.7 is a numeric. numeric to integer is an assignment cast, so storing it rounds it.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[{"name":"n","type":"int4"}],"data":[["4"]]}
+  },
+  {
+   "i": 10,
+   "session": "T1",
+   "sql": "INSERT INTO t (n) VALUES ('3.7') RETURNING n",
+   "note": "'3.7' is an unknown literal, read straight as an integer. no numeric in between, so no rounding: it's just not an integer.",
+   "status": "error",
+   "error": {"sqlstate":"22P02","message":"invalid input syntax for type integer: \"3.7\""}
+  },
+  {
+   "i": 11,
+   "session": "T1",
+   "sql": "INSERT INTO t (n) VALUES (' 42 ') RETURNING n",
+   "note": "' 42 ' is an unknown literal too. integer input skips the spaces around it.",
+   "status": "ok",
+   "result": {"command":"INSERT","rows":1,"columns":[{"name":"n","type":"int4"}],"data":[["42"]]}
+  },
+  {
+   "i": 12,
+   "session": "T1",
+   "sql": "INSERT INTO t (n) VALUES (4000000000) RETURNING n",
+   "note": "4000000000 is a bigint. bigint to integer is an assignment cast, and the value doesn't fit.",
+   "status": "error",
+   "error": {"sqlstate":"22003","message":"integer out of range"}
+  },
+  {
+   "i": 13,
+   "session": "T1",
+   "sql": "INSERT INTO t (n) VALUES (true) RETURNING n",
+   "note": "true is a boolean. boolean to integer is explicit only, so storing it is refused before anything runs.",
+   "status": "error",
+   "error": {"sqlstate":"42804","message":"column \"n\" is of type integer but expression is of type boolean"}
+  }
+ ]
+}
