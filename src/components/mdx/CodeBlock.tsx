@@ -1,8 +1,9 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useMemo, useState, useSyncExternalStore, type ComponentProps } from "react";
-import { useSqlRunner, phaseText } from "@/components/code/useSqlRunner";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
+import { useSqlRunner, phaseText, runSummary } from "@/components/code/useSqlRunner";
+import { nth, track } from "@/lib/analytics";
 import { ResultGrid } from "@/components/code/ResultGrid";
 import { sqlCantRun, sqlCaveat } from "@/components/code/sqlSupport";
 import { goldenToView, useGolden } from "@/lib/sql/golden";
@@ -89,6 +90,7 @@ export function CodeBlock(props: PreProps) {
   const [editing, setEditing] = useState(false);
   const [code, setCode] = useState(original);
   const runner = useSqlRunner();
+  const frame = useRef<HTMLDivElement>(null);
   useSyncExternalStore(subscribeSession, sessionVersion, () => 0);
 
   const isSql = lang === "sql" && !!block;
@@ -115,6 +117,7 @@ export function CodeBlock(props: PreProps) {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
+      track("code_copied", { lang, block: nth(frame.current, ".code-frame"), edited: code !== original });
       setTimeout(() => setCopied(false), 1600);
     } catch {}
   };
@@ -141,12 +144,26 @@ export function CodeBlock(props: PreProps) {
             ? "edited"
             : "differs"
       : null;
+
+  // one sql_run per finished run, with the verdict against the golden the book printed
+  useEffect(() => {
+    if (!result || !block) return;
+    track("sql_run", {
+      ...runSummary(result),
+      golden: verdict ?? "none",
+      edited: edited || chainEdited,
+      block: nth(frame.current, ".code-frame"),
+      block_id: block.id,
+    });
+    // only when a new result lands
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
   const caveat = result && isSql ? sqlCaveat(code) : null;
   const priorBlocks = block?.prelude.length ?? 0;
   const stopped = !!(result?.timedOut || result?.aborted);
 
   return (
-    <div className="code-frame my-9 overflow-hidden rounded-md bg-well shadow-[inset_0_0_0_1px_var(--line)]">
+    <div ref={frame} className="code-frame my-9 overflow-hidden rounded-md bg-well shadow-[inset_0_0_0_1px_var(--line)]">
       <div className="flex min-h-10 items-center justify-between gap-3 border-b border-line py-1 pr-1.5 pl-4">
         <span className="flex min-w-0 flex-wrap items-baseline gap-x-3">
           {title ? (
@@ -185,7 +202,6 @@ export function CodeBlock(props: PreProps) {
                 className="act solid !min-h-7 !px-2.5 !text-12"
                 onClick={running ? runner.stop : doRun}
                 onMouseEnter={warm}
-                onFocus={warm}
                 title={
                   sqlWarm()
                     ? `runs on postgres ${site.pg.version} in your browser · ⌘↵ while editing`

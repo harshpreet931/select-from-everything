@@ -7,7 +7,7 @@ import { Search } from "@/components/site/Search";
 import { themeScript } from "@/lib/theme-script";
 import { site } from "@/lib/site";
 import { posthogScript } from "@/lib/analytics";
-import { totalChapters } from "@/content/curriculum";
+import { homeDescription } from "@/lib/seo";
 
 // three faces, three jobs: crimson pro for reading, cormorant for headings,
 // jetbrains mono for code and figures.
@@ -24,25 +24,28 @@ const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-code", displ
 export const metadata: Metadata = {
   metadataBase: new URL(site.url),
   title: { default: `learn sql and databases, visually · ${site.name}`, template: `%s · ${site.name}` },
-  description:
-    `a free, open-source visual guide to sql and databases by harshpreet: ${totalChapters} interactive chapters from the first SELECT to indexes, query plans, transactions, MVCC and the write-ahead log, with every query running on a real postgres ${site.pg.version} in your browser.`,
+  description: homeDescription,
   keywords: [
     "learn sql", "sql tutorial", "postgres tutorial", "postgresql", "sql visualized", "database internals", "explain analyze",
     "sql joins", "window functions", "database indexes", "mvcc", "isolation levels", "write-ahead log", "sql interview",
   ],
   category: "education",
-  // google search console: the domain property on harshpreet.com verifies every subdomain by dns
+  // google search console: the domain property on harshpreet.com verifies every subdomain by dns.
+  // pages build their own openGraph and twitter with pageMeta (lib/seo): next merges these shallowly
   openGraph: {
+    type: "website",
+    siteName: site.name,
+    locale: "en_US",
     title: site.name,
     description: site.description,
-    url: site.url,
-    siteName: site.name,
-    type: "website",
+    url: "/",
   },
   twitter: { card: "summary_large_image", title: site.name, description: site.description },
   authors: [{ name: site.author.name, url: site.author.url }],
   creator: site.author.name,
   publisher: site.author.name,
+  applicationName: site.name,
+  formatDetection: { telephone: false, email: false, address: false },
 };
 
 export const viewport: Viewport = {
@@ -66,23 +69,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <a
           href="#main"
-          className="fixed top-2 left-2 z-[70] -translate-y-20 rounded-sm bg-hi px-3 py-2 text-14 text-bg focus:translate-y-0"
+          className="fixed top-2 left-2 z-[70] -translate-y-20 rounded-sm bg-hi px-3 py-2 text-14 text-bg focus-visible:translate-y-0"
         >
           skip to content
         </a>
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
-              "@context": "https://schema.org",
-              "@type": "WebSite",
-              name: site.name,
-              url: site.url,
-              description: site.description,
-              author: { "@type": "Person", name: site.author.name, url: site.author.url, sameAs: [site.author.github] },
-            }),
-          }}
-        />
         <Bar />
         {children}
         <Search />

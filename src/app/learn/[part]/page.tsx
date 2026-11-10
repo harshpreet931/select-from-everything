@@ -5,6 +5,8 @@ import { getPart, parts, pad2 } from "@/content/curriculum";
 import { availableHrefs } from "@/lib/content";
 import { Glyph } from "@/components/home/Glyph";
 import { site } from "@/lib/site";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { pageMeta, partDescription, partJsonLd, partTitle } from "@/lib/seo";
 
 type Params = { part: string };
 
@@ -17,14 +19,13 @@ export function generateStaticParams(): Params[] {
 export async function generateMetadata({ params }: { params: Promise<Params> }): Promise<Metadata> {
   const p = getPart((await params).part);
   if (!p) return {};
-  const title = /sql|postgres/i.test(p.title) ? p.title : `${p.title} in ${p.n >= 9 ? "postgres" : "SQL"}`;
-  return {
-    title,
-    description: `${p.blurb} ${p.chapters.length} visual chapters with interactive diagrams and runnable code.`,
-    alternates: { canonical: `/learn/${p.slug}` },
-    openGraph: { url: `/learn/${p.slug}`, title: `${title} · ${site.name}` },
-  };
+  return pageMeta({
+    path: `/learn/${p.slug}`,
+    title: partTitle(p),
+    description: partDescription(p),
+  });
 }
+
 
 export default async function PartPage({ params }: { params: Promise<Params> }) {
   const p = getPart((await params).part);
@@ -37,6 +38,7 @@ export default async function PartPage({ params }: { params: Promise<Params> }) 
   return (
     <div className="px-[var(--gutter)] pt-10 pb-28 lg:pt-14 xl:pl-16">
       <main id="main" className="max-w-[880px]">
+        <JsonLd data={partJsonLd(p)} />
         <div className="text-12 text-faint">
           <Link href="/learn" className="hover:text-hi">
             everything

@@ -2,6 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { track } from "@/lib/analytics";
+
+// effects can run twice for one view (strict mode in dev): one event per path per second
+let reported = { path: "", at: 0 };
 
 // a real-format postgres error for the missing page. /learn/a/b reads as everything.a.b,
 // anything else as everything.public.<path>
@@ -13,7 +17,16 @@ function relationFor(path: string) {
 
 export default function NotFound() {
   const [rel, setRel] = useState("public.nothing");
-  useEffect(() => setRel(relationFor(window.location.pathname)), []);
+  useEffect(() => {
+    setRel(relationFor(window.location.pathname));
+    let from: string | undefined;
+    try {
+      from = document.referrer ? new URL(document.referrer).host : undefined;
+    } catch {}
+    const path = window.location.pathname.slice(0, 200);
+    if (reported.path !== path || Date.now() - reported.at > 1000) track("not_found", { path, from });
+    reported = { path, at: Date.now() };
+  }, []);
   const query = `SELECT * FROM everything.${rel};`;
   const caret = " ".repeat("LINE 1: SELECT * FROM ".length) + "^";
 

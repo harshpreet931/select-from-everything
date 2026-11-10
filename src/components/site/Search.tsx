@@ -178,11 +178,11 @@ export function Search() {
 
   useEffect(() => setActive(0), [q]);
 
-  // what people look for (and don't find): one event per settled query
+  // how search gets used: one event per settled query, with its length only, never the words
   useEffect(() => {
     const s = q.trim();
     if (s.length < 2) return;
-    const t = setTimeout(() => track("search", { q: s, results: hits.length }), 1200);
+    const t = setTimeout(() => track("search_used", { length: s.length, results: hits.length }), 1200);
     return () => clearTimeout(t);
   }, [q, hits.length]);
   useEffect(() => {
@@ -191,6 +191,7 @@ export function Search() {
 
   const go = (h: Hit | undefined) => {
     if (!h) return;
+    track("search_result_opened", { rank: hits.indexOf(h) + 1, kind: h.kind });
     close();
     router.push(h.href);
   };

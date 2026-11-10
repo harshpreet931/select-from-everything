@@ -68,7 +68,7 @@ INSERT INTO items VALUES (NULL);
 SELECT qty IS NULL AS stored_a_null FROM items;
 ```
 
-the [three-valued logic](/learn/basics/null-and-three-valued-logic) asymmetry, in one table. two other limits: a CHECK sees only the row being written (not other rows, not other tables, that's what UNIQUE, foreign keys and triggers are for), and any function it calls should be IMMUTABLE, because postgres never re-checks old rows when the function's answer changes.
+the [three-valued logic](/learn/basics/null-and-three-valued-logic) asymmetry, in one table. two other limits: a CHECK sees only the row being written (not other rows, not other tables, that's what UNIQUE, foreign keys and triggers are for), and any function it calls should be IMMUTABLE, because postgres never re-checks old rows when the function's answer changes. and when the same CHECK belongs on many columns, give it a name as a type: that's a domain ([booleans, enums and domains](/learn/types/booleans-enums-domains)).
 
 ## UNIQUE and its NULLs
 

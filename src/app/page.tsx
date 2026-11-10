@@ -6,8 +6,10 @@ import { Wall } from "@/components/home/Wall";
 import { Footer } from "@/components/site/Footer";
 import { availableHrefs } from "@/lib/content";
 import { totalChapters, parts } from "@/content/curriculum";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { homeDescription, homeJsonLd, homeTitle, pageMeta } from "@/lib/seo";
 
-export const metadata: Metadata = { alternates: { canonical: "/" } };
+export const metadata: Metadata = pageMeta({ path: "/", title: homeTitle, absolute: true, description: homeDescription });
 
 const rules: [string, React.ReactNode][] = [
   ["queries", "real. every snippet runs on postgres 18.6, right here in your browser."],
@@ -32,6 +34,7 @@ function SectionHead({ id, title, sub }: { id: string; title: string; sub: React
 export default function Home() {
   return (
     <main id="main">
+      <JsonLd data={homeJsonLd()} />
       <Hero />
       <Descent />
 

@@ -155,7 +155,7 @@ both tricks number rows in an order, so the order has to be total. two events wi
 </Gotcha>
 
 <Interview q="find each user's longest streak of consecutive active days.">
-reduce to one row per user per day (DISTINCT), then `day - row_number() OVER (PARTITION BY user_id ORDER BY day)` gives a value that's constant within each run of consecutive days. GROUP BY user_id and that value to get each streak's first day, last day and length, then take the max per user. bonus point: explain why it works (both sides go up by one per row inside a run, so the difference only changes at a gap), and mention the lag-plus-running-sum version for gaps that aren't exactly one (sessions with a timeout).
+reduce to one row per user per day (DISTINCT), then `day - row_number() OVER (PARTITION BY user_id ORDER BY day)` gives a value that's constant within each run of consecutive days. GROUP BY user_id and that value to get each streak's first day, last day and length, then take the max per user. bonus point: explain why it works (both sides go up by one per row inside a run, so the difference only changes at a gap), and mention the lag-plus-running-sum version for gaps that aren't exactly one (sessions with a timeout). the rest of the classics are in [SQL interview questions](/learn/deep-dives/sql-interview).
 </Interview>
 
 <Keylines>

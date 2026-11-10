@@ -5,7 +5,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { flat, getChapter, pad2 } from "@/content/curriculum";
 import { availableHrefs, isAvailable } from "@/lib/content";
-import { chapterJsonLd, seoDescription, seoTitle } from "@/lib/seo";
+import { chapterDates, chapterJsonLd, pageMeta, seoDescription, seoTitle } from "@/lib/seo";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { Toc } from "@/components/learn/Toc";
 import { ChapterFooter } from "@/components/learn/ChapterFooter";
@@ -68,25 +68,19 @@ export async function generateMetadata({ params }: { params: Promise<Params> }):
   if (isFixture(part, chapter)) return { title: `${chapter} (runner test page)`, robots: { index: false, follow: false } };
   const c = getChapter(part, chapter);
   if (!c) return {};
-  const title = seoTitle(c.title, c.part.n);
-  const description = seoDescription(c.blurb);
   const written = isAvailable(part, chapter);
-  return {
-    title,
-    description,
-    alternates: { canonical: c.href },
+  const { modified, published } = chapterDates(c);
+  return pageMeta({
+    path: c.href,
+    title: seoTitle(c.title, c.part.n),
+    description: seoDescription(c.blurb),
+    type: "article",
+    // the image comes from this segment's opengraph-image file
+    image: false,
+    article: { section: c.part.title, modified, published },
     // unwritten chapters are a placeholder: keep them out of the index until they exist
-    robots: written ? { index: true, follow: true } : { index: false, follow: true },
-    openGraph: {
-      type: "article",
-      url: c.href,
-      title: `${title} · ${site.name}`,
-      description,
-      section: c.part.title,
-      authors: [site.author.url],
-    },
-    twitter: { card: "summary_large_image", title: `${title} · ${site.name}`, description },
-  };
+    robots: written ? undefined : { index: false, follow: true },
+  });
 }
 
 export default async function ChapterPage({ params }: { params: Promise<Params> }) {
@@ -112,8 +106,9 @@ export default async function ChapterPage({ params }: { params: Promise<Params> 
 
   return (
     <div className="flex gap-14 px-[var(--gutter)] pt-10 pb-28 lg:pt-14 xl:pl-16">
-      {Body && <JsonLd data={chapterJsonLd(c)} />}
-      <article id="main" className="mx-auto min-w-0 max-w-[880px] flex-1" data-pagefind-body={Body ? "" : undefined}>
+      {Body && <JsonLd data={chapterJsonLd(c, { words: stats.words, minutes })} />}
+      <main id="main" className="mx-auto min-w-0 max-w-[880px] flex-1">
+      <article data-pagefind-body={Body ? "" : undefined}>
         <header className="mx-auto mb-16 max-w-[40rem] text-center">
           <Glyph name={c.part.glyph} className="lineart-glyph mx-auto mb-8 size-[76px] text-ref" />
           <div className="font-mono text-12 text-faint [overflow-wrap:anywhere]" data-pagefind-ignore>
@@ -189,6 +184,7 @@ export default async function ChapterPage({ params }: { params: Promise<Params> 
           <ChapterFooter href={c.href} prev={nb(list[at - 1])} next={nb(list[at + 1])} />
         </div>
       </article>
+      </main>
 
       <aside className="hidden w-[210px] shrink-0 xl:block" data-pagefind-ignore>
         <div className="sticky top-[calc(var(--bar-h)+48px)] max-h-[calc(100dvh-var(--bar-h)-80px)] overflow-y-auto">
@@ -207,7 +203,8 @@ async function Fixture({ part, chapter }: Params) {
   const golden = await loadGolden(part, chapter);
   return (
     <div className="px-[var(--gutter)] pt-10 pb-28 lg:pt-14 xl:pl-16">
-      <article id="main" className="mx-auto min-w-0 max-w-[880px]">
+      <main id="main" className="mx-auto min-w-0 max-w-[880px]">
+      <article>
         <header className="mx-auto mb-16 max-w-[40rem] text-center">
           <div className="font-mono text-12 text-faint">
             everything<span className="text-accent-2">.</span>
@@ -227,6 +224,7 @@ async function Fixture({ part, chapter }: Params) {
           </GoldenProvider>
         </div>
       </article>
+      </main>
     </div>
   );
 }

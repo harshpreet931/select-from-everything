@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSqlRunner, phaseText } from "@/components/code/useSqlRunner";
+import { useSqlRunner, phaseText, runSummary } from "@/components/code/useSqlRunner";
 import { ResultGrid, typeLabel } from "@/components/code/ResultGrid";
 import { sqlCantRun, sqlCaveat } from "@/components/code/sqlSupport";
 import { datasetNames, datasets, resetSql, sqlManifest, sqlSchema, sqlWarm, type SchemaTable } from "@/lib/sql";
@@ -103,9 +103,11 @@ export function Playground() {
   const schema = useMemo(() => Object.fromEntries(tables.map((t) => [t.name, t.columns.map((c) => c.name)])), [tables]);
 
   const execute = useCallback(
-    async (sql: string) => {
+    async (sql: string, how: "all" | "statement" | "peek" = "all") => {
       setRanCode(sql);
       const r = await runner.run({ sql, db, keep: keep ? KEY : undefined }, { timeoutMs: TIMEOUT_S * 1000 });
+      // an unedited example or not, never the sql itself
+      track("playground_run", { ...runSummary(r), how, example: examples.some((e) => e.sql === sql && e.db === db), keep });
       if (keep && r.ok && DDL.test(sql)) {
         const t = await sqlSchema(KEY);
         if (t) setLiveTables(t);
@@ -121,7 +123,7 @@ export function Playground() {
   const runStatement = useCallback(
     (at: number) => {
       const s = statementAt(splitSql(code), at);
-      if (s && !runner.running && !sqlCantRun(s.sql)) void execute(s.sql);
+      if (s && !runner.running && !sqlCantRun(s.sql)) void execute(s.sql, "statement");
     },
     [code, runner.running, execute],
   );
@@ -151,7 +153,7 @@ export function Playground() {
     const q = `SELECT * FROM ${/^[a-z_][a-z0-9_]*$/.test(table) ? table : `"${table.replace(/"/g, '""')}"`} ORDER BY 1 LIMIT 10;`;
     setCode((c) => (c.trim() ? `${c.replace(/\s+$/, "")}\n\n${q}` : q));
     setExampleId(null);
-    if (!runner.running) void execute(q);
+    if (!runner.running) void execute(q, "peek");
   };
 
   const share = async () => {

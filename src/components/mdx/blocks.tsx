@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { FigureWatch } from "./FigureWatch";
 
 // small server-rendered building blocks for chapters. see AUTHORING.md.
 
@@ -129,6 +130,7 @@ export function Figure({
 }) {
   return (
     <figure className={`figure my-14 ${wide ? "lg:-mx-12" : ""}`}>
+      <FigureWatch />
       <div className={`figure-body ${bare ? "" : "ticks px-4 py-6 sm:px-8 sm:py-8"}`}>{children}</div>
       {caption && (
         <figcaption className="mx-auto mt-4 max-w-[36rem] text-center text-[0.98rem] leading-[1.6] text-mute italic [&_code]:not-italic">

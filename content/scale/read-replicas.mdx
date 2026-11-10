@@ -103,7 +103,7 @@ postgres 19 <Since v={19} preview /> adds a command for the waiting part. run on
 WAIT FOR LSN '0/302FCB0' WITH (TIMEOUT '1s', NO_THROW);
 ```
 
-it has to be a top-level statement, outside a transaction that holds a snapshot or locks, because a waiting session that holds them could block the very replay it's waiting for ([the 19 docs](https://www.postgresql.org/docs/19/sql-wait.html)).
+it has to be a top-level statement, outside a transaction that holds a snapshot or locks, because a waiting session that holds them could block the very replay it's waiting for ([the 19 docs](https://www.postgresql.org/docs/19/sql-wait.html)). [where postgres is going](/learn/deep-dives/whats-next) has the rest of 19.
 
 <Gotcha title="a replica is also a source of conflicts">
 a long query on a hot standby needs old row versions that the primary may already have vacuumed away. replay then either waits (and lag grows) or cancels the query with a recovery conflict, depending on `max_standby_streaming_delay`. `hot_standby_feedback = on` makes the primary keep those versions, which moves the bloat to the primary instead. [streaming replication](/learn/wal/streaming-replication) has the details; for whole-row change streams to other systems, see [logical replication](/learn/wal/logical-replication).

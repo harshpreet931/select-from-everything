@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect } from "react";
+import { watchOutbound } from "@/lib/analytics";
 import { Wordmark } from "./Mark";
 import { ThemeToggle } from "./ThemeToggle";
 import { openSearch } from "./Search";
@@ -15,6 +17,8 @@ const nav = [
 
 export function Bar() {
   const path = usePathname();
+  // the bar is on every page, so it owns the one outbound-link listener
+  useEffect(() => watchOutbound(), []);
   const inBook = /^\/learn\/[^/]+/.test(path);
   return (
     <header className="sticky top-0 z-40 h-[var(--bar-h)] border-b border-line bg-bg/86 backdrop-blur-[14px]">

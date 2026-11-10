@@ -11,7 +11,6 @@
   { "term": "deduplication", "short": "postgres 13+: merging b-tree entries with equal keys into posting lists, just before a leaf would split.", "chapter": "dedup-and-bottom-up-deletion", "aka": ["deduplicate_items", "b-tree deduplication"] },
   { "term": "bottom-up deletion", "short": "postgres 14+: before a leaf splits, deleting entries whose row versions are dead, left by updates that didn't change the key.", "chapter": "dedup-and-bottom-up-deletion", "aka": ["bottom-up index deletion", "version churn"] },
   { "term": "LP_DEAD", "short": "a hint bit on an index entry: its row is dead to everyone, so the entry can be removed without checking the heap again.", "chapter": "unique-checks", "aka": ["dead index entry", "killed index tuple"] },
-  { "term": "NULLS NOT DISTINCT", "short": "postgres 15+: a unique constraint or index that treats NULLs as equal, so only one is allowed.", "chapter": "unique-checks" },
   { "term": "bucket", "short": "one slot of a hash index: a primary page plus any overflow pages, holding the entries whose hash picks it.", "chapter": "hash-indexes", "aka": ["hash bucket", "bucket page"] },
   { "term": "overflow page", "short": "an extra page chained to a full hash bucket. many duplicates make long chains.", "chapter": "hash-indexes" },
   { "term": "linear hashing", "short": "growing a hash table one bucket at a time, rehashing only the one bucket that splits. how postgres's hash index grows.", "chapter": "hash-indexes", "aka": ["bucket split", "ffactor"] },

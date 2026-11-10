@@ -14,7 +14,7 @@ import {
   type SqlStatus,
   type StatementResult,
 } from "@/lib/sql";
-import { track } from "@/lib/analytics";
+import { msBucket } from "@/lib/analytics";
 
 const saveData = () => {
   try {
@@ -52,13 +52,6 @@ export function useSqlRunner() {
       });
       if (abort.current === ctl || r.aborted) {
         setResult(r);
-        track("code_run", {
-          ok: r.ok,
-          ms: Math.round(r.restoreMs + r.execMs),
-          timed_out: !!r.timedOut,
-          lang: "sql",
-          db: r.db,
-        });
       }
       return r;
     } finally {
@@ -80,6 +73,18 @@ export function useSqlRunner() {
 }
 
 export type SqlRunner = ReturnType<typeof useSqlRunner>;
+
+/** a run, reduced to what analytics may know: how it ended, how long, which error class. never the sql */
+export function runSummary(r: SqlRunResult) {
+  const err = r.setupError ?? r.error;
+  return {
+    result: r.fatal ? "fatal" : r.timedOut ? "timeout" : r.aborted ? "stopped" : r.setupError ? "setup_error" : r.ok ? "ok" : "error",
+    ms: msBucket(r.restoreMs + r.execMs),
+    sqlstate: err?.sqlstate || undefined,
+    statements: r.statements.length,
+    db: r.db,
+  };
+}
 
 /** what the engine is doing, in words */
 export function phaseText(phase: string | null, status: SqlStatus, db?: string): string {

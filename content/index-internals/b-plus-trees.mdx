@@ -22,7 +22,7 @@ you know how [an index](/learn/indexes/what-an-index-is) is a sorted copy of a c
 
 a B+tree is the fix, and it's the shape of a phone book's thumb tabs. the tabs (the root) say "A to F, G to M, N to Z". each section (an inner page) has its own tabs. the actual names and numbers (the keys and their row addresses) are only on the bottom pages, the leaves, and when you finish one page you just turn to the next one (the sibling link) without going back to the tabs.
 
-build one. type a key and press insert, or pick a preset and step. the model holds 4 keys a page, so it splits often enough to watch.
+build one. type a key and press insert, or pick a preset and step. the model holds 4 keys a page, so it splits often enough to watch. (to write one yourself, [build a toy database](/learn/deep-dives/toy-database) does it in javascript, over real pages.)
 
 <Figure wide caption={<>insert keys and step. a full leaf splits in two and <C k="hot">copies</C> its first right-hand key up as a separator; a full inner page splits and <em>moves</em> its middle key up. when the root splits, a new root appears on top. try a range like <code>3..9</code>: one trip down, then right along the <C k="ref">sibling links</C>.</>}>
 <BTree lab={{ order: 4 }} />
@@ -138,7 +138,7 @@ a leaf split has to tell the parent where the new page starts, and the cleanest 
 </Deep>
 
 <Interview q="why do databases use B+trees instead of binary search trees or hash tables?">
-pages. a B+tree node is one disk page holding hundreds of keys, so the tree is three or four levels deep even for hundreds of millions of rows: three or four page reads per lookup, and the top levels are almost always cached. it stays balanced by construction (it grows at the root, so every leaf has the same depth), and because the leaves are sorted and linked, it serves ranges, ORDER BY, prefixes and min/max, which a hash table can't. bonus point: in postgres every level has right links and high keys (Lehman and Yao), so readers never lock more than one page and never wait for a split.
+pages. a B+tree node is one disk page holding hundreds of keys, so the tree is three or four levels deep even for hundreds of millions of rows: three or four page reads per lookup, and the top levels are almost always cached. it stays balanced by construction (it grows at the root, so every leaf has the same depth), and because the leaves are sorted and linked, it serves ranges, ORDER BY, prefixes and min/max, which a hash table can't. bonus point: in postgres every level has right links and high keys (Lehman and Yao), so readers never lock more than one page and never wait for a split. more of that round in [database internals interview questions](/learn/deep-dives/internals-interview).
 </Interview>
 
 <Keylines>

@@ -1,7 +1,7 @@
 "use client";
 
-import { Children, createContext, isValidElement, useContext, useId, useState, type ReactNode } from "react";
-import { track } from "@/lib/analytics";
+import { Children, createContext, isValidElement, useContext, useId, useRef, useState, type ReactNode } from "react";
+import { nth, track } from "@/lib/analytics";
 
 // interactive mdx blocks: quizzes, tabs, compare. client components.
 
@@ -28,12 +28,14 @@ export function Quiz({
   label?: string;
 }) {
   const [picked, setPicked] = useState<number | null>(null);
+  const tries = useRef(0);
+  const box = useRef<HTMLDivElement>(null);
   const id = useId();
   const revealed = picked !== null;
   const right = picked === answer;
 
   return (
-    <div className="quiz measure mx-auto my-12 rounded-lg bg-well px-5 py-6 shadow-[inset_0_0_0_1px_var(--line)] sm:px-7" role="group" aria-labelledby={id}>
+    <div ref={box} className="quiz measure mx-auto my-12 rounded-lg bg-well px-5 py-6 shadow-[inset_0_0_0_1px_var(--line)] sm:px-7" role="group" aria-labelledby={id}>
       <div id={id} className="mb-3 flex items-baseline justify-between gap-4">
         <span className="font-display text-[1.15rem] text-hot italic">{label}</span>
         {revealed && (
@@ -56,7 +58,12 @@ export function Quiz({
               disabled={revealed}
               onClick={() => {
                 setPicked(i);
-                track("quiz_answered", { correct: i === answer, kind: label });
+                track("quiz_answered", {
+                  kind: label === "predict the output" ? "predict" : "quiz",
+                  correct: i === answer,
+                  attempt: ++tries.current,
+                  quiz: nth(box.current, ".quiz"),
+                });
               }}
               className="act !h-auto !min-h-9 max-w-full !py-1.5 text-left !text-13 !leading-[1.4] !whitespace-normal disabled:!pointer-events-none disabled:!opacity-100"
               style={

@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useTheme } from "@/lib/theme";
+import { track } from "@/lib/analytics";
 
 /** dark ↔ paper. also bound to "t" anywhere outside a text field. */
 export function ThemeToggle() {
@@ -13,7 +14,9 @@ export function ThemeToggle() {
       if (e.key !== "t" || e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement;
       if (el.closest("input, textarea, [contenteditable=true], .cm-editor")) return;
-      setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+      const to = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      setTheme(to);
+      track("theme_toggled", { to, via: "key" });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -21,7 +24,10 @@ export function ThemeToggle() {
 
   return (
     <button
-      onClick={() => setTheme(next)}
+      onClick={() => {
+        setTheme(next);
+        track("theme_toggled", { to: next, via: "button" });
+      }}
       className="word relative"
       aria-label={`switch to ${next} theme (t)`}
       title={`${next} theme · t`}

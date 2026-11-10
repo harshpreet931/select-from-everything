@@ -649,11 +649,16 @@
     border-radius: 50%;
     background: var(--bg);
   }
-  [data-stepper]:focus-visible {
-    outline: 1.5px solid var(--line-2);
-    outline-offset: 10px;
-    border-radius: 6px;
-  }
+}
+
+/* keyboard focus on a figure (a stepper, or any tabindex div). unlayered on purpose: most figure
+   roots carry `outline-none` for mouse clicks, and that utility used to hide this ring from the
+   keyboard too. faint, not line-2, so the ring clears 3:1 against well (wcag 1.4.11). */
+[data-stepper]:focus-visible,
+div[tabindex="0"].outline-none:focus-visible {
+  outline: 1.5px solid var(--faint);
+  outline-offset: 10px;
+  border-radius: 6px;
 }
 
 /* ---- figure motion ---------------------------------------------------------------- */

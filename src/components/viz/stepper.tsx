@@ -1,5 +1,6 @@
 "use client";
 
+import { watchFigure } from "@/lib/analytics";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 /**
@@ -67,7 +68,11 @@ export function useStepper(count: number, opts: { interval?: number; loop?: bool
     if (!el) return;
     const io = new IntersectionObserver(([e]) => (visible.current = e.isIntersecting), { threshold: 0.15 });
     io.observe(el);
-    return () => io.disconnect();
+    const unwatch = watchFigure(el);
+    return () => {
+      io.disconnect();
+      unwatch();
+    };
   }, []);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {

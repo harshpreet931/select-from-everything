@@ -140,7 +140,7 @@ export function LabVsServer() {
   return (
     <div className="@container grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4" aria-label="the browser engine next to a real postgres server">
       <div className="grid grid-cols-[minmax(0,1fr)] gap-x-4 gap-y-3 @min-[680px]:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-        <ul className="grid content-start gap-1" aria-label="differences">
+        <ul className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-1" aria-label="differences">
           {ITEMS.map((x) => {
             const on = x.id === sel;
             return (

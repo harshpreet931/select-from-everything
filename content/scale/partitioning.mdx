@@ -262,7 +262,7 @@ EXPLAIN (COSTS OFF)
 SELECT count(*) FROM ev WHERE occurred_at::date = '2026-04-20';
 ```
 
-write `occurred_at >= '2026-04-20' AND occurred_at < '2026-04-21'` instead. the same rule as [expression indexes](/learn/indexes/expression-indexes): conditions on the bare column work.
+write `occurred_at >= '2026-04-20' AND occurred_at < '2026-04-21'` instead. the same rule as [expression indexes](/learn/indexes/partial-and-expression): conditions on the bare column work.
 </Gotcha>
 
 <Interview q="when would you partition a table?">

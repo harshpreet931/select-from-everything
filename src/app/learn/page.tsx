@@ -5,20 +5,19 @@ import { availableHrefs } from "@/lib/content";
 import { Footer } from "@/components/site/Footer";
 import { ContentsProgress } from "@/components/learn/ContentsProgress";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { courseJsonLd } from "@/lib/seo";
+import { bookJsonLd, pageMeta } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMeta({
+  path: "/learn",
   title: "learn sql and databases: the full contents",
-  description: `a free, visual sql and database course: all ${totalChapters} chapters in reading order, from your first SELECT to joins, indexes, transactions, MVCC and the write-ahead log.`,
-  alternates: { canonical: "/learn" },
-  openGraph: { url: "/learn" },
-};
+  description: `the contents of a free, visual sql and postgres book: all ${totalChapters} chapters in reading order, from your first SELECT to joins, indexes, MVCC and the WAL.`,
+});
 
 export default function Contents() {
   const ready = new Set(availableHrefs());
   return (
     <main id="main" className="px-[var(--gutter)] pt-14">
-      <JsonLd data={courseJsonLd(parts, ready)} />
+      <JsonLd data={bookJsonLd(parts)} />
       <div className="mx-auto max-w-[1180px]">
         <header className="grid gap-4 border-b border-line pb-8 md:grid-cols-[minmax(0,1fr)_minmax(0,46ch)] md:items-end">
           <div>

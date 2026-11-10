@@ -3,14 +3,13 @@ import Link from "next/link";
 import { glossary } from "@/content/glossary";
 import { Footer } from "@/components/site/Footer";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { glossaryJsonLd } from "@/lib/seo";
+import { glossaryJsonLd, pageMeta } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMeta({
+  path: "/glossary",
   title: "sql and database glossary: every term in one line",
-  description: "a sql and database glossary: joins, NULL, indexes, EXPLAIN, MVCC, VACUUM, WAL, isolation levels and more, each in one line and linked to a visual chapter that explains it.",
-  alternates: { canonical: "/glossary" },
-  openGraph: { url: "/glossary" },
-};
+  description: `a sql and postgres glossary: ${glossary.length} terms, from joins and NULL to indexes, MVCC, VACUUM and the WAL, each in one line and linked to the chapter that explains it.`,
+});
 
 export default function Glossary() {
   const groups = new Map<string, typeof glossary>();

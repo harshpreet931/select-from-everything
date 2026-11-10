@@ -16,7 +16,7 @@ SQL says *what* you want. postgres turns it into a tree of these operators, and 
 
 you know how you can put a subquery anywhere a table goes, and a join of joins of subqueries just works? that's not a feature somebody bolted on. it falls out of one rule: every operator takes tables and gives back a table.
 
-think of a kitchen where every tool takes a tray and hands back a tray. a sieve keeps some of what's on it (selection). a knife cuts away the parts you don't need (projection). a pairing station puts things from two trays side by side (product, and join, which is a product followed by a sieve). you can chain them in any order, because what comes out of one always fits into the next. Codd wrote the tools down in his papers of the early 1970s, and they've barely changed.
+think of a kitchen where every tool takes a tray and hands back a tray. a sieve keeps some of what's on it (selection). a knife cuts away the parts you don't need (projection). a pairing station puts things from two trays side by side (product, and join, which is a product followed by a sieve). you can chain them in any order, because what comes out of one always fits into the next. Codd wrote the tools down in his papers of the early 1970s, and they've barely changed ([the relational model](/learn/start/relational-model) has why he bothered).
 
 <Figure wide caption={<>pick an operator. each one takes the relations on the left and returns the one on the right, computed as sets the way the algebra defines them. under it: how SQL spells it, and what runs it in a postgres plan.</>}>
 <AlgebraMap />

@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import { Playground } from "@/components/play/Playground";
 import { Footer } from "@/components/site/Footer";
 import { site } from "@/lib/site";
+import { pageMeta } from "@/lib/seo";
 import manifest from "@/lib/sql/datasets.gen.json";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMeta({
+  path: "/play",
   title: "online postgres playground: run sql in your browser",
-  description: `a free online sql playground: write sql and run it on a real ${site.pg.engine}, compiled to webassembly and running in your browser. sample databases included, no signup, nothing leaves your machine.`,
-  alternates: { canonical: "/play" },
-  openGraph: { url: "/play" },
-};
+  description: `a free online sql playground: a real postgres ${site.pg.version} compiled to webassembly, running in your browser. sample databases, no signup, queries never leave the tab.`,
+});
 
 const mb = (n: number) => (n / 1e6).toFixed(1);
 
